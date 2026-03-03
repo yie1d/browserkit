@@ -1,0 +1,17 @@
+{
+	"folders": [
+		{
+			"path": "../../.."
+		},
+		{
+			"path": "../../../../cdpkit-rs"
+		},
+		{
+			"path": "../../../../playwright"
+		},
+		{
+			"path": "../../../../playwright-mcp"
+		}
+	],
+	"settings": {}
+}

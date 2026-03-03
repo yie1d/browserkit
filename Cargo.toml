@@ -1,0 +1,31 @@
+[package]
+name = "browserkit"
+version = "0.1.0"
+edition = "2021"
+description = "Browser automation CLI and MCP server built on cdpkit-rs"
+license = "MIT"
+repository = "https://github.com/yie1d/browserkit"
+
+[[bin]]
+name = "bk"
+path = "src/main.rs"
+
+[dependencies]
+cdpkit = "0.2.2"
+tokio = { version = "1", features = ["full"] }
+clap = { version = "4", features = ["derive", "env"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+rand = "0.8"
+base64 = "0.21"
+toml = "0.8"
+clap_complete = "4"
+dashmap = "5"
+parking_lot = "0.12"
+
+[dev-dependencies]
+tempfile = "3"
+static_assertions = "1"
