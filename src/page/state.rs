@@ -39,16 +39,34 @@ const DISCOVER_ELEMENTS_JS: &str = r#"(() => {
     return JSON.stringify(result);
 })()"#;
 
-/// Retrieve all interactive elements on the current page.
+/// JS that returns the visible interactive elements array *without* returnByValue,
+/// so we get an objectId for the array and can describe each element's backendNodeId.
+const DISCOVER_ELEMENTS_REFS_JS: &str = r#"(() => {
+    const selectors = 'a, button, input, textarea, select, [role="button"], [onclick]';
+    const elements = document.querySelectorAll(selectors);
+    const result = [];
+    for (const el of elements) {
+        const rect = el.getBoundingClientRect();
+        if (rect.width === 0 || rect.height === 0) continue;
+        result.push(el);
+    }
+    return result;
+})()"#;
+
+/// Retrieve all interactive elements on the current page, with backendNodeId refs.
 ///
-/// Injects a JS script via `Runtime.evaluate` that traverses the DOM,
-/// queries interactive elements, and returns their bounding-rect info.
-/// Elements with zero width or height are filtered out by the JS side.
+/// Two-phase approach:
+/// 1. Evaluate JS with returnByValue=true to get element metadata (tag, text, rect, etc)
+/// 2. Evaluate JS with returnByValue=false to get the element array objectId
+/// 3. Use Runtime.getProperties to enumerate elements, then DOM.describeNode for each
+///    to obtain the stable backendNodeId.
 pub async fn get_page_state(
     cdp: &Arc<CDP>,
     session_id: &str,
 ) -> Result<Vec<ElementInfo>, BkError> {
     let session = cdp.session(session_id);
+
+    // Phase 1: Get element metadata
     let resp = cdpkit::runtime::methods::Evaluate::new(DISCOVER_ELEMENTS_JS)
         .with_return_by_value(true)
         .send(&session)
@@ -61,7 +79,53 @@ pub async fn get_page_state(
         )));
     }
 
-    // The JS returns a JSON string via return_by_value
+    let json_str = resp
+        .result
+        .value
+        .as_ref()
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| BkError::Other("page.state: no value returned from evaluate".into()))?;
+
+    let mut elements: Vec<ElementInfo> =
+        serde_json::from_str(json_str).map_err(|e| BkError::Other(format!("page.state: failed to parse element list: {}", e)))?;
+
+    // Phase 2: Get backendNodeIds
+    let backend_ids = get_backend_node_ids(cdp, session_id, elements.len()).await;
+
+    // Merge backendNodeIds into elements
+    if let Ok(ids) = backend_ids {
+        for (el, id) in elements.iter_mut().zip(ids.iter()) {
+            el.backend_node_id = *id;
+        }
+    }
+    // If backendNodeId lookup fails (non-critical), elements still work with index
+
+    Ok(elements)
+}
+
+/// Retrieve interactive elements (phase-1 only) — no backendNodeId lookup.
+///
+/// This is a lightweight version of `get_page_state` that skips the expensive
+/// second pass (Runtime.getProperties + N * DOM.describeNode). Use this when
+/// you only need element metadata + coordinates for index-based resolution.
+pub async fn get_page_elements_only(
+    cdp: &Arc<CDP>,
+    session_id: &str,
+) -> Result<Vec<ElementInfo>, BkError> {
+    let session = cdp.session(session_id);
+
+    let resp = cdpkit::runtime::methods::Evaluate::new(DISCOVER_ELEMENTS_JS)
+        .with_return_by_value(true)
+        .send(&session)
+        .await?;
+
+    if let Some(details) = &resp.exception_details {
+        return Err(BkError::Other(format!(
+            "page.state JS error: {}",
+            exception_message(details)
+        )));
+    }
+
     let json_str = resp
         .result
         .value
@@ -132,7 +196,8 @@ const FULL_PAGE_STATE_JS: &str = r#"(() => {
 
 /// Retrieve the full page state: interactive elements + visible text + viewport info.
 ///
-/// All data is collected in a single `Runtime.evaluate` call for efficiency.
+/// All metadata is collected in a single `Runtime.evaluate` call for efficiency.
+/// Then a second pass fetches backendNodeIds for stable element references.
 pub async fn get_full_page_state(
     cdp: &Arc<CDP>,
     session_id: &str,
@@ -157,10 +222,94 @@ pub async fn get_full_page_state(
         .and_then(|v| v.as_str())
         .ok_or_else(|| BkError::Other("page.state: no value returned from evaluate".into()))?;
 
-    let state: FullPageState = serde_json::from_str(json_str)
+    let mut state: FullPageState = serde_json::from_str(json_str)
         .map_err(|e| BkError::Other(format!("page.state: failed to parse full state: {}", e)))?;
 
+    // Fetch backendNodeIds for stable element references
+    let backend_ids = get_backend_node_ids(cdp, session_id, state.elements.len()).await;
+    if let Ok(ids) = backend_ids {
+        for (el, id) in state.elements.iter_mut().zip(ids.iter()) {
+            el.backend_node_id = *id;
+        }
+    }
+
     Ok(state)
+}
+
+/// Fetch backendNodeIds for all interactive elements on the page.
+///
+/// Strategy: evaluate JS without returnByValue to get the DOM element array as
+/// a remote object, then use Runtime.getProperties to get each element's objectId,
+/// and finally DOM.describeNode on each to get backendNodeId.
+///
+/// This is done as a best-effort batch — if any individual lookup fails, that
+/// element gets None. If the count from phase-2 doesn't match expected_count
+/// (TOCTOU between the two evaluate passes), the entire result is discarded to
+/// avoid misaligned backendNodeId assignment.
+async fn get_backend_node_ids(
+    cdp: &Arc<CDP>,
+    session_id: &str,
+    expected_count: usize,
+) -> Result<Vec<Option<i64>>, BkError> {
+    if expected_count == 0 {
+        return Ok(vec![]);
+    }
+
+    let session = cdp.session(session_id);
+
+    // Get the element array as a remote object (objectId)
+    let resp = cdpkit::runtime::methods::Evaluate::new(DISCOVER_ELEMENTS_REFS_JS)
+        .send(&session)
+        .await?;
+
+    if resp.exception_details.is_some() {
+        return Err(BkError::Other("failed to get element refs".into()));
+    }
+
+    let array_object_id = resp.result.object_id.ok_or_else(|| {
+        BkError::Other("page.state refs: no objectId for element array".into())
+    })?;
+
+    // Get indexed properties of the array
+    let props_resp = cdpkit::runtime::methods::GetProperties::new(array_object_id)
+        .with_own_properties(true)
+        .send(&session)
+        .await?;
+
+    // Collect element objectIds in index order
+    let mut element_entries: Vec<(usize, String)> = Vec::with_capacity(expected_count);
+    for prop in &props_resp.result {
+        // Array elements have numeric names: "0", "1", "2", ...
+        if let Ok(idx) = prop.name.parse::<usize>() {
+            if let Some(ref value) = prop.value {
+                if let Some(ref oid) = value.object_id {
+                    element_entries.push((idx, oid.clone()));
+                }
+            }
+        }
+    }
+    element_entries.sort_by_key(|(idx, _)| *idx);
+
+    // Count validation: if phase-2 found a different number of elements than phase-1,
+    // the DOM changed between the two passes — discard all refs to avoid misalignment.
+    if element_entries.len() != expected_count {
+        return Ok(vec![None; expected_count]);
+    }
+
+    // Describe each node to get backendNodeId
+    let mut ids: Vec<Option<i64>> = Vec::with_capacity(expected_count);
+    for (_idx, oid) in &element_entries {
+        match cdpkit::dom::methods::DescribeNode::new()
+            .with_object_id(oid.clone())
+            .send(&session)
+            .await
+        {
+            Ok(desc) => ids.push(Some(desc.node.backend_node_id)),
+            Err(_) => ids.push(None), // individual failure — don't poison with 0
+        }
+    }
+
+    Ok(ids)
 }
 
 /// Build the JS snippet for searching text in the page body.
@@ -473,5 +622,143 @@ mod tests {
     #[test]
     fn page_text_max_chars_constant() {
         assert_eq!(PAGE_TEXT_MAX_CHARS, 2000);
+    }
+
+    #[test]
+    fn element_info_with_ref_field_deserializes() {
+        let json_str = r#"[
+            {
+                "index": 0,
+                "tag": "button",
+                "text": "Submit",
+                "x": 10.0,
+                "y": 20.0,
+                "width": 80.0,
+                "height": 30.0,
+                "href": null,
+                "placeholder": null,
+                "ref": 42
+            },
+            {
+                "index": 1,
+                "tag": "input",
+                "text": "",
+                "x": 50.0,
+                "y": 80.0,
+                "width": 200.0,
+                "height": 40.0,
+                "href": null,
+                "placeholder": "Name",
+                "ref": 99
+            }
+        ]"#;
+
+        let elements: Vec<ElementInfo> = serde_json::from_str(json_str).unwrap();
+        assert_eq!(elements.len(), 2);
+        assert_eq!(elements[0].backend_node_id, Some(42));
+        assert_eq!(elements[1].backend_node_id, Some(99));
+    }
+
+    #[test]
+    fn element_info_without_ref_field_deserializes_as_none() {
+        // Backward compat: old JSON without "ref" still works
+        let json_str = r#"[{
+            "index": 0,
+            "tag": "a",
+            "text": "link",
+            "x": 0,
+            "y": 0,
+            "width": 10,
+            "height": 10,
+            "href": "http://x.com",
+            "placeholder": null
+        }]"#;
+
+        let elements: Vec<ElementInfo> = serde_json::from_str(json_str).unwrap();
+        assert_eq!(elements.len(), 1);
+        assert_eq!(elements[0].backend_node_id, None);
+    }
+
+    #[test]
+    fn element_info_serializes_ref_field() {
+        let el = ElementInfo {
+            index: 0,
+            tag: "button".into(),
+            text: "Ok".into(),
+            x: 10.0,
+            y: 20.0,
+            width: 80.0,
+            height: 30.0,
+            href: None,
+            placeholder: None,
+            backend_node_id: Some(123),
+        };
+
+        let json = serde_json::to_string(&el).unwrap();
+        assert!(json.contains(r#""ref":123"#), "should serialize ref: {}", json);
+    }
+
+    #[test]
+    fn element_info_serializes_without_ref_when_none() {
+        let el = ElementInfo {
+            index: 0,
+            tag: "button".into(),
+            text: "Ok".into(),
+            x: 10.0,
+            y: 20.0,
+            width: 80.0,
+            height: 30.0,
+            href: None,
+            placeholder: None,
+            backend_node_id: None,
+        };
+
+        let json = serde_json::to_string(&el).unwrap();
+        assert!(!json.contains("ref"), "should not serialize ref when None: {}", json);
+    }
+
+    // ── Count mismatch → all-None fallback tests ──────────────────────────
+
+    #[test]
+    fn backend_ids_count_mismatch_produces_all_none() {
+        // Simulates the merge behavior when phase-2 returns a different count
+        // (the actual get_backend_node_ids returns Vec<Option<i64>>)
+        let mut elements = vec![
+            ElementInfo { index: 0, tag: "a".into(), text: "".into(), x: 0.0, y: 0.0, width: 10.0, height: 10.0, href: None, placeholder: None, backend_node_id: None },
+            ElementInfo { index: 1, tag: "button".into(), text: "".into(), x: 0.0, y: 0.0, width: 10.0, height: 10.0, href: None, placeholder: None, backend_node_id: None },
+        ];
+
+        // Simulate count mismatch: 2 elements but 3 backend ids would be a mismatch.
+        // In get_backend_node_ids, this returns vec![None; expected_count].
+        let mismatched_ids: Vec<Option<i64>> = vec![None; elements.len()];
+
+        // Merge
+        for (el, id) in elements.iter_mut().zip(mismatched_ids.iter()) {
+            el.backend_node_id = *id;
+        }
+
+        // All elements should have None backend_node_id
+        for el in &elements {
+            assert!(el.backend_node_id.is_none(), "element should have None ref after count mismatch");
+        }
+    }
+
+    #[test]
+    fn backend_ids_individual_failure_produces_none_not_zero() {
+        // Simulates individual DescribeNode failures: should produce None, not Some(0)
+        let mut elements = vec![
+            ElementInfo { index: 0, tag: "a".into(), text: "".into(), x: 0.0, y: 0.0, width: 10.0, height: 10.0, href: None, placeholder: None, backend_node_id: None },
+            ElementInfo { index: 1, tag: "button".into(), text: "".into(), x: 0.0, y: 0.0, width: 10.0, height: 10.0, href: None, placeholder: None, backend_node_id: None },
+        ];
+
+        // Simulate: first element resolved, second failed (None)
+        let ids: Vec<Option<i64>> = vec![Some(42), None];
+
+        for (el, id) in elements.iter_mut().zip(ids.iter()) {
+            el.backend_node_id = *id;
+        }
+
+        assert_eq!(elements[0].backend_node_id, Some(42));
+        assert_eq!(elements[1].backend_node_id, None); // Not Some(0)!
     }
 }

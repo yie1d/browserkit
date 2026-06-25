@@ -7,7 +7,7 @@
 //   4. Auto-detect when only one workspace exists
 //   5. Error with helpful message
 
-use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
+use clap::{ArgGroup, CommandFactory, Parser, Subcommand, ValueEnum};
 use serde_json::json;
 
 use browserkit::client::{build_request, DaemonClient};
@@ -107,23 +107,31 @@ pub enum Command {
         /// Target URL
         url: String,
     },
-    /// Click element by index or coordinates
+    /// Click element by index, ref, or coordinates
+    #[command(group(ArgGroup::new("target").required(true).args(["index", "element_ref", "x"])))]
     Click {
         /// Element index from page state
         #[arg(short, long)]
         index: Option<usize>,
+        /// Element ref (backendNodeId) from page state — stable across DOM changes
+        #[arg(short = 'r', long = "ref")]
+        element_ref: Option<i64>,
         /// X coordinate
-        #[arg(short, long)]
+        #[arg(short, long, requires = "y")]
         x: Option<f64>,
         /// Y coordinate
-        #[arg(short, long)]
+        #[arg(short, long, requires = "x")]
         y: Option<f64>,
     },
     /// Type text into element
+    #[command(group(ArgGroup::new("target").required(true).args(["index", "element_ref"])))]
     Type {
         /// Element index
         #[arg(short, long)]
-        index: usize,
+        index: Option<usize>,
+        /// Element ref (backendNodeId) — stable across DOM changes
+        #[arg(short = 'r', long = "ref")]
+        element_ref: Option<i64>,
         /// Clear existing content before typing
         #[arg(long)]
         clear: bool,
@@ -140,49 +148,71 @@ pub enum Command {
         /// Scroll to element by index (from page state)
         #[arg(short, long)]
         index: Option<usize>,
+        /// Scroll to element by ref (backendNodeId)
+        #[arg(short = 'r', long = "ref")]
+        element_ref: Option<i64>,
         /// Scroll to element by CSS selector
         #[arg(short, long)]
         selector: Option<String>,
     },
     /// Select dropdown option
+    #[command(group(ArgGroup::new("target").required(true).args(["index", "element_ref"])))]
     Select {
         /// Element index
         #[arg(short, long)]
-        index: usize,
+        index: Option<usize>,
+        /// Element ref (backendNodeId) — stable across DOM changes
+        #[arg(short = 'r', long = "ref")]
+        element_ref: Option<i64>,
         /// Option value or display text
         value: String,
     },
     /// Batch fill form fields
     Fill {
-        /// Field assignments: <index>=<value> (repeatable)
+        /// Field assignments: <index>=<value> or ref:<id>=<value> (repeatable)
         #[arg(long = "set", required = true)]
         set: Vec<String>,
     },
     /// List options in a dropdown (select element)
+    #[command(group(ArgGroup::new("target").required(true).args(["index", "element_ref"])))]
     DropdownOptions {
         /// Element index
         #[arg(short, long)]
-        index: usize,
+        index: Option<usize>,
+        /// Element ref (backendNodeId) — stable across DOM changes
+        #[arg(short = 'r', long = "ref")]
+        element_ref: Option<i64>,
     },
     /// Hover over element
+    #[command(group(ArgGroup::new("target").required(true).args(["index", "element_ref"])))]
     Hover {
         /// Element index
         #[arg(short, long)]
-        index: usize,
+        index: Option<usize>,
+        /// Element ref (backendNodeId) — stable across DOM changes
+        #[arg(short = 'r', long = "ref")]
+        element_ref: Option<i64>,
     },
     /// Focus element
+    #[command(group(ArgGroup::new("target").required(true).args(["index", "element_ref"])))]
     Focus {
         /// Element index
         #[arg(short, long)]
-        index: usize,
+        index: Option<usize>,
+        /// Element ref (backendNodeId) — stable across DOM changes
+        #[arg(short = 'r', long = "ref")]
+        element_ref: Option<i64>,
     },
     /// Upload files to a file input element
     Upload {
         /// Element index (from page state)
-        #[arg(short, long, group = "target")]
+        #[arg(short, long)]
         index: Option<usize>,
+        /// Element ref (backendNodeId) — stable across DOM changes
+        #[arg(short = 'r', long = "ref")]
+        element_ref: Option<i64>,
         /// CSS selector for the file input
-        #[arg(short, long, group = "target")]
+        #[arg(short, long)]
         selector: Option<String>,
         /// File paths to upload
         #[arg(required = true)]
@@ -1076,63 +1106,96 @@ async fn dispatch(cli: &Cli, client: &mut DaemonClient) -> Result<(), String> {
             ws_cmd!(cli, client, fmt, "nav.goto", { "url" => url });
         }
 
-        Command::Click { index, x, y } => {
+        Command::Click { index, element_ref, x, y } => {
             let wid = resolve_workspace(&cli.workspace, client).await?;
             let mut params = json!({"wid": wid});
-            if let Some(i) = index { params["index"] = json!(i); }
+            if let Some(r) = element_ref { params["ref"] = json!(r); }
+            else if let Some(i) = index { params["index"] = json!(i); }
             if let Some(cx) = x { params["x"] = json!(cx); }
             if let Some(cy) = y { params["y"] = json!(cy); }
             let resp = send_cmd(client, "act.click", params).await?;
             print_response(&resp, fmt);
         }
 
-        Command::Type { index, text, clear } => {
-            ws_cmd!(cli, client, fmt, "act.type", { "index" => index, "text" => text, "clear" => clear });
+        Command::Type { index, element_ref, text, clear } => {
+            let wid = resolve_workspace(&cli.workspace, client).await?;
+            let mut params = json!({"wid": wid, "text": text, "clear": clear});
+            if let Some(r) = element_ref { params["ref"] = json!(r); }
+            else if let Some(i) = index { params["index"] = json!(i); }
+            let resp = send_cmd(client, "act.type", params).await?;
+            print_response(&resp, fmt);
         }
 
-        Command::Scroll { direction, amount, index, selector } => {
+        Command::Scroll { direction, amount, index, element_ref, selector } => {
             let wid = resolve_workspace(&cli.workspace, client).await?;
             let dir = direction.as_deref().unwrap_or("down");
             let mut params = json!({"wid": wid, "direction": dir});
             if let Some(a) = amount { params["amount"] = json!(a); }
-            if let Some(i) = index { params["index"] = json!(i); }
+            if let Some(r) = element_ref { params["ref"] = json!(r); }
+            else if let Some(i) = index { params["index"] = json!(i); }
             if let Some(s) = selector { params["selector"] = json!(s); }
             let resp = send_cmd(client, "act.scroll", params).await?;
             print_response(&resp, fmt);
         }
 
-        Command::Select { index, value } => {
-            ws_cmd!(cli, client, fmt, "act.select", { "index" => index, "value" => value });
+        Command::Select { index, element_ref, value } => {
+            let wid = resolve_workspace(&cli.workspace, client).await?;
+            let mut params = json!({"wid": wid, "value": value});
+            if let Some(r) = element_ref { params["ref"] = json!(r); }
+            else if let Some(i) = index { params["index"] = json!(i); }
+            let resp = send_cmd(client, "act.select", params).await?;
+            print_response(&resp, fmt);
         }
 
         Command::Fill { set } => {
-            use browserkit::page::interaction::parse_fill_set;
+            use browserkit::page::interaction::parse_fill_set_target;
             let mut fields = Vec::new();
             for s in set {
-                let field = parse_fill_set(s)?;
-                fields.push(serde_json::json!({"index": field.index, "value": field.value}));
+                let field = parse_fill_set_target(s)?;
+                let mut entry = json!({"value": field.value});
+                match field.target {
+                    browserkit::page::element_ref::ElementTarget::Ref(r) => { entry["ref"] = json!(r); }
+                    browserkit::page::element_ref::ElementTarget::Index(i) => { entry["index"] = json!(i); }
+                }
+                fields.push(entry);
             }
             let wid = resolve_workspace(&cli.workspace, client).await?;
             let resp = send_cmd(client, "act.fill", json!({"wid": wid, "fields": fields})).await?;
             print_response(&resp, fmt);
         }
 
-        Command::DropdownOptions { index } => {
-            ws_cmd!(cli, client, fmt, "act.dropdown_options", { "index" => index });
+        Command::DropdownOptions { index, element_ref } => {
+            let wid = resolve_workspace(&cli.workspace, client).await?;
+            let mut params = json!({"wid": wid});
+            if let Some(r) = element_ref { params["ref"] = json!(r); }
+            else if let Some(i) = index { params["index"] = json!(i); }
+            let resp = send_cmd(client, "act.dropdown_options", params).await?;
+            print_response(&resp, fmt);
         }
 
-        Command::Hover { index } => {
-            ws_cmd!(cli, client, fmt, "act.hover", { "index" => index });
+        Command::Hover { index, element_ref } => {
+            let wid = resolve_workspace(&cli.workspace, client).await?;
+            let mut params = json!({"wid": wid});
+            if let Some(r) = element_ref { params["ref"] = json!(r); }
+            else if let Some(i) = index { params["index"] = json!(i); }
+            let resp = send_cmd(client, "act.hover", params).await?;
+            print_response(&resp, fmt);
         }
 
-        Command::Focus { index } => {
-            ws_cmd!(cli, client, fmt, "act.focus", { "index" => index });
+        Command::Focus { index, element_ref } => {
+            let wid = resolve_workspace(&cli.workspace, client).await?;
+            let mut params = json!({"wid": wid});
+            if let Some(r) = element_ref { params["ref"] = json!(r); }
+            else if let Some(i) = index { params["index"] = json!(i); }
+            let resp = send_cmd(client, "act.focus", params).await?;
+            print_response(&resp, fmt);
         }
 
-        Command::Upload { index, selector, files } => {
+        Command::Upload { index, element_ref, selector, files } => {
             let wid = resolve_workspace(&cli.workspace, client).await?;
             let mut params = json!({"wid": wid, "files": files});
-            if let Some(i) = index { params["index"] = json!(i); }
+            if let Some(r) = element_ref { params["ref"] = json!(r); }
+            else if let Some(i) = index { params["index"] = json!(i); }
             if let Some(s) = selector { params["selector"] = json!(s); }
             let resp = send_cmd(client, "act.upload", params).await?;
             print_response(&resp, fmt);
@@ -1616,4 +1679,123 @@ async fn dispatch_oneshot_pdf(
 
     let _ = send_cmd(client, "ws.close", json!({"wid": wid})).await;
     Ok(())
+}
+
+// ── CLI Argument Validation Tests ─────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    /// Helper: attempt to parse CLI args, return whether it succeeded.
+    fn try_parse(args: &[&str]) -> Result<Cli, clap::Error> {
+        Cli::try_parse_from(args)
+    }
+
+    // ── ArgGroup: --index / --ref required and mutually exclusive ──────
+
+    #[test]
+    fn type_without_target_is_rejected() {
+        // `bk type "hello"` with neither --index nor --ref should fail at CLI level
+        let result = try_parse(&["bk", "type", "hello"]);
+        assert!(result.is_err(), "type without --index or --ref should be rejected");
+    }
+
+    #[test]
+    fn type_with_index_succeeds() {
+        let result = try_parse(&["bk", "type", "--index", "3", "hello"]);
+        assert!(result.is_ok(), "type with --index should succeed: {:?}", result.err());
+    }
+
+    #[test]
+    fn type_with_ref_succeeds() {
+        let result = try_parse(&["bk", "type", "--ref", "42", "hello"]);
+        assert!(result.is_ok(), "type with --ref should succeed: {:?}", result.err());
+    }
+
+    #[test]
+    fn type_with_both_index_and_ref_is_rejected() {
+        let result = try_parse(&["bk", "type", "--index", "3", "--ref", "42", "hello"]);
+        assert!(result.is_err(), "type with both --index and --ref should be rejected");
+    }
+
+    #[test]
+    fn select_without_target_is_rejected() {
+        let result = try_parse(&["bk", "select", "option-value"]);
+        assert!(result.is_err(), "select without --index or --ref should be rejected");
+    }
+
+    #[test]
+    fn select_with_index_succeeds() {
+        let result = try_parse(&["bk", "select", "--index", "0", "option-value"]);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn hover_without_target_is_rejected() {
+        let result = try_parse(&["bk", "hover"]);
+        assert!(result.is_err(), "hover without --index or --ref should be rejected");
+    }
+
+    #[test]
+    fn hover_with_ref_succeeds() {
+        let result = try_parse(&["bk", "hover", "--ref", "100"]);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn focus_without_target_is_rejected() {
+        let result = try_parse(&["bk", "focus"]);
+        assert!(result.is_err(), "focus without --index or --ref should be rejected");
+    }
+
+    #[test]
+    fn focus_with_index_succeeds() {
+        let result = try_parse(&["bk", "focus", "--index", "5"]);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn dropdown_options_without_target_is_rejected() {
+        let result = try_parse(&["bk", "dropdown-options"]);
+        assert!(result.is_err(), "dropdown-options without --index or --ref should be rejected");
+    }
+
+    #[test]
+    fn dropdown_options_with_ref_succeeds() {
+        let result = try_parse(&["bk", "dropdown-options", "--ref", "77"]);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn click_without_target_is_rejected() {
+        // click requires one of: --index, --ref, or --x (with --y)
+        let result = try_parse(&["bk", "click"]);
+        assert!(result.is_err(), "click without any target should be rejected");
+    }
+
+    #[test]
+    fn click_with_coordinates_succeeds() {
+        let result = try_parse(&["bk", "click", "--x", "100.0", "--y", "200.0"]);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn click_with_index_succeeds() {
+        let result = try_parse(&["bk", "click", "--index", "2"]);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn click_with_ref_succeeds() {
+        let result = try_parse(&["bk", "click", "--ref", "55"]);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn click_x_without_y_is_rejected() {
+        let result = try_parse(&["bk", "click", "--x", "100.0"]);
+        assert!(result.is_err(), "click with --x but no --y should be rejected");
+    }
 }

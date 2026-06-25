@@ -1,5 +1,6 @@
 // Page/Tab: page-level operations
 pub mod capture;
+pub mod element_ref;
 pub mod find_elements;
 pub mod interaction;
 pub mod navigation;
@@ -71,6 +72,11 @@ pub struct ElementInfo {
     pub href: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub placeholder: Option<String>,
+    /// Stable element reference (CDP backendNodeId).
+    /// Survives DOM reordering; invalidated only when the node is removed.
+    /// Use with `--ref` on action commands for DOM-change-resilient addressing.
+    #[serde(rename = "ref", default, skip_serializing_if = "Option::is_none")]
+    pub backend_node_id: Option<i64>,
 }
 
 /// Viewport, scroll position, and document dimensions.

@@ -8,6 +8,7 @@ use tracing::info;
 use crate::daemon::protocol::{Request, Response};
 use crate::daemon::state::DaemonState;
 use crate::error::BkError;
+use crate::page::element_ref::{parse_element_target, ElementTarget};
 use super::common::{handler, resolve_context, touch_workspace};
 
 handler!(handle_click, do_click(req, state));
@@ -15,21 +16,20 @@ handler!(handle_click, do_click(req, state));
 async fn do_click(req: &Request, state: &Arc<DaemonState>) -> Result<Response, BkError> {
     let ctx = resolve_context(req, state, "click")?;
 
-    let index = req.params.get("index").and_then(|v| v.as_u64()).map(|v| v as usize);
+    let target = parse_element_target(&req.params);
     let x = req.params.get("x").and_then(|v| v.as_f64());
     let y = req.params.get("y").and_then(|v| v.as_f64());
 
-    match (index, x, y) {
-        (Some(idx), _, _) => {
-            let elements = crate::page::state::get_page_state(&ctx.cdp, &ctx.cdp_session_id).await?;
-            crate::page::interaction::click_element(&ctx.cdp, &ctx.cdp_session_id, &elements, idx).await?;
-            info!(wid = %ctx.wid, tid = %ctx.tid, index = idx, "click by index");
+    match (target, x, y) {
+        (Some(t), _, _) => {
+            crate::page::interaction::click_element_by_target(&ctx.cdp, &ctx.cdp_session_id, &t).await?;
+            info!(wid = %ctx.wid, tid = %ctx.tid, "click by target");
         }
         (None, Some(cx), Some(cy)) => {
             crate::page::interaction::click_coordinates(&ctx.cdp, &ctx.cdp_session_id, cx, cy).await?;
             info!(wid = %ctx.wid, tid = %ctx.tid, x = cx, y = cy, "click by coordinates");
         }
-        _ => return Err(BkError::InvalidRequest("click requires 'index' or both 'x' and 'y' params".into())),
+        _ => return Err(BkError::InvalidRequest("click requires 'ref', 'index', or both 'x' and 'y' params".into())),
     }
 
     touch_workspace(state, &ctx.wid);
@@ -41,16 +41,15 @@ handler!(handle_type, do_type(req, state));
 async fn do_type(req: &Request, state: &Arc<DaemonState>) -> Result<Response, BkError> {
     let ctx = resolve_context(req, state, "type")?;
 
-    let index = req.params.get("index").and_then(|v| v.as_u64()).map(|v| v as usize)
-        .ok_or_else(|| BkError::InvalidRequest("type requires 'index' param".into()))?;
+    let target = parse_element_target(&req.params)
+        .ok_or_else(|| BkError::InvalidRequest("type requires 'ref' or 'index' param".into()))?;
     let text = req.params.get("text").and_then(|v| v.as_str())
         .ok_or_else(|| BkError::InvalidRequest("type requires 'text' param".into()))?;
     let clear = req.params.get("clear").and_then(|v| v.as_bool()).unwrap_or(false);
 
-    let elements = crate::page::state::get_page_state(&ctx.cdp, &ctx.cdp_session_id).await?;
-    crate::page::interaction::type_text(&ctx.cdp, &ctx.cdp_session_id, &elements, index, text, clear).await?;
+    crate::page::interaction::type_text_by_target(&ctx.cdp, &ctx.cdp_session_id, &target, text, clear).await?;
     touch_workspace(state, &ctx.wid);
-    info!(wid = %ctx.wid, tid = %ctx.tid, index = index, clear = clear, "typed text");
+    info!(wid = %ctx.wid, tid = %ctx.tid, clear = clear, "typed text");
     Ok(Response::ok(json!({ "wid": ctx.wid, "tid": ctx.tid, "status": "typed", "clear": clear })))
 }
 
@@ -61,21 +60,20 @@ async fn do_scroll(req: &Request, state: &Arc<DaemonState>) -> Result<Response, 
 
     let direction = req.params.get("direction").and_then(|v| v.as_str()).unwrap_or("down");
     let amount = req.params.get("amount").and_then(|v| v.as_f64());
-    let index = req.params.get("index").and_then(|v| v.as_u64()).map(|v| v as usize);
     let selector = req.params.get("selector").and_then(|v| v.as_str());
+    let target = parse_element_target(&req.params);
 
-    // Priority: selector/index (scroll to element) > direction (+amount)
+    // Priority: selector > ref/index (scroll to element) > direction (+amount)
     if let Some(sel) = selector {
         crate::page::interaction::scroll_to_element_by_selector(&ctx.cdp, &ctx.cdp_session_id, sel).await?;
         touch_workspace(state, &ctx.wid);
         info!(wid = %ctx.wid, tid = %ctx.tid, selector = %sel, "scrolled to selector");
         Ok(Response::ok(json!({ "wid": ctx.wid, "tid": ctx.tid, "status": "scrolled", "target": "selector", "selector": sel })))
-    } else if let Some(idx) = index {
-        let elements = crate::page::state::get_page_state(&ctx.cdp, &ctx.cdp_session_id).await?;
-        crate::page::interaction::scroll_to_element_by_index(&ctx.cdp, &ctx.cdp_session_id, &elements, idx).await?;
+    } else if let Some(t) = target {
+        crate::page::interaction::scroll_to_element_by_target(&ctx.cdp, &ctx.cdp_session_id, &t).await?;
         touch_workspace(state, &ctx.wid);
-        info!(wid = %ctx.wid, tid = %ctx.tid, index = idx, "scrolled to element");
-        Ok(Response::ok(json!({ "wid": ctx.wid, "tid": ctx.tid, "status": "scrolled", "target": "index", "index": idx })))
+        info!(wid = %ctx.wid, tid = %ctx.tid, "scrolled to element by target");
+        Ok(Response::ok(json!({ "wid": ctx.wid, "tid": ctx.tid, "status": "scrolled", "target": "element" })))
     } else {
         crate::page::interaction::scroll_page(&ctx.cdp, &ctx.cdp_session_id, direction, amount).await?;
         touch_workspace(state, &ctx.wid);
@@ -89,15 +87,14 @@ handler!(handle_act_select, do_act_select(req, state));
 async fn do_act_select(req: &Request, state: &Arc<DaemonState>) -> Result<Response, BkError> {
     let ctx = resolve_context(req, state, "act.select")?;
 
-    let index = req.params.get("index").and_then(|v| v.as_u64()).map(|v| v as usize)
-        .ok_or_else(|| BkError::InvalidRequest("act.select requires 'index' param".into()))?;
+    let target = parse_element_target(&req.params)
+        .ok_or_else(|| BkError::InvalidRequest("act.select requires 'ref' or 'index' param".into()))?;
     let value = req.params.get("value").and_then(|v| v.as_str())
         .ok_or_else(|| BkError::InvalidRequest("act.select requires 'value' param".into()))?;
 
-    let elements = crate::page::state::get_page_state(&ctx.cdp, &ctx.cdp_session_id).await?;
-    let result = crate::page::interaction::select_option(&ctx.cdp, &ctx.cdp_session_id, &elements, index, value).await?;
+    let result = crate::page::interaction::select_by_target(&ctx.cdp, &ctx.cdp_session_id, &target, value).await?;
     touch_workspace(state, &ctx.wid);
-    info!(wid = %ctx.wid, tid = %ctx.tid, index = index, value = %value, "selected option");
+    info!(wid = %ctx.wid, tid = %ctx.tid, value = %value, "selected option");
     Ok(Response::ok(json!({ "wid": ctx.wid, "tid": ctx.tid, "status": "selected", "value": value, "detail": result })))
 }
 
@@ -106,13 +103,12 @@ handler!(handle_act_hover, do_act_hover(req, state));
 async fn do_act_hover(req: &Request, state: &Arc<DaemonState>) -> Result<Response, BkError> {
     let ctx = resolve_context(req, state, "act.hover")?;
 
-    let index = req.params.get("index").and_then(|v| v.as_u64()).map(|v| v as usize)
-        .ok_or_else(|| BkError::InvalidRequest("act.hover requires 'index' param".into()))?;
+    let target = parse_element_target(&req.params)
+        .ok_or_else(|| BkError::InvalidRequest("act.hover requires 'ref' or 'index' param".into()))?;
 
-    let elements = crate::page::state::get_page_state(&ctx.cdp, &ctx.cdp_session_id).await?;
-    crate::page::interaction::hover_element(&ctx.cdp, &ctx.cdp_session_id, &elements, index).await?;
+    crate::page::interaction::hover_by_target(&ctx.cdp, &ctx.cdp_session_id, &target).await?;
     touch_workspace(state, &ctx.wid);
-    info!(wid = %ctx.wid, tid = %ctx.tid, index = index, "hovered");
+    info!(wid = %ctx.wid, tid = %ctx.tid, "hovered");
     Ok(Response::ok(json!({ "wid": ctx.wid, "tid": ctx.tid, "status": "hovered" })))
 }
 
@@ -121,13 +117,12 @@ handler!(handle_act_focus, do_act_focus(req, state));
 async fn do_act_focus(req: &Request, state: &Arc<DaemonState>) -> Result<Response, BkError> {
     let ctx = resolve_context(req, state, "act.focus")?;
 
-    let index = req.params.get("index").and_then(|v| v.as_u64()).map(|v| v as usize)
-        .ok_or_else(|| BkError::InvalidRequest("act.focus requires 'index' param".into()))?;
+    let target = parse_element_target(&req.params)
+        .ok_or_else(|| BkError::InvalidRequest("act.focus requires 'ref' or 'index' param".into()))?;
 
-    let elements = crate::page::state::get_page_state(&ctx.cdp, &ctx.cdp_session_id).await?;
-    crate::page::interaction::focus_element(&ctx.cdp, &ctx.cdp_session_id, &elements, index).await?;
+    crate::page::interaction::focus_by_target(&ctx.cdp, &ctx.cdp_session_id, &target).await?;
     touch_workspace(state, &ctx.wid);
-    info!(wid = %ctx.wid, tid = %ctx.tid, index = index, "focused");
+    info!(wid = %ctx.wid, tid = %ctx.tid, "focused");
     Ok(Response::ok(json!({ "wid": ctx.wid, "tid": ctx.tid, "status": "focused" })))
 }
 
@@ -136,13 +131,12 @@ handler!(handle_act_dropdown_options, do_act_dropdown_options(req, state));
 async fn do_act_dropdown_options(req: &Request, state: &Arc<DaemonState>) -> Result<Response, BkError> {
     let ctx = resolve_context(req, state, "act.dropdown_options")?;
 
-    let index = req.params.get("index").and_then(|v| v.as_u64()).map(|v| v as usize)
-        .ok_or_else(|| BkError::InvalidRequest("act.dropdown_options requires 'index' param".into()))?;
+    let target = parse_element_target(&req.params)
+        .ok_or_else(|| BkError::InvalidRequest("act.dropdown_options requires 'ref' or 'index' param".into()))?;
 
-    let elements = crate::page::state::get_page_state(&ctx.cdp, &ctx.cdp_session_id).await?;
-    let result = crate::page::interaction::dropdown_options(&ctx.cdp, &ctx.cdp_session_id, &elements, index).await?;
+    let result = crate::page::interaction::dropdown_options_by_target(&ctx.cdp, &ctx.cdp_session_id, &target).await?;
     touch_workspace(state, &ctx.wid);
-    info!(wid = %ctx.wid, tid = %ctx.tid, index = index, "dropdown_options");
+    info!(wid = %ctx.wid, tid = %ctx.tid, "dropdown_options");
     Ok(Response::ok(result))
 }
 
@@ -157,18 +151,26 @@ async fn do_act_fill(req: &Request, state: &Arc<DaemonState>) -> Result<Response
 
     let mut fields = Vec::with_capacity(fields_arr.len());
     for item in fields_arr {
-        let index = item.get("index").and_then(|v| v.as_u64()).map(|v| v as usize)
-            .ok_or_else(|| BkError::InvalidRequest("each fill field requires 'index' (number)".into()))?;
+        let target = if let Some(r) = item.get("ref").and_then(|v| v.as_i64()) {
+            ElementTarget::Ref(r)
+        } else if let Some(i) = item.get("index").and_then(|v| v.as_u64()) {
+            ElementTarget::Index(i as usize)
+        } else {
+            return Err(BkError::InvalidRequest("each fill field requires 'ref' (number) or 'index' (number)".into()));
+        };
         let value = item.get("value").and_then(|v| v.as_str())
             .ok_or_else(|| BkError::InvalidRequest("each fill field requires 'value' (string)".into()))?;
-        fields.push(crate::page::interaction::FillField { index, value: value.to_string() });
+        fields.push(crate::page::interaction::FillFieldTarget {
+            target,
+            value: value.to_string(),
+        });
     }
 
     if fields.is_empty() {
         return Err(BkError::InvalidRequest("act.fill requires at least one field".into()));
     }
 
-    let results = crate::page::interaction::fill_fields(&ctx.cdp, &ctx.cdp_session_id, &fields).await?;
+    let results = crate::page::interaction::fill_fields_by_target(&ctx.cdp, &ctx.cdp_session_id, &fields).await?;
     touch_workspace(state, &ctx.wid);
 
     let has_errors = results.iter().any(|r| r.status == "error");
@@ -186,7 +188,7 @@ handler!(handle_act_upload, do_act_upload(req, state));
 async fn do_act_upload(req: &Request, state: &Arc<DaemonState>) -> Result<Response, BkError> {
     let ctx = resolve_context(req, state, "act.upload")?;
 
-    let index = req.params.get("index").and_then(|v| v.as_u64()).map(|v| v as usize);
+    let target = parse_element_target(&req.params);
     let selector = req.params.get("selector").and_then(|v| v.as_str());
 
     let files: Vec<String> = req.params.get("files")
@@ -198,17 +200,16 @@ async fn do_act_upload(req: &Request, state: &Arc<DaemonState>) -> Result<Respon
         return Err(BkError::InvalidRequest("act.upload requires at least one file path".into()));
     }
 
-    match (index, selector) {
-        (Some(idx), _) => {
-            let elements = crate::page::state::get_page_state(&ctx.cdp, &ctx.cdp_session_id).await?;
-            crate::page::interaction::upload_files_by_index(&ctx.cdp, &ctx.cdp_session_id, &elements, idx, &files).await?;
-            info!(wid = %ctx.wid, tid = %ctx.tid, index = idx, count = files.len(), "upload by index");
+    match (target, selector) {
+        (Some(t), _) => {
+            crate::page::interaction::upload_files_by_target(&ctx.cdp, &ctx.cdp_session_id, &t, &files).await?;
+            info!(wid = %ctx.wid, tid = %ctx.tid, count = files.len(), "upload by target");
         }
         (None, Some(sel)) => {
             crate::page::interaction::upload_files_by_selector(&ctx.cdp, &ctx.cdp_session_id, sel, &files).await?;
             info!(wid = %ctx.wid, tid = %ctx.tid, selector = %sel, count = files.len(), "upload by selector");
         }
-        _ => return Err(BkError::InvalidRequest("act.upload requires 'index' or 'selector' param".into())),
+        _ => return Err(BkError::InvalidRequest("act.upload requires 'ref', 'index', or 'selector' param".into())),
     }
 
     touch_workspace(state, &ctx.wid);

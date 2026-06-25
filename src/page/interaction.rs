@@ -7,6 +7,7 @@ use cdpkit::CDP;
 use crate::error::BkError;
 use crate::page::ElementInfo;
 use crate::page::exception_message;
+use crate::page::element_ref::{ElementTarget, resolve_element};
 
 /// Validate that `index` is within the element list and return a reference.
 fn get_element(elements: &[ElementInfo], index: usize) -> Result<&ElementInfo, BkError> {
@@ -701,7 +702,12 @@ pub struct FillField {
 /// Result of filling a single field in a batch fill operation.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct FillFieldResult {
-    pub index: usize,
+    /// Element index (present when target was index-based).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub index: Option<usize>,
+    /// Element ref / backendNodeId (present when target was ref-based).
+    #[serde(rename = "ref", skip_serializing_if = "Option::is_none")]
+    pub element_ref: Option<i64>,
     pub status: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
@@ -892,6 +898,448 @@ fn validate_file_paths(files: &[String]) -> Result<(), BkError> {
     Ok(())
 }
 
+// ── Ref-based (ElementTarget) interaction functions ─────────────────────────
+//
+// These accept an ElementTarget (Ref or Index) and use the unified element
+// resolver (element_ref.rs) to get coordinates and objectId. They complement
+// the existing index-only functions which remain for backward compatibility.
+
+/// Click an element by ElementTarget (ref or index).
+///
+/// Resolves the element to coordinates, then dispatches mouse events.
+pub async fn click_element_by_target(
+    cdp: &Arc<CDP>,
+    session_id: &str,
+    target: &ElementTarget,
+) -> Result<(), BkError> {
+    let resolved = resolve_element(cdp, session_id, target).await?;
+    click_at(cdp, session_id, resolved.center.0, resolved.center.1).await
+}
+
+/// Type text into an element by ElementTarget.
+///
+/// Resolves the element, clicks to focus, optionally clears, then inserts text.
+pub async fn type_text_by_target(
+    cdp: &Arc<CDP>,
+    session_id: &str,
+    target: &ElementTarget,
+    text: &str,
+    clear: bool,
+) -> Result<(), BkError> {
+    let resolved = resolve_element(cdp, session_id, target).await?;
+    let session = cdp.session(session_id);
+
+    // Click to focus
+    click_at(cdp, session_id, resolved.center.0, resolved.center.1).await?;
+
+    // Clear if requested
+    if clear {
+        clear_by_object_id(cdp, session_id, &resolved.object_id).await?;
+    }
+
+    // Insert text
+    cdpkit::input::methods::InsertText::new(text)
+        .send(&session)
+        .await?;
+
+    Ok(())
+}
+
+/// Hover over an element by ElementTarget.
+pub async fn hover_by_target(
+    cdp: &Arc<CDP>,
+    session_id: &str,
+    target: &ElementTarget,
+) -> Result<(), BkError> {
+    let resolved = resolve_element(cdp, session_id, target).await?;
+    let session = cdp.session(session_id);
+
+    cdpkit::input::methods::DispatchMouseEvent::new("mouseMoved", resolved.center.0, resolved.center.1)
+        .send(&session)
+        .await?;
+
+    Ok(())
+}
+
+/// Focus an element by ElementTarget.
+pub async fn focus_by_target(
+    cdp: &Arc<CDP>,
+    session_id: &str,
+    target: &ElementTarget,
+) -> Result<(), BkError> {
+    let resolved = resolve_element(cdp, session_id, target).await?;
+    let session = cdp.session(session_id);
+
+    cdpkit::runtime::methods::CallFunctionOn::new("function() { this.focus(); }")
+        .with_object_id(resolved.object_id)
+        .send(&session)
+        .await?;
+
+    Ok(())
+}
+
+/// Select a dropdown option by ElementTarget.
+pub async fn select_by_target(
+    cdp: &Arc<CDP>,
+    session_id: &str,
+    target: &ElementTarget,
+    value: &str,
+) -> Result<serde_json::Value, BkError> {
+    let resolved = resolve_element(cdp, session_id, target).await?;
+    let session = cdp.session(session_id);
+
+    let json_value = serde_json::to_string(value)
+        .map_err(|e| BkError::Other(format!("failed to serialize value: {}", e)))?;
+
+    let js = format!(
+        r#"function() {{
+    const el = this;
+    if (el.tagName.toLowerCase() !== 'select') return JSON.stringify({{error: 'element is not a select'}});
+    const target = {json_value};
+    const options = Array.from(el.options);
+    const available = options.map(o => ({{value: o.value, text: o.textContent.trim(), selected: o.selected}}));
+    let found = options.find(o => o.value === target);
+    if (!found) found = options.find(o => o.textContent.trim() === target);
+    if (!found) return JSON.stringify({{error: 'no matching option', available_options: available}});
+    el.value = found.value;
+    el.dispatchEvent(new Event('change', {{bubbles: true}}));
+    el.dispatchEvent(new Event('input', {{bubbles: true}}));
+    return JSON.stringify({{ok: true, selected_value: found.value, selected_text: found.textContent.trim()}});
+}}"#
+    );
+
+    let resp = cdpkit::runtime::methods::CallFunctionOn::new(&js)
+        .with_object_id(resolved.object_id)
+        .with_return_by_value(true)
+        .send(&session)
+        .await?;
+
+    if let Some(details) = &resp.exception_details {
+        return Err(BkError::JsError(format!("act.select: {}", exception_message(details))));
+    }
+
+    let json_str = resp
+        .result
+        .value
+        .as_ref()
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| BkError::Other("act.select: no value returned".into()))?;
+
+    let result: serde_json::Value = serde_json::from_str(json_str)
+        .map_err(|e| BkError::Other(format!("act.select: parse result: {}", e)))?;
+
+    if let Some(err) = result.get("error").and_then(|v| v.as_str()) {
+        if let Some(available) = result.get("available_options") {
+            return Err(BkError::Other(format!(
+                "act.select: {}\navailable_options: {}",
+                err,
+                serde_json::to_string_pretty(available).unwrap_or_default()
+            )));
+        }
+        return Err(BkError::Other(format!("act.select: {}", err)));
+    }
+
+    Ok(result)
+}
+
+/// Scroll an element into view by ElementTarget.
+pub async fn scroll_to_element_by_target(
+    cdp: &Arc<CDP>,
+    session_id: &str,
+    target: &ElementTarget,
+) -> Result<(), BkError> {
+    // resolve_element already calls ScrollIntoViewIfNeeded, so this is sufficient
+    let _resolved = resolve_element(cdp, session_id, target).await?;
+    Ok(())
+}
+
+/// Get dropdown options by ElementTarget.
+pub async fn dropdown_options_by_target(
+    cdp: &Arc<CDP>,
+    session_id: &str,
+    target: &ElementTarget,
+) -> Result<serde_json::Value, BkError> {
+    let resolved = resolve_element(cdp, session_id, target).await?;
+    let session = cdp.session(session_id);
+
+    let js = r#"function() {
+    const el = this;
+    if (el.tagName.toLowerCase() !== 'select') return JSON.stringify({error: 'element is not a select'});
+    const options = Array.from(el.options).map(o => ({value: o.value, text: o.textContent.trim(), selected: o.selected}));
+    return JSON.stringify({ok: true, options: options});
+}"#;
+
+    let resp = cdpkit::runtime::methods::CallFunctionOn::new(js)
+        .with_object_id(resolved.object_id)
+        .with_return_by_value(true)
+        .send(&session)
+        .await?;
+
+    if let Some(details) = &resp.exception_details {
+        return Err(BkError::JsError(format!("act.dropdown_options: {}", exception_message(details))));
+    }
+
+    let json_str = resp
+        .result
+        .value
+        .as_ref()
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| BkError::Other("act.dropdown_options: no value returned".into()))?;
+
+    let result: serde_json::Value = serde_json::from_str(json_str)
+        .map_err(|e| BkError::Other(format!("act.dropdown_options: parse result: {}", e)))?;
+
+    if let Some(err) = result.get("error").and_then(|v| v.as_str()) {
+        return Err(BkError::Other(format!("act.dropdown_options: {}", err)));
+    }
+
+    Ok(result)
+}
+
+/// Upload files to a file input element by ElementTarget.
+pub async fn upload_files_by_target(
+    cdp: &Arc<CDP>,
+    session_id: &str,
+    target: &ElementTarget,
+    files: &[String],
+) -> Result<(), BkError> {
+    validate_file_paths(files)?;
+
+    let resolved = resolve_element(cdp, session_id, target).await?;
+    let session = cdp.session(session_id);
+
+    // Validate element is input[type=file] via callFunctionOn
+    let check_js = r#"function() {
+    if (this.tagName.toLowerCase() !== 'input' || this.type.toLowerCase() !== 'file')
+        throw new Error('element is not an input[type=file], got: <' + this.tagName.toLowerCase() + ' type="' + (this.type || '') + '">');
+    return 'ok';
+}"#;
+
+    let check_resp = cdpkit::runtime::methods::CallFunctionOn::new(check_js)
+        .with_object_id(resolved.object_id.clone())
+        .with_return_by_value(true)
+        .send(&session)
+        .await?;
+
+    if let Some(details) = &check_resp.exception_details {
+        return Err(BkError::Other(format!("upload: {}", exception_message(details))));
+    }
+
+    // Set files
+    cdpkit::dom::methods::SetFileInputFiles::new(files.to_vec())
+        .with_object_id(resolved.object_id)
+        .send(&session)
+        .await?;
+
+    Ok(())
+}
+
+/// A single field assignment for batch fill that supports both index and ref.
+#[derive(Debug, Clone)]
+pub struct FillFieldTarget {
+    pub target: ElementTarget,
+    pub value: String,
+}
+
+/// Fill multiple form fields using ElementTargets.
+///
+/// For ref-based fields, resolves each element individually and applies fill logic
+/// via callFunctionOn. For index-based fields, uses the existing batch JS approach.
+pub async fn fill_fields_by_target(
+    cdp: &Arc<CDP>,
+    session_id: &str,
+    fields: &[FillFieldTarget],
+) -> Result<Vec<FillFieldResult>, BkError> {
+    if fields.is_empty() {
+        return Ok(vec![]);
+    }
+
+    let mut results = Vec::with_capacity(fields.len());
+
+    for field in fields {
+        let field_result = fill_single_by_target(cdp, session_id, &field.target, &field.value).await;
+        let (status, error) = match field_result {
+            Ok(()) => ("ok".to_string(), None),
+            Err(e) => ("error".to_string(), Some(e.to_string())),
+        };
+        let (index, element_ref) = match &field.target {
+            ElementTarget::Ref(r) => (None, Some(*r)),
+            ElementTarget::Index(i) => (Some(*i), None),
+        };
+        results.push(FillFieldResult { index, element_ref, status, error });
+    }
+
+    Ok(results)
+}
+
+/// Fill a single element by resolving its target and applying the appropriate fill strategy.
+async fn fill_single_by_target(
+    cdp: &Arc<CDP>,
+    session_id: &str,
+    target: &ElementTarget,
+    value: &str,
+) -> Result<(), BkError> {
+    let resolved = resolve_element(cdp, session_id, target).await?;
+    let session = cdp.session(session_id);
+
+    let json_value = serde_json::to_string(value)
+        .map_err(|e| BkError::Other(format!("fill: failed to serialize value: {}", e)))?;
+
+    let js = format!(
+        r#"function() {{
+    const el = this;
+    const value = {json_value};
+    const tag = el.tagName.toLowerCase();
+    const type = (el.type || '').toLowerCase();
+    if ((tag === 'input') && (type === 'checkbox' || type === 'radio')) {{
+        const want = ['true','1','on','yes'].includes(value.toLowerCase());
+        if (el.checked !== want) {{
+            el.checked = want;
+            el.dispatchEvent(new Event('click', {{bubbles: true}}));
+            el.dispatchEvent(new Event('change', {{bubbles: true}}));
+        }}
+        return 'ok';
+    }} else if (tag === 'select') {{
+        const options = Array.from(el.options);
+        let found = options.find(o => o.value === value);
+        if (!found) found = options.find(o => o.textContent.trim() === value);
+        if (!found) {{
+            const avail = options.map(o => o.value || o.textContent.trim()).join(', ');
+            throw new Error('no matching option for: ' + value + '. available: ' + avail);
+        }}
+        el.value = found.value;
+        el.dispatchEvent(new Event('change', {{bubbles: true}}));
+        el.dispatchEvent(new Event('input', {{bubbles: true}}));
+        return 'ok';
+    }} else if (tag === 'input' || tag === 'textarea') {{
+        el.focus();
+        const proto = tag === 'textarea' ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
+        const setter = Object.getOwnPropertyDescriptor(proto, 'value');
+        if (setter && setter.set) {{
+            setter.set.call(el, '');
+            el.dispatchEvent(new Event('input', {{bubbles: true}}));
+            setter.set.call(el, value);
+        }} else {{
+            el.value = '';
+            el.value = value;
+        }}
+        el.dispatchEvent(new Event('input', {{bubbles: true}}));
+        el.dispatchEvent(new Event('change', {{bubbles: true}}));
+        return 'ok';
+    }} else if (el.isContentEditable) {{
+        el.focus();
+        document.execCommand('selectAll', false, null);
+        document.execCommand('delete', false, null);
+        document.execCommand('insertText', false, value);
+        return 'ok';
+    }}
+    throw new Error('unsupported element type: <' + tag + ' type=' + type + '>');
+}}"#
+    );
+
+    let resp = cdpkit::runtime::methods::CallFunctionOn::new(&js)
+        .with_object_id(resolved.object_id)
+        .with_return_by_value(true)
+        .send(&session)
+        .await?;
+
+    if let Some(details) = &resp.exception_details {
+        return Err(BkError::JsError(format!("fill: {}", exception_message(details))));
+    }
+
+    Ok(())
+}
+
+/// Clear element content by objectId (used internally by type_text_by_target).
+async fn clear_by_object_id(
+    cdp: &Arc<CDP>,
+    session_id: &str,
+    object_id: &str,
+) -> Result<(), BkError> {
+    let session = cdp.session(session_id);
+
+    let js = r#"function() {
+    const el = this;
+    const tag = el.tagName.toLowerCase();
+    if (tag === 'input' || tag === 'textarea') {
+        el.focus();
+        el.select();
+        const nativeInputValueSetter = Object.getOwnPropertyDescriptor(
+            tag === 'textarea' ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype,
+            'value'
+        );
+        if (nativeInputValueSetter && nativeInputValueSetter.set) {
+            nativeInputValueSetter.set.call(el, '');
+        } else {
+            el.value = '';
+        }
+        el.dispatchEvent(new Event('input', {bubbles: true}));
+        el.dispatchEvent(new Event('change', {bubbles: true}));
+        return 'ok';
+    } else if (el.isContentEditable) {
+        el.focus();
+        document.execCommand('selectAll', false, null);
+        document.execCommand('delete', false, null);
+        return 'ok';
+    }
+    return 'element is not clearable';
+}"#;
+
+    let resp = cdpkit::runtime::methods::CallFunctionOn::new(js)
+        .with_object_id(object_id.to_string())
+        .with_return_by_value(true)
+        .send(&session)
+        .await?;
+
+    if let Some(details) = &resp.exception_details {
+        return Err(BkError::JsError(format!("clear: {}", exception_message(details))));
+    }
+
+    let result = resp
+        .result
+        .value
+        .as_ref()
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown");
+
+    if result != "ok" {
+        return Err(BkError::Other(format!("clear: {}", result)));
+    }
+
+    Ok(())
+}
+
+/// Parse a `--set` argument that supports both index and ref formats.
+///
+/// Formats:
+/// - `<index>=<value>` — legacy index-based (e.g. `3=hello`)
+/// - `ref:<backendNodeId>=<value>` — ref-based (e.g. `ref:42=hello`)
+pub fn parse_fill_set_target(s: &str) -> Result<FillFieldTarget, String> {
+    if let Some(rest) = s.strip_prefix("ref:") {
+        let eq_pos = rest.find('=').ok_or_else(|| {
+            format!("invalid --set format '{}': expected ref:<id>=<value>", s)
+        })?;
+        let id_str = &rest[..eq_pos];
+        let value = &rest[eq_pos + 1..];
+        let id: i64 = id_str.parse().map_err(|_| {
+            format!(
+                "invalid --set format '{}': ref id '{}' is not a valid number",
+                s, id_str
+            )
+        })?;
+        Ok(FillFieldTarget {
+            target: ElementTarget::Ref(id),
+            value: value.to_string(),
+        })
+    } else {
+        let field = parse_fill_set(s)?;
+        Ok(FillFieldTarget {
+            target: ElementTarget::Index(field.index),
+            value: field.value,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -909,6 +1357,7 @@ mod tests {
                 height: 40.0,
                 href: None,
                 placeholder: None,
+                backend_node_id: None,
             },
             ElementInfo {
                 index: 1,
@@ -920,6 +1369,7 @@ mod tests {
                 height: 30.0,
                 href: None,
                 placeholder: Some("Name".into()),
+                backend_node_id: None,
             },
         ];
 
@@ -942,6 +1392,7 @@ mod tests {
             height: 20.0,
             href: Some("https://example.com".into()),
             placeholder: None,
+            backend_node_id: None,
         }];
 
         let err = get_element(&elements, 5).unwrap_err();
@@ -971,6 +1422,7 @@ mod tests {
             height: 40.0,
             href: None,
             placeholder: None,
+            backend_node_id: None,
         };
         let (cx, cy) = element_center(&el);
         assert!((cx - 140.0).abs() < f64::EPSILON);
@@ -989,6 +1441,7 @@ mod tests {
             height: 10.0,
             href: None,
             placeholder: None,
+            backend_node_id: None,
         };
         let (cx, cy) = element_center(&el);
         assert!((cx - 5.0).abs() < f64::EPSILON);
@@ -1505,7 +1958,8 @@ mod tests {
     #[test]
     fn fill_result_serialization() {
         let result = FillFieldResult {
-            index: 3,
+            index: Some(3),
+            element_ref: None,
             status: "ok".to_string(),
             error: None,
         };
@@ -1513,9 +1967,21 @@ mod tests {
         assert!(json.contains("\"index\":3"), "got: {}", json);
         assert!(json.contains("\"status\":\"ok\""), "got: {}", json);
         assert!(!json.contains("error"), "should skip None error: {}", json);
+        assert!(!json.contains("\"ref\""), "should skip None ref: {}", json);
+
+        let result_ref = FillFieldResult {
+            index: None,
+            element_ref: Some(42),
+            status: "ok".to_string(),
+            error: None,
+        };
+        let json = serde_json::to_string(&result_ref).unwrap();
+        assert!(json.contains("\"ref\":42"), "got: {}", json);
+        assert!(!json.contains("\"index\""), "should skip None index: {}", json);
 
         let result_err = FillFieldResult {
-            index: 5,
+            index: Some(5),
+            element_ref: None,
             status: "error".to_string(),
             error: Some("not found".to_string()),
         };
@@ -1525,14 +1991,58 @@ mod tests {
 
     #[test]
     fn fill_result_deserialization() {
-        let json = r#"[{"index":0,"status":"ok"},{"index":1,"status":"error","error":"element not found"}]"#;
+        let json = r#"[{"index":0,"status":"ok"},{"ref":99,"status":"error","error":"element not found"}]"#;
         let results: Vec<FillFieldResult> = serde_json::from_str(json).unwrap();
         assert_eq!(results.len(), 2);
-        assert_eq!(results[0].index, 0);
+        assert_eq!(results[0].index, Some(0));
+        assert!(results[0].element_ref.is_none());
         assert_eq!(results[0].status, "ok");
         assert!(results[0].error.is_none());
-        assert_eq!(results[1].index, 1);
+        assert!(results[1].index.is_none());
+        assert_eq!(results[1].element_ref, Some(99));
         assert_eq!(results[1].status, "error");
         assert_eq!(results[1].error.as_deref(), Some("element not found"));
+    }
+
+    // ── Ref-based fill parsing tests ────────────────────────────────────
+
+    #[test]
+    fn parse_fill_set_target_index_basic() {
+        let f = parse_fill_set_target("3=hello").unwrap();
+        assert!(matches!(f.target, ElementTarget::Index(3)));
+        assert_eq!(f.value, "hello");
+    }
+
+    #[test]
+    fn parse_fill_set_target_ref_basic() {
+        let f = parse_fill_set_target("ref:42=world").unwrap();
+        assert!(matches!(f.target, ElementTarget::Ref(42)));
+        assert_eq!(f.value, "world");
+    }
+
+    #[test]
+    fn parse_fill_set_target_ref_value_with_equals() {
+        let f = parse_fill_set_target("ref:100=a=b=c").unwrap();
+        assert!(matches!(f.target, ElementTarget::Ref(100)));
+        assert_eq!(f.value, "a=b=c");
+    }
+
+    #[test]
+    fn parse_fill_set_target_ref_empty_value() {
+        let f = parse_fill_set_target("ref:7=").unwrap();
+        assert!(matches!(f.target, ElementTarget::Ref(7)));
+        assert_eq!(f.value, "");
+    }
+
+    #[test]
+    fn parse_fill_set_target_ref_invalid_id() {
+        let err = parse_fill_set_target("ref:abc=value").unwrap_err();
+        assert!(err.contains("not a valid number"), "got: {}", err);
+    }
+
+    #[test]
+    fn parse_fill_set_target_ref_no_equals() {
+        let err = parse_fill_set_target("ref:42value").unwrap_err();
+        assert!(err.contains("expected ref:<id>=<value>"), "got: {}", err);
     }
 }
