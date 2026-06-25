@@ -92,6 +92,6 @@ async fn do_nav_wait(req: &Request, state: &Arc<DaemonState>) -> Result<Response
         crate::page::navigation::PAGE_LOAD_TIMEOUT,
     ).await?;
     touch_workspace(state, &ctx.wid);
-    info!(wid = %ctx.wid, "page load complete");
+    info!(wid = %ctx.wid, "page load complete (nav.wait)");
     Ok(Response::ok(json!({ "wid": ctx.wid, "status": "loaded" })))
 }

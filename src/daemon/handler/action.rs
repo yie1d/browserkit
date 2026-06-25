@@ -45,23 +45,43 @@ async fn do_type(req: &Request, state: &Arc<DaemonState>) -> Result<Response, Bk
         .ok_or_else(|| BkError::InvalidRequest("type requires 'index' param".into()))?;
     let text = req.params.get("text").and_then(|v| v.as_str())
         .ok_or_else(|| BkError::InvalidRequest("type requires 'text' param".into()))?;
+    let clear = req.params.get("clear").and_then(|v| v.as_bool()).unwrap_or(false);
 
     let elements = crate::page::state::get_page_state(&ctx.cdp, &ctx.cdp_session_id).await?;
-    crate::page::interaction::type_text(&ctx.cdp, &ctx.cdp_session_id, &elements, index, text).await?;
+    crate::page::interaction::type_text(&ctx.cdp, &ctx.cdp_session_id, &elements, index, text, clear).await?;
     touch_workspace(state, &ctx.wid);
-    info!(wid = %ctx.wid, tid = %ctx.tid, index = index, "typed text");
-    Ok(Response::ok(json!({ "wid": ctx.wid, "tid": ctx.tid, "status": "typed" })))
+    info!(wid = %ctx.wid, tid = %ctx.tid, index = index, clear = clear, "typed text");
+    Ok(Response::ok(json!({ "wid": ctx.wid, "tid": ctx.tid, "status": "typed", "clear": clear })))
 }
 
 handler!(handle_scroll, do_scroll(req, state));
 
 async fn do_scroll(req: &Request, state: &Arc<DaemonState>) -> Result<Response, BkError> {
     let ctx = resolve_context(req, state, "scroll")?;
+
     let direction = req.params.get("direction").and_then(|v| v.as_str()).unwrap_or("down");
-    crate::page::interaction::scroll_page(&ctx.cdp, &ctx.cdp_session_id, direction).await?;
-    touch_workspace(state, &ctx.wid);
-    info!(wid = %ctx.wid, tid = %ctx.tid, direction = %direction, "scrolled");
-    Ok(Response::ok(json!({ "wid": ctx.wid, "tid": ctx.tid, "status": "scrolled", "direction": direction })))
+    let amount = req.params.get("amount").and_then(|v| v.as_f64());
+    let index = req.params.get("index").and_then(|v| v.as_u64()).map(|v| v as usize);
+    let selector = req.params.get("selector").and_then(|v| v.as_str());
+
+    // Priority: selector/index (scroll to element) > direction (+amount)
+    if let Some(sel) = selector {
+        crate::page::interaction::scroll_to_element_by_selector(&ctx.cdp, &ctx.cdp_session_id, sel).await?;
+        touch_workspace(state, &ctx.wid);
+        info!(wid = %ctx.wid, tid = %ctx.tid, selector = %sel, "scrolled to selector");
+        Ok(Response::ok(json!({ "wid": ctx.wid, "tid": ctx.tid, "status": "scrolled", "target": "selector", "selector": sel })))
+    } else if let Some(idx) = index {
+        let elements = crate::page::state::get_page_state(&ctx.cdp, &ctx.cdp_session_id).await?;
+        crate::page::interaction::scroll_to_element_by_index(&ctx.cdp, &ctx.cdp_session_id, &elements, idx).await?;
+        touch_workspace(state, &ctx.wid);
+        info!(wid = %ctx.wid, tid = %ctx.tid, index = idx, "scrolled to element");
+        Ok(Response::ok(json!({ "wid": ctx.wid, "tid": ctx.tid, "status": "scrolled", "target": "index", "index": idx })))
+    } else {
+        crate::page::interaction::scroll_page(&ctx.cdp, &ctx.cdp_session_id, direction, amount).await?;
+        touch_workspace(state, &ctx.wid);
+        info!(wid = %ctx.wid, tid = %ctx.tid, direction = %direction, "scrolled");
+        Ok(Response::ok(json!({ "wid": ctx.wid, "tid": ctx.tid, "status": "scrolled", "direction": direction })))
+    }
 }
 
 handler!(handle_act_select, do_act_select(req, state));

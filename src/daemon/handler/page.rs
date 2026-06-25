@@ -116,7 +116,7 @@ async fn do_page_state(req: &Request, state: &Arc<DaemonState>) -> Result<Respon
     let ctx = resolve_context(req, state, "page.state")?;
 
     let with_screenshot = req.params.get("screenshot").and_then(|v| v.as_bool()).unwrap_or(false);
-    let elements = crate::page::state::get_page_state(&ctx.cdp, &ctx.cdp_session_id).await?;
+    let full_state = crate::page::state::get_full_page_state(&ctx.cdp, &ctx.cdp_session_id).await?;
 
     let screenshot_data = if with_screenshot {
         Some(crate::page::capture::capture_viewport(&ctx.cdp, &ctx.cdp_session_id).await?)
@@ -125,9 +125,15 @@ async fn do_page_state(req: &Request, state: &Arc<DaemonState>) -> Result<Respon
     };
 
     touch_workspace(state, &ctx.wid);
-    info!(wid = %ctx.wid, tid = %ctx.tid, elements = elements.len(), "page.state");
+    info!(wid = %ctx.wid, tid = %ctx.tid, elements = full_state.elements.len(), "page.state");
 
-    let mut result = json!({ "wid": ctx.wid, "tid": ctx.tid, "elements": elements });
+    let mut result = json!({
+        "wid": ctx.wid,
+        "tid": ctx.tid,
+        "elements": full_state.elements,
+        "page_text": full_state.page_text,
+        "page_info": full_state.page_info,
+    });
     if let Some(data) = screenshot_data { result["screenshot"] = json!(data); }
     Ok(Response::ok(result))
 }
@@ -148,4 +154,23 @@ async fn do_page_search(req: &Request, state: &Arc<DaemonState>) -> Result<Respo
     info!(wid = %ctx.wid, tid = %ctx.tid, text = %text, matches = matches.len(), "page.search");
 
     Ok(Response::ok(json!({ "wid": ctx.wid, "tid": ctx.tid, "matches": matches, "count": matches.len() })))
+}
+
+handler!(handle_page_wait, do_page_wait(req, state));
+
+async fn do_page_wait(req: &Request, state: &Arc<DaemonState>) -> Result<Response, BkError> {
+    let ctx = resolve_context(req, state, "page.wait")?;
+
+    let conditions = crate::page::wait::WaitConditions::from_params(&req.params)?;
+    let result = crate::page::wait::wait_for_conditions(&ctx.cdp, &ctx.cdp_session_id, &conditions).await?;
+
+    touch_workspace(state, &ctx.wid);
+    info!(wid = %ctx.wid, tid = %ctx.tid, elapsed_ms = result.elapsed_ms, "page.wait");
+
+    Ok(Response::ok(json!({
+        "wid": ctx.wid,
+        "tid": ctx.tid,
+        "elapsed_ms": result.elapsed_ms,
+        "conditions_met": result.conditions_met,
+    })))
 }

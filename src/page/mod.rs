@@ -3,6 +3,7 @@ pub mod capture;
 pub mod interaction;
 pub mod navigation;
 pub mod state;
+pub mod wait;
 
 use serde::{Deserialize, Serialize};
 
@@ -66,6 +67,56 @@ pub struct ElementInfo {
     pub href: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub placeholder: Option<String>,
+}
+
+/// Viewport, scroll position, and document dimensions.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PageInfo {
+    pub viewport: ViewportSize,
+    pub scroll: ScrollPosition,
+    pub document: DocumentSize,
+    /// Pixels above the current viewport (scroll_y).
+    pub pixels_above: f64,
+    /// Pixels below the current viewport.
+    pub pixels_below: f64,
+}
+
+/// Viewport dimensions.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ViewportSize {
+    pub width: f64,
+    pub height: f64,
+}
+
+/// Current scroll position.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScrollPosition {
+    pub x: f64,
+    pub y: f64,
+}
+
+/// Full document dimensions.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DocumentSize {
+    pub width: f64,
+    pub height: f64,
+}
+
+/// Page text content with truncation info.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PageText {
+    /// Visible text content (truncated to PAGE_TEXT_MAX_CHARS).
+    pub text: String,
+    /// Whether the text was truncated.
+    pub truncated: bool,
+}
+
+/// Full page state returned by `page.state` — elements + text + viewport info.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FullPageState {
+    pub elements: Vec<ElementInfo>,
+    pub page_text: PageText,
+    pub page_info: PageInfo,
 }
 
 #[cfg(test)]

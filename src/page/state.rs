@@ -5,7 +5,10 @@ use std::sync::Arc;
 use cdpkit::CDP;
 
 use crate::error::BkError;
-use crate::page::{exception_message, ElementInfo, SearchMatch};
+use crate::page::{exception_message, ElementInfo, FullPageState, SearchMatch};
+
+/// Maximum characters to include in `page_text` before truncation.
+pub const PAGE_TEXT_MAX_CHARS: usize = 2000;
 
 /// JavaScript snippet injected via `Runtime.evaluate` to discover all
 /// interactive elements on the page.
@@ -70,6 +73,94 @@ pub async fn get_page_state(
         serde_json::from_str(json_str).map_err(|e| BkError::Other(format!("page.state: failed to parse element list: {}", e)))?;
 
     Ok(elements)
+}
+
+/// JavaScript snippet that returns elements + page_text + page_info in one call.
+///
+/// Combines element discovery, visible text extraction, and viewport/scroll info
+/// into a single `Runtime.evaluate` round-trip for efficiency.
+const FULL_PAGE_STATE_JS: &str = r#"(() => {
+    const selectors = 'a, button, input, textarea, select, [role="button"], [onclick]';
+    const allEls = document.querySelectorAll(selectors);
+    const elements = [];
+    let index = 0;
+    for (const el of allEls) {
+        const rect = el.getBoundingClientRect();
+        if (rect.width === 0 || rect.height === 0) continue;
+        elements.push({
+            index: index++,
+            tag: el.tagName.toLowerCase(),
+            text: (el.textContent || '').trim().substring(0, 100),
+            x: rect.x,
+            y: rect.y,
+            width: rect.width,
+            height: rect.height,
+            href: el.href || null,
+            placeholder: el.placeholder || null,
+        });
+    }
+    const MAX_TEXT = 2000;
+    const rawText = (document.body && document.body.innerText) || '';
+    const truncated = rawText.length > MAX_TEXT;
+    const text = truncated ? rawText.substring(0, MAX_TEXT) : rawText;
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    const sx = window.scrollX || window.pageXOffset || 0;
+    const sy = window.scrollY || window.pageYOffset || 0;
+    const dw = Math.max(
+        document.documentElement.scrollWidth || 0,
+        document.body ? document.body.scrollWidth : 0
+    );
+    const dh = Math.max(
+        document.documentElement.scrollHeight || 0,
+        document.body ? document.body.scrollHeight : 0
+    );
+    const pixels_above = sy;
+    const pixels_below = Math.max(0, dh - sy - vh);
+    return JSON.stringify({
+        elements: elements,
+        page_text: { text: text, truncated: truncated },
+        page_info: {
+            viewport: { width: vw, height: vh },
+            scroll: { x: sx, y: sy },
+            document: { width: dw, height: dh },
+            pixels_above: pixels_above,
+            pixels_below: pixels_below,
+        },
+    });
+})()"#;
+
+/// Retrieve the full page state: interactive elements + visible text + viewport info.
+///
+/// All data is collected in a single `Runtime.evaluate` call for efficiency.
+pub async fn get_full_page_state(
+    cdp: &Arc<CDP>,
+    session_id: &str,
+) -> Result<FullPageState, BkError> {
+    let session = cdp.session(session_id);
+    let resp = cdpkit::runtime::methods::Evaluate::new(FULL_PAGE_STATE_JS)
+        .with_return_by_value(true)
+        .send(&session)
+        .await?;
+
+    if let Some(details) = &resp.exception_details {
+        return Err(BkError::Other(format!(
+            "page.state JS error: {}",
+            exception_message(details)
+        )));
+    }
+
+    let json_str = resp
+        .result
+        .value
+        .as_ref()
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| BkError::Other("page.state: no value returned from evaluate".into()))?;
+
+    let state: FullPageState = serde_json::from_str(json_str)
+        .map_err(|e| BkError::Other(format!("page.state: failed to parse full state: {}", e)))?;
+
+    Ok(state)
 }
 
 /// Build the JS snippet for searching text in the page body.
@@ -298,5 +389,89 @@ mod tests {
         assert!(!js.contains("JSON.parse"));
         // Check escaped form: \n, \t, \" inside the generated JS
         assert!(js.contains(r#"line1\nline2\ttab\"quote"#), "should escape properly: {}", js);
+    }
+
+    #[test]
+    fn full_page_state_deserializes_complete_response() {
+        let json_str = r#"{
+            "elements": [
+                {"index":0,"tag":"button","text":"Submit","x":10,"y":20,"width":80,"height":30,"href":null,"placeholder":null}
+            ],
+            "page_text": {
+                "text": "Hello world, this is page content.",
+                "truncated": false
+            },
+            "page_info": {
+                "viewport": {"width": 1280, "height": 720},
+                "scroll": {"x": 0, "y": 150},
+                "document": {"width": 1280, "height": 3000},
+                "pixels_above": 150,
+                "pixels_below": 2130
+            }
+        }"#;
+
+        let state: FullPageState = serde_json::from_str(json_str).unwrap();
+        assert_eq!(state.elements.len(), 1);
+        assert_eq!(state.elements[0].tag, "button");
+        assert_eq!(state.page_text.text, "Hello world, this is page content.");
+        assert!(!state.page_text.truncated);
+        assert_eq!(state.page_info.viewport.width, 1280.0);
+        assert_eq!(state.page_info.viewport.height, 720.0);
+        assert_eq!(state.page_info.scroll.x, 0.0);
+        assert_eq!(state.page_info.scroll.y, 150.0);
+        assert_eq!(state.page_info.document.width, 1280.0);
+        assert_eq!(state.page_info.document.height, 3000.0);
+        assert_eq!(state.page_info.pixels_above, 150.0);
+        assert_eq!(state.page_info.pixels_below, 2130.0);
+    }
+
+    #[test]
+    fn full_page_state_truncated_text() {
+        let json_str = r#"{
+            "elements": [],
+            "page_text": {
+                "text": "Short text that was actually truncated from a longer source...",
+                "truncated": true
+            },
+            "page_info": {
+                "viewport": {"width": 800, "height": 600},
+                "scroll": {"x": 0, "y": 0},
+                "document": {"width": 800, "height": 600},
+                "pixels_above": 0,
+                "pixels_below": 0
+            }
+        }"#;
+
+        let state: FullPageState = serde_json::from_str(json_str).unwrap();
+        assert!(state.elements.is_empty());
+        assert!(state.page_text.truncated);
+        assert_eq!(state.page_info.pixels_above, 0.0);
+        assert_eq!(state.page_info.pixels_below, 0.0);
+    }
+
+    #[test]
+    fn full_page_state_pixels_below_calculation() {
+        // pixels_below = max(0, doc_height - scroll_y - viewport_height)
+        // doc_height=2000, scroll_y=500, viewport_height=800 => pixels_below=700
+        let json_str = r#"{
+            "elements": [],
+            "page_text": {"text": "", "truncated": false},
+            "page_info": {
+                "viewport": {"width": 1024, "height": 800},
+                "scroll": {"x": 0, "y": 500},
+                "document": {"width": 1024, "height": 2000},
+                "pixels_above": 500,
+                "pixels_below": 700
+            }
+        }"#;
+
+        let state: FullPageState = serde_json::from_str(json_str).unwrap();
+        assert_eq!(state.page_info.pixels_above, 500.0);
+        assert_eq!(state.page_info.pixels_below, 700.0);
+    }
+
+    #[test]
+    fn page_text_max_chars_constant() {
+        assert_eq!(PAGE_TEXT_MAX_CHARS, 2000);
     }
 }

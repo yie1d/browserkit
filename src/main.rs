@@ -119,13 +119,25 @@ pub enum Command {
         /// Element index
         #[arg(short, long)]
         index: usize,
+        /// Clear existing content before typing
+        #[arg(long)]
+        clear: bool,
         /// Text to type
         text: String,
     },
     /// Scroll page
     Scroll {
-        /// Direction: up or down (default: down)
+        /// Direction: up, down, left, right, top, bottom (default: down)
         direction: Option<String>,
+        /// Scroll amount in pixels (overrides default 500px for directional scrolls)
+        #[arg(long)]
+        amount: Option<f64>,
+        /// Scroll to element by index (from page state)
+        #[arg(short, long)]
+        index: Option<usize>,
+        /// Scroll to element by CSS selector
+        #[arg(short, long)]
+        selector: Option<String>,
     },
     /// Select dropdown option
     Select {
@@ -368,7 +380,7 @@ pub enum NavAction {
 
 #[derive(Subcommand)]
 pub enum PageAction {
-    /// Get interactive elements
+    /// Get interactive elements + page text + viewport info
     State {
         /// Include viewport screenshot
         #[arg(long)]
@@ -378,6 +390,33 @@ pub enum PageAction {
     Search {
         /// Text to search
         text: String,
+    },
+    /// Wait for conditions on the page
+    Wait {
+        /// Fixed delay in milliseconds
+        #[arg(long)]
+        time: Option<u64>,
+        /// CSS selector to wait for (visible)
+        #[arg(long)]
+        selector: Option<String>,
+        /// Wait for text to appear
+        #[arg(long)]
+        text: Option<String>,
+        /// Wait for text to disappear
+        #[arg(long)]
+        text_gone: Option<String>,
+        /// Wait for URL to match (substring or glob)
+        #[arg(long)]
+        url: Option<String>,
+        /// Wait for load state (load, domcontentloaded)
+        #[arg(long)]
+        load_state: Option<String>,
+        /// Wait for JS expression to return truthy
+        #[arg(long, value_name = "EXPR")]
+        r#fn: Option<String>,
+        /// Timeout in milliseconds (default: 30000)
+        #[arg(long, default_value = "30000")]
+        timeout: u64,
     },
 }
 
@@ -781,6 +820,18 @@ async fn dispatch(cli: &Cli, client: &mut DaemonClient) -> Result<(), String> {
                     let resp = send_cmd(client, "page.search", json!({"wid": wid, "text": text})).await?;
                     print_response(&resp, fmt);
                 }
+                PageAction::Wait { time, selector, text, text_gone, url, load_state, r#fn, timeout } => {
+                    let mut params = json!({"wid": wid, "timeout": timeout});
+                    if let Some(t) = time { params["time"] = json!(t); }
+                    if let Some(s) = selector { params["selector"] = json!(s); }
+                    if let Some(t) = text { params["text"] = json!(t); }
+                    if let Some(t) = text_gone { params["text_gone"] = json!(t); }
+                    if let Some(u) = url { params["url"] = json!(u); }
+                    if let Some(l) = load_state { params["load_state"] = json!(l); }
+                    if let Some(f) = r#fn { params["fn"] = json!(f); }
+                    let resp = send_cmd(client, "page.wait", params).await?;
+                    print_response(&resp, fmt);
+                }
             }
         },
 
@@ -918,14 +969,18 @@ async fn dispatch(cli: &Cli, client: &mut DaemonClient) -> Result<(), String> {
             print_response(&resp, fmt);
         }
 
-        Command::Type { index, text } => {
-            ws_cmd!(cli, client, fmt, "act.type", { "index" => index, "text" => text });
+        Command::Type { index, text, clear } => {
+            ws_cmd!(cli, client, fmt, "act.type", { "index" => index, "text" => text, "clear" => clear });
         }
 
-        Command::Scroll { direction } => {
+        Command::Scroll { direction, amount, index, selector } => {
             let wid = resolve_workspace(&cli.workspace, client).await?;
             let dir = direction.as_deref().unwrap_or("down");
-            let resp = send_cmd(client, "act.scroll", json!({"wid": wid, "direction": dir})).await?;
+            let mut params = json!({"wid": wid, "direction": dir});
+            if let Some(a) = amount { params["amount"] = json!(a); }
+            if let Some(i) = index { params["index"] = json!(i); }
+            if let Some(s) = selector { params["selector"] = json!(s); }
+            let resp = send_cmd(client, "act.scroll", params).await?;
             print_response(&resp, fmt);
         }
 

@@ -123,19 +123,26 @@ pub async fn click_coordinates(
 /// Type text into an element by index.
 ///
 /// Clicks the element first to focus it, then uses `Input.insertText` for
-/// bulk text insertion.
+/// bulk text insertion. If `clear` is true, clears the field content before typing.
 pub async fn type_text(
     cdp: &Arc<CDP>,
     session_id: &str,
     elements: &[ElementInfo],
     index: usize,
     text: &str,
+    clear: bool,
 ) -> Result<(), BkError> {
     // Click to focus
     click_element(cdp, session_id, elements, index).await?;
 
-    // Insert text in bulk
     let session = cdp.session(session_id);
+
+    // Clear field content if requested
+    if clear {
+        clear_element_content(cdp, session_id, elements, index).await?;
+    }
+
+    // Insert text in bulk
     cdpkit::input::methods::InsertText::new(text)
         .send(&session)
         .await?;
@@ -143,36 +150,233 @@ pub async fn type_text(
     Ok(())
 }
 
+/// Clear the content of an element by index.
+///
+/// For input/textarea: sets value to '' and dispatches input+change events so
+/// frameworks (React, Vue, etc.) detect the change, then uses select-all + delete
+/// to ensure the insertion point is correct for subsequent insertText.
+///
+/// For contenteditable: uses select-all (Ctrl+A) then delete.
+pub async fn clear_element_content(
+    cdp: &Arc<CDP>,
+    session_id: &str,
+    elements: &[ElementInfo],
+    index: usize,
+) -> Result<(), BkError> {
+    let _el = get_element(elements, index)?;
+    let session = cdp.session(session_id);
+
+    let js = format!(
+        r#"(() => {{
+    const selectors = 'a, button, input, textarea, select, [role="button"], [onclick]';
+    const all = Array.from(document.querySelectorAll(selectors)).filter(el => {{
+        const r = el.getBoundingClientRect();
+        return r.width > 0 && r.height > 0;
+    }});
+    const el = all[{index}];
+    if (!el) return 'element not found';
+    const tag = el.tagName.toLowerCase();
+    if (tag === 'input' || tag === 'textarea') {{
+        el.focus();
+        el.select();
+        const nativeInputValueSetter = Object.getOwnPropertyDescriptor(
+            tag === 'textarea' ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype,
+            'value'
+        );
+        if (nativeInputValueSetter && nativeInputValueSetter.set) {{
+            nativeInputValueSetter.set.call(el, '');
+        }} else {{
+            el.value = '';
+        }}
+        el.dispatchEvent(new Event('input', {{bubbles: true}}));
+        el.dispatchEvent(new Event('change', {{bubbles: true}}));
+        return 'ok';
+    }} else if (el.isContentEditable) {{
+        el.focus();
+        document.execCommand('selectAll', false, null);
+        document.execCommand('delete', false, null);
+        return 'ok';
+    }}
+    return 'element is not clearable';
+}})()"#
+    );
+
+    let resp = cdpkit::runtime::methods::Evaluate::new(&js)
+        .with_return_by_value(true)
+        .send(&session)
+        .await?;
+
+    if let Some(details) = &resp.exception_details {
+        return Err(BkError::JsError(format!("clear: {}", exception_message(details))));
+    }
+
+    let result = resp
+        .result
+        .value
+        .as_ref()
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown");
+
+    if result != "ok" {
+        return Err(BkError::Other(format!("clear: {}", result)));
+    }
+
+    Ok(())
+}
+
 /// Scroll the page in the given direction.
 ///
-/// Supported directions: "up", "down", "left", "right".
-/// Sends a `mouseWheel` event at the viewport center.
+/// Supported directions: "up", "down", "left", "right", "top", "bottom".
+/// For up/down/left/right: sends a `mouseWheel` event at the viewport center.
+/// For top/bottom: uses `Runtime.evaluate` with `window.scrollTo`.
+/// `amount` overrides the default 500px delta for directional scrolls.
 pub async fn scroll_page(
     cdp: &Arc<CDP>,
     session_id: &str,
     direction: &str,
+    amount: Option<f64>,
 ) -> Result<(), BkError> {
-    const SCROLL_DELTA: f64 = 500.0;
-    let (delta_x, delta_y) = match direction {
-        "up" => (0.0, -SCROLL_DELTA),
-        "down" => (0.0, SCROLL_DELTA),
-        "left" => (-SCROLL_DELTA, 0.0),
-        "right" => (SCROLL_DELTA, 0.0),
+    let session = cdp.session(session_id);
+
+    match direction {
+        "top" => {
+            let js = "window.scrollTo(0, 0)";
+            let resp = cdpkit::runtime::methods::Evaluate::new(js)
+                .with_return_by_value(true)
+                .send(&session)
+                .await?;
+            if let Some(details) = &resp.exception_details {
+                return Err(BkError::JsError(format!("scroll top: {}", exception_message(details))));
+            }
+        }
+        "bottom" => {
+            let js = "window.scrollTo(0, document.documentElement.scrollHeight)";
+            let resp = cdpkit::runtime::methods::Evaluate::new(js)
+                .with_return_by_value(true)
+                .send(&session)
+                .await?;
+            if let Some(details) = &resp.exception_details {
+                return Err(BkError::JsError(format!("scroll bottom: {}", exception_message(details))));
+            }
+        }
+        "up" | "down" | "left" | "right" => {
+            let delta = amount.unwrap_or(500.0);
+            let (delta_x, delta_y) = match direction {
+                "up" => (0.0, -delta),
+                "down" => (0.0, delta),
+                "left" => (-delta, 0.0),
+                "right" => (delta, 0.0),
+                _ => unreachable!(),
+            };
+
+            cdpkit::input::methods::DispatchMouseEvent::new("mouseWheel", 400.0, 300.0)
+                .with_delta_x(delta_x)
+                .with_delta_y(delta_y)
+                .send(&session)
+                .await?;
+        }
         _ => {
             return Err(BkError::Other(format!(
-                "scroll: unknown direction '{}', expected up/down/left/right",
+                "scroll: unknown direction '{}', expected up/down/left/right/top/bottom",
                 direction
             )));
         }
-    };
+    }
 
-    // Send mouseWheel at viewport center (approximate)
+    Ok(())
+}
+
+/// Scroll an element into view by its index in the interactive element list.
+///
+/// Uses `el.scrollIntoView({block:'center'})` via Runtime.evaluate.
+pub async fn scroll_to_element_by_index(
+    cdp: &Arc<CDP>,
+    session_id: &str,
+    elements: &[ElementInfo],
+    index: usize,
+) -> Result<(), BkError> {
+    let _el = get_element(elements, index)?;
     let session = cdp.session(session_id);
-    cdpkit::input::methods::DispatchMouseEvent::new("mouseWheel", 400.0, 300.0)
-        .with_delta_x(delta_x)
-        .with_delta_y(delta_y)
+
+    let js = format!(
+        r#"(() => {{
+    const selectors = 'a, button, input, textarea, select, [role="button"], [onclick]';
+    const all = Array.from(document.querySelectorAll(selectors)).filter(el => {{
+        const r = el.getBoundingClientRect();
+        return r.width > 0 && r.height > 0;
+    }});
+    const el = all[{index}];
+    if (!el) return 'element not found';
+    el.scrollIntoView({{block: 'center'}});
+    return 'ok';
+}})()"#
+    );
+
+    let resp = cdpkit::runtime::methods::Evaluate::new(&js)
+        .with_return_by_value(true)
         .send(&session)
         .await?;
+
+    if let Some(details) = &resp.exception_details {
+        return Err(BkError::JsError(format!("scroll to element: {}", exception_message(details))));
+    }
+
+    let result = resp
+        .result
+        .value
+        .as_ref()
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown");
+
+    if result != "ok" {
+        return Err(BkError::Other(format!("scroll to element: {}", result)));
+    }
+
+    Ok(())
+}
+
+/// Scroll an element into view by CSS selector.
+///
+/// Uses `document.querySelector(selector).scrollIntoView({block:'center'})`.
+pub async fn scroll_to_element_by_selector(
+    cdp: &Arc<CDP>,
+    session_id: &str,
+    selector: &str,
+) -> Result<(), BkError> {
+    let session = cdp.session(session_id);
+
+    // Use serde_json::to_string to produce a safe JS string literal
+    let selector_js = serde_json::to_string(selector)
+        .map_err(|e| BkError::Other(format!("scroll: failed to serialize selector: {}", e)))?;
+
+    let js = format!(
+        r#"(() => {{
+    const el = document.querySelector({selector_js});
+    if (!el) return 'element not found for selector';
+    el.scrollIntoView({{block: 'center'}});
+    return 'ok';
+}})()"#
+    );
+
+    let resp = cdpkit::runtime::methods::Evaluate::new(&js)
+        .with_return_by_value(true)
+        .send(&session)
+        .await?;
+
+    if let Some(details) = &resp.exception_details {
+        return Err(BkError::JsError(format!("scroll to selector: {}", exception_message(details))));
+    }
+
+    let result = resp
+        .result
+        .value
+        .as_ref()
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown");
+
+    if result != "ok" {
+        return Err(BkError::Other(format!("scroll to selector: {}", result)));
+    }
 
     Ok(())
 }
@@ -560,5 +764,170 @@ mod tests {
     fn select_js_returns_available_options_on_no_match() {
         let js = build_select_js(0, "nonexistent");
         assert!(js.contains("available_options"), "should report available_options on failure: {}", js);
+    }
+
+    // ── Scroll tests ──────────────────────────────────────────────────
+
+    /// Helper: build the scroll-to-selector JS (same logic as the real function)
+    fn build_scroll_to_selector_js(selector: &str) -> String {
+        let selector_js = serde_json::to_string(selector).unwrap();
+        format!(
+            r#"(() => {{
+    const el = document.querySelector({selector_js});
+    if (!el) return 'element not found for selector';
+    el.scrollIntoView({{block: 'center'}});
+    return 'ok';
+}})()"#
+        )
+    }
+
+    /// Helper: build the scroll-to-element-by-index JS
+    fn build_scroll_to_index_js(index: usize) -> String {
+        format!(
+            r#"(() => {{
+    const selectors = 'a, button, input, textarea, select, [role="button"], [onclick]';
+    const all = Array.from(document.querySelectorAll(selectors)).filter(el => {{
+        const r = el.getBoundingClientRect();
+        return r.width > 0 && r.height > 0;
+    }});
+    const el = all[{index}];
+    if (!el) return 'element not found';
+    el.scrollIntoView({{block: 'center'}});
+    return 'ok';
+}})()"#
+        )
+    }
+
+    #[test]
+    fn scroll_to_selector_js_no_json_parse() {
+        let js = build_scroll_to_selector_js(".my-class");
+        assert!(!js.contains("JSON.parse("), "should not use JSON.parse: {}", js);
+        assert!(js.contains(r#"document.querySelector(".my-class")"#), "should embed selector: {}", js);
+    }
+
+    #[test]
+    fn scroll_to_selector_js_escapes_special_chars() {
+        let js = build_scroll_to_selector_js(r#"div[data-id="foo"]"#);
+        assert!(!js.contains("JSON.parse("), "should not use JSON.parse");
+        // serde_json escapes internal quotes
+        assert!(js.contains(r#"div[data-id=\"foo\"]"#), "should escape quotes in selector: {}", js);
+    }
+
+    #[test]
+    fn scroll_to_selector_js_uses_scroll_into_view_center() {
+        let js = build_scroll_to_selector_js("input");
+        assert!(js.contains("scrollIntoView({block: 'center'})"), "should use block:center: {}", js);
+    }
+
+    #[test]
+    fn scroll_to_index_js_uses_scroll_into_view_center() {
+        let js = build_scroll_to_index_js(3);
+        assert!(js.contains("scrollIntoView({block: 'center'})"), "should use block:center: {}", js);
+        assert!(js.contains("all[3]"), "should reference correct index: {}", js);
+    }
+
+    #[test]
+    fn scroll_to_index_js_validates_element_existence() {
+        let js = build_scroll_to_index_js(0);
+        assert!(js.contains("if (!el) return 'element not found'"), "should check element exists: {}", js);
+    }
+
+    #[test]
+    fn scroll_direction_top_uses_scroll_to_zero() {
+        // Verify the JS used for 'top' direction
+        let js = "window.scrollTo(0, 0)";
+        assert!(js.contains("scrollTo(0, 0)"), "top should scroll to 0,0");
+    }
+
+    #[test]
+    fn scroll_direction_bottom_uses_scroll_height() {
+        // Verify the JS used for 'bottom' direction
+        let js = "window.scrollTo(0, document.documentElement.scrollHeight)";
+        assert!(js.contains("scrollHeight"), "bottom should use scrollHeight");
+        assert!(js.contains("scrollTo(0,"), "bottom should scrollTo y");
+    }
+
+    // ── Clear/type tests ──────────────────────────────────────────────
+
+    /// Helper: build the clear JS (same logic as the real function)
+    fn build_clear_js(index: usize) -> String {
+        format!(
+            r#"(() => {{
+    const selectors = 'a, button, input, textarea, select, [role="button"], [onclick]';
+    const all = Array.from(document.querySelectorAll(selectors)).filter(el => {{
+        const r = el.getBoundingClientRect();
+        return r.width > 0 && r.height > 0;
+    }});
+    const el = all[{index}];
+    if (!el) return 'element not found';
+    const tag = el.tagName.toLowerCase();
+    if (tag === 'input' || tag === 'textarea') {{
+        el.focus();
+        el.select();
+        const nativeInputValueSetter = Object.getOwnPropertyDescriptor(
+            tag === 'textarea' ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype,
+            'value'
+        );
+        if (nativeInputValueSetter && nativeInputValueSetter.set) {{
+            nativeInputValueSetter.set.call(el, '');
+        }} else {{
+            el.value = '';
+        }}
+        el.dispatchEvent(new Event('input', {{bubbles: true}}));
+        el.dispatchEvent(new Event('change', {{bubbles: true}}));
+        return 'ok';
+    }} else if (el.isContentEditable) {{
+        el.focus();
+        document.execCommand('selectAll', false, null);
+        document.execCommand('delete', false, null);
+        return 'ok';
+    }}
+    return 'element is not clearable';
+}})()"#
+        )
+    }
+
+    #[test]
+    fn clear_js_dispatches_input_and_change_events() {
+        let js = build_clear_js(0);
+        assert!(js.contains("dispatchEvent(new Event('input'"), "should dispatch input event: {}", js);
+        assert!(js.contains("dispatchEvent(new Event('change'"), "should dispatch change event: {}", js);
+    }
+
+    #[test]
+    fn clear_js_uses_native_value_setter_for_react_compat() {
+        let js = build_clear_js(0);
+        assert!(js.contains("nativeInputValueSetter"), "should use native setter for React compat: {}", js);
+        assert!(js.contains("Object.getOwnPropertyDescriptor"), "should get native descriptor: {}", js);
+    }
+
+    #[test]
+    fn clear_js_handles_contenteditable() {
+        let js = build_clear_js(0);
+        assert!(js.contains("isContentEditable"), "should check contentEditable: {}", js);
+        assert!(js.contains("execCommand('selectAll'"), "should selectAll for contenteditable: {}", js);
+        assert!(js.contains("execCommand('delete'"), "should delete for contenteditable: {}", js);
+    }
+
+    #[test]
+    fn clear_js_handles_input_and_textarea() {
+        let js = build_clear_js(2);
+        assert!(js.contains("tag === 'input' || tag === 'textarea'"), "should check input/textarea: {}", js);
+        assert!(js.contains("all[2]"), "should use correct index: {}", js);
+    }
+
+    #[test]
+    fn clear_js_returns_error_for_non_clearable() {
+        let js = build_clear_js(0);
+        assert!(js.contains("'element is not clearable'"), "should return error for non-clearable: {}", js);
+    }
+
+    #[test]
+    fn clear_js_focuses_before_clearing() {
+        let js = build_clear_js(0);
+        // Focus should come before the value setter
+        let focus_pos = js.find("el.focus()").unwrap();
+        let setter_pos = js.find("nativeInputValueSetter").unwrap();
+        assert!(focus_pos < setter_pos, "focus should come before clearing");
     }
 }
