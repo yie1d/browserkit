@@ -1,9 +1,11 @@
 // Page wait: composite condition waiting
 
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
 
 use cdpkit::CDP;
+use futures::StreamExt;
 use serde_json::Value;
 
 use crate::error::BkError;
@@ -14,6 +16,9 @@ const DEFAULT_TIMEOUT_MS: u64 = 30_000;
 
 /// Polling interval between condition checks.
 const POLL_INTERVAL: Duration = Duration::from_millis(250);
+
+/// Quiet window for networkidle: in-flight count must remain 0 for this duration.
+const NETWORK_IDLE_QUIET_MS: u64 = 500;
 
 /// All conditions that `page.wait` can evaluate.
 #[derive(Debug, Clone)]
@@ -30,6 +35,8 @@ pub struct WaitConditions {
     pub url: Option<String>,
     /// Load state: "load", "domcontentloaded".
     pub load_state: Option<String>,
+    /// Whether to wait for network idle (no in-flight requests for 500ms).
+    pub networkidle: bool,
     /// JS expression to wait for truthy result.
     pub js_fn: Option<String>,
     /// Overall timeout in milliseconds.
@@ -57,10 +64,14 @@ impl WaitConditions {
         let js_fn = params.get("fn").and_then(|v| v.as_str()).map(|s| s.to_string());
         let timeout = params.get("timeout").and_then(|v| v.as_u64()).unwrap_or(DEFAULT_TIMEOUT_MS);
 
-        // Validate load_state if provided
+        // Validate load_state if provided; "networkidle" is parsed into its own flag
+        let mut networkidle = false;
         if let Some(ref ls) = load_state {
             match ls.as_str() {
-                "load" | "domcontentloaded" | "networkidle" => {}
+                "load" | "domcontentloaded" => {}
+                "networkidle" => {
+                    networkidle = true;
+                }
                 other => {
                     return Err(BkError::InvalidRequest(format!(
                         "invalid load_state '{}', expected: load, domcontentloaded, networkidle",
@@ -68,12 +79,10 @@ impl WaitConditions {
                     )));
                 }
             }
-            if ls == "networkidle" {
-                return Err(BkError::InvalidRequest(
-                    "load_state 'networkidle' is not yet supported (TODO: requires Network domain event tracking)".into()
-                ));
-            }
         }
+
+        // Strip "networkidle" from load_state since it's handled separately
+        let load_state = load_state.filter(|ls| ls != "networkidle");
 
         // Must have at least one condition
         if time.is_none()
@@ -82,6 +91,7 @@ impl WaitConditions {
             && text_gone.is_none()
             && url.is_none()
             && load_state.is_none()
+            && !networkidle
             && js_fn.is_none()
         {
             return Err(BkError::InvalidRequest(
@@ -96,6 +106,7 @@ impl WaitConditions {
             text_gone,
             url,
             load_state,
+            networkidle,
             js_fn,
             timeout,
         })
@@ -109,6 +120,7 @@ impl WaitConditions {
         if self.text_gone.is_some() { descs.push("text_gone"); }
         if self.url.is_some() { descs.push("url"); }
         if self.load_state.is_some() { descs.push("load_state"); }
+        if self.networkidle { descs.push("networkidle"); }
         if self.js_fn.is_some() { descs.push("fn"); }
         descs
     }
@@ -118,6 +130,10 @@ impl WaitConditions {
 ///
 /// Conditions are checked sequentially each poll cycle. The `--time` condition
 /// is handled as an initial fixed delay before polling begins.
+///
+/// If `networkidle` is requested, network events are subscribed and tracked
+/// concurrently: the condition is satisfied when no in-flight requests exist
+/// for a quiet window of 500ms.
 pub async fn wait_for_conditions(
     cdp: &Arc<CDP>,
     session_id: &str,
@@ -146,7 +162,7 @@ pub async fn wait_for_conditions(
         || conditions.load_state.is_some()
         || conditions.js_fn.is_some();
 
-    if !has_poll_conditions {
+    if !has_poll_conditions && !conditions.networkidle {
         let elapsed = start.elapsed().as_millis() as u64;
         return Ok(WaitResult {
             elapsed_ms: elapsed,
@@ -154,8 +170,32 @@ pub async fn wait_for_conditions(
         });
     }
 
-    // Poll until all conditions met or timeout
     let session = cdp.session(session_id);
+
+    // Set up networkidle tracking if requested.
+    // Subscribe BEFORE any polling begins so we don't miss events.
+    let mut req_stream = if conditions.networkidle {
+        Some(cdpkit::network::events::RequestWillBeSent::subscribe(&session))
+    } else {
+        None
+    };
+    let mut fin_stream = if conditions.networkidle {
+        Some(cdpkit::network::events::LoadingFinished::subscribe(&session))
+    } else {
+        None
+    };
+    let mut fail_stream = if conditions.networkidle {
+        Some(cdpkit::network::events::LoadingFailed::subscribe(&session))
+    } else {
+        None
+    };
+
+    let mut idle_tracker = NetworkIdleCounter::new();
+
+    // Poll until all conditions met or timeout
+    let mut poll_interval = tokio::time::interval(POLL_INTERVAL);
+    poll_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
     loop {
         if start.elapsed() >= timeout {
             let pending = conditions.pending_descriptions();
@@ -166,52 +206,179 @@ pub async fn wait_for_conditions(
             )));
         }
 
-        let js = build_condition_check_js(conditions);
-        let resp = cdpkit::runtime::methods::Evaluate::new(&js)
-            .with_return_by_value(true)
-            .send(&session)
-            .await;
+        // Use select to handle both network events and poll ticks
+        tokio::select! {
+            biased;
 
-        match resp {
-            Ok(r) => {
-                if let Some(details) = &r.exception_details {
-                    // JS error during check — not a fatal error, keep polling
-                    // (page might be navigating)
-                    tracing::debug!(
-                        "page.wait poll JS error: {}",
-                        exception_message(details)
-                    );
-                } else if let Some(val) = r.result.value.as_ref() {
-                    if let Some(result) = val.as_object() {
-                        let all_met = result
-                            .get("all_met")
-                            .and_then(|v| v.as_bool())
-                            .unwrap_or(false);
-                        if all_met {
-                            let elapsed = start.elapsed().as_millis() as u64;
-                            let met = result
-                                .get("met")
-                                .and_then(|v| v.as_array())
-                                .map(|arr| {
-                                    arr.iter()
-                                        .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                                        .collect()
-                                })
-                                .unwrap_or_default();
-                            return Ok(WaitResult {
-                                elapsed_ms: elapsed,
-                                conditions_met: met,
-                            });
-                        }
-                    }
+            // Drain network events (only if networkidle is requested)
+            Some(ev) = async {
+                match req_stream.as_mut() {
+                    Some(s) => s.next().await,
+                    None => std::future::pending::<Option<cdpkit::network::events::RequestWillBeSent>>().await,
                 }
+            } => {
+                idle_tracker.request_start(&ev.request_id);
+                continue;
             }
-            Err(_) => {
-                // CDP error during poll (session not ready, etc.), keep trying
+            Some(ev) = async {
+                match fin_stream.as_mut() {
+                    Some(s) => s.next().await,
+                    None => std::future::pending::<Option<cdpkit::network::events::LoadingFinished>>().await,
+                }
+            } => {
+                idle_tracker.request_end(&ev.request_id);
+                continue;
             }
+            Some(ev) = async {
+                match fail_stream.as_mut() {
+                    Some(s) => s.next().await,
+                    None => std::future::pending::<Option<cdpkit::network::events::LoadingFailed>>().await,
+                }
+            } => {
+                idle_tracker.request_end(&ev.request_id);
+                continue;
+            }
+
+            // Poll tick: check conditions
+            _ = poll_interval.tick() => {}
         }
 
-        tokio::time::sleep(POLL_INTERVAL).await;
+        // Check poll-based conditions (selector/text/url/load_state/fn)
+        let poll_met = if has_poll_conditions {
+            check_poll_conditions(&session, conditions).await
+        } else {
+            // No poll conditions — consider them satisfied
+            Some(Vec::new())
+        };
+
+        // Check networkidle
+        let networkidle_met = if conditions.networkidle {
+            idle_tracker.is_idle_for_duration(NETWORK_IDLE_QUIET_MS)
+        } else {
+            true
+        };
+
+        if let Some(mut met_list) = poll_met {
+            if networkidle_met {
+                let elapsed = start.elapsed().as_millis() as u64;
+                if conditions.time.is_some() {
+                    met_list.insert(0, "time".to_string());
+                }
+                if conditions.networkidle {
+                    met_list.push("networkidle".to_string());
+                }
+                return Ok(WaitResult {
+                    elapsed_ms: elapsed,
+                    conditions_met: met_list,
+                });
+            }
+        }
+    }
+}
+
+/// Check poll-based conditions via Runtime.evaluate. Returns Some(met_list) if all
+/// poll conditions are satisfied, None otherwise.
+async fn check_poll_conditions(
+    session: &cdpkit::Session<'_>,
+    conditions: &WaitConditions,
+) -> Option<Vec<String>> {
+    let js = build_condition_check_js(conditions);
+    let resp = cdpkit::runtime::methods::Evaluate::new(&js)
+        .with_return_by_value(true)
+        .send(session)
+        .await;
+
+    match resp {
+        Ok(r) => {
+            if let Some(details) = &r.exception_details {
+                tracing::debug!(
+                    "page.wait poll JS error: {}",
+                    exception_message(details)
+                );
+                None
+            } else if let Some(val) = r.result.value.as_ref() {
+                if let Some(result) = val.as_object() {
+                    let all_met = result
+                        .get("all_met")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false);
+                    if all_met {
+                        let met = result
+                            .get("met")
+                            .and_then(|v| v.as_array())
+                            .map(|arr| {
+                                arr.iter()
+                                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                                    .collect()
+                            })
+                            .unwrap_or_default();
+                        Some(met)
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        }
+        Err(_) => None,
+    }
+}
+
+// ─── Network Idle Tracking ──────────────────────────────────────────────────
+
+/// Tracks in-flight network requests and determines when network is idle.
+///
+/// Uses a `HashSet<RequestId>` to track in-flight requests. Idle is determined
+/// by the in-flight set being empty for a continuous duration (quiet window).
+pub struct NetworkIdleCounter {
+    in_flight: HashSet<String>,
+    /// Instant at which in_flight last became empty (None if currently non-empty).
+    idle_since: Option<tokio::time::Instant>,
+}
+
+impl Default for NetworkIdleCounter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl NetworkIdleCounter {
+    /// Create a new counter. Starts as idle (no pending requests).
+    pub fn new() -> Self {
+        Self {
+            in_flight: HashSet::new(),
+            idle_since: Some(tokio::time::Instant::now()),
+        }
+    }
+
+    /// Record a new request starting.
+    pub fn request_start(&mut self, request_id: &str) {
+        self.in_flight.insert(request_id.to_string());
+        self.idle_since = None;
+    }
+
+    /// Record a request completing (finished or failed). Clamps at 0.
+    pub fn request_end(&mut self, request_id: &str) {
+        self.in_flight.remove(request_id);
+        if self.in_flight.is_empty() && self.idle_since.is_none() {
+            self.idle_since = Some(tokio::time::Instant::now());
+        }
+    }
+
+    /// Returns the number of in-flight requests.
+    pub fn in_flight_count(&self) -> usize {
+        self.in_flight.len()
+    }
+
+    /// Check if idle for at least `quiet_ms` milliseconds.
+    pub fn is_idle_for_duration(&self, quiet_ms: u64) -> bool {
+        match self.idle_since {
+            Some(since) => since.elapsed() >= Duration::from_millis(quiet_ms),
+            None => false,
+        }
     }
 }
 
@@ -365,17 +532,32 @@ mod tests {
         assert_eq!(conds.text_gone.as_deref(), Some("loading"));
         assert_eq!(conds.url.as_deref(), Some("*/dashboard*"));
         assert_eq!(conds.load_state.as_deref(), Some("load"));
+        assert!(!conds.networkidle);
         assert_eq!(conds.js_fn.as_deref(), Some("window.ready === true"));
         assert_eq!(conds.timeout, 5000);
     }
 
     #[test]
-    fn wait_conditions_rejects_networkidle() {
+    fn wait_conditions_accepts_networkidle() {
         let params = serde_json::json!({"load_state": "networkidle"});
-        let result = WaitConditions::from_params(&params);
-        assert!(result.is_err());
-        let err = result.unwrap_err().to_string();
-        assert!(err.contains("networkidle"), "got: {}", err);
+        let conds = WaitConditions::from_params(&params).unwrap();
+        assert!(conds.networkidle);
+        // load_state is filtered out (handled as separate flag)
+        assert!(conds.load_state.is_none());
+    }
+
+    #[test]
+    fn wait_conditions_networkidle_with_other_conditions() {
+        let params = serde_json::json!({
+            "load_state": "networkidle",
+            "selector": "#app",
+            "timeout": 10000,
+        });
+        let conds = WaitConditions::from_params(&params).unwrap();
+        assert!(conds.networkidle);
+        assert_eq!(conds.selector.as_deref(), Some("#app"));
+        assert!(conds.load_state.is_none());
+        assert_eq!(conds.timeout, 10000);
     }
 
     #[test]
@@ -388,6 +570,136 @@ mod tests {
     }
 
     #[test]
+    fn wait_conditions_pending_descriptions_includes_networkidle() {
+        let conds = WaitConditions {
+            time: None,
+            selector: Some("#x".into()),
+            text: None,
+            text_gone: None,
+            url: None,
+            load_state: None,
+            networkidle: true,
+            js_fn: None,
+            timeout: 30000,
+        };
+        let descs = conds.pending_descriptions();
+        assert!(descs.contains(&"selector"));
+        assert!(descs.contains(&"networkidle"));
+    }
+
+    // ─── NetworkIdleCounter unit tests ──────────────────────────────────────
+
+    #[tokio::test]
+    async fn network_idle_counter_starts_idle() {
+        let counter = NetworkIdleCounter::new();
+        assert_eq!(counter.in_flight_count(), 0);
+        // After 500ms+ the quiet window is satisfied
+        tokio::time::sleep(Duration::from_millis(510)).await;
+        assert!(counter.is_idle_for_duration(500));
+    }
+
+    #[tokio::test]
+    async fn network_idle_counter_request_increments() {
+        let mut counter = NetworkIdleCounter::new();
+        counter.request_start("r1");
+        assert_eq!(counter.in_flight_count(), 1);
+        assert!(!counter.is_idle_for_duration(50));
+
+        counter.request_start("r2");
+        assert_eq!(counter.in_flight_count(), 2);
+    }
+
+    #[tokio::test]
+    async fn network_idle_counter_request_end_decrements() {
+        let mut counter = NetworkIdleCounter::new();
+        counter.request_start("r1");
+        counter.request_start("r2");
+        counter.request_end("r1");
+        assert_eq!(counter.in_flight_count(), 1);
+        assert!(!counter.is_idle_for_duration(0));
+
+        counter.request_end("r2");
+        assert_eq!(counter.in_flight_count(), 0);
+        // Just became idle — quiet window hasn't elapsed yet
+        assert!(!counter.is_idle_for_duration(500));
+    }
+
+    #[tokio::test]
+    async fn network_idle_counter_clamps_at_zero() {
+        let mut counter = NetworkIdleCounter::new();
+        // End without start — should not go negative, just stays at 0
+        counter.request_end("unknown");
+        assert_eq!(counter.in_flight_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn network_idle_counter_duplicate_request_id() {
+        let mut counter = NetworkIdleCounter::new();
+        counter.request_start("r1");
+        counter.request_start("r1"); // duplicate
+        assert_eq!(counter.in_flight_count(), 1); // HashSet deduplicates
+        counter.request_end("r1");
+        assert_eq!(counter.in_flight_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn network_idle_counter_quiet_window() {
+        let mut counter = NetworkIdleCounter::new();
+        counter.request_start("r1");
+        counter.request_end("r1");
+
+        // Not enough time elapsed
+        assert!(!counter.is_idle_for_duration(500));
+
+        // Wait for quiet window
+        tokio::time::sleep(Duration::from_millis(510)).await;
+        assert!(counter.is_idle_for_duration(500));
+    }
+
+    #[tokio::test]
+    async fn network_idle_counter_quiet_window_resets_on_new_request() {
+        let mut counter = NetworkIdleCounter::new();
+        counter.request_start("r1");
+        counter.request_end("r1");
+
+        tokio::time::sleep(Duration::from_millis(300)).await;
+
+        // New request arrives — breaks the quiet window
+        counter.request_start("r2");
+        assert!(!counter.is_idle_for_duration(500));
+
+        counter.request_end("r2");
+        // Quiet window restarts from now
+        assert!(!counter.is_idle_for_duration(500));
+
+        tokio::time::sleep(Duration::from_millis(510)).await;
+        assert!(counter.is_idle_for_duration(500));
+    }
+
+    #[tokio::test]
+    async fn network_idle_counter_interleaved_requests() {
+        let mut counter = NetworkIdleCounter::new();
+        counter.request_start("r1");
+        counter.request_start("r2");
+        counter.request_start("r3");
+        assert_eq!(counter.in_flight_count(), 3);
+
+        counter.request_end("r2");
+        assert_eq!(counter.in_flight_count(), 2);
+        // Not idle yet
+        assert!(!counter.is_idle_for_duration(0));
+
+        counter.request_end("r1");
+        counter.request_end("r3");
+        assert_eq!(counter.in_flight_count(), 0);
+
+        tokio::time::sleep(Duration::from_millis(510)).await;
+        assert!(counter.is_idle_for_duration(500));
+    }
+
+    // ─── build_condition_check_js tests ─────────────────────────────────────
+
+    #[test]
     fn build_condition_check_js_selector_escaping() {
         let conds = WaitConditions {
             time: None,
@@ -396,11 +708,11 @@ mod tests {
             text_gone: None,
             url: None,
             load_state: None,
+            networkidle: false,
             js_fn: None,
             timeout: 30000,
         };
         let js = build_condition_check_js(&conds);
-        // Should contain the properly escaped selector
         assert!(js.contains(r#"div[data-x=\"hello\"]"#), "js: {}", js);
         assert!(js.contains("querySelector"), "js: {}", js);
         assert!(js.contains("all_met"), "js: {}", js);
@@ -415,12 +727,12 @@ mod tests {
             text_gone: None,
             url: None,
             load_state: None,
+            networkidle: false,
             js_fn: None,
             timeout: 30000,
         };
         let js = build_condition_check_js(&conds);
         assert!(js.contains("includes("), "js: {}", js);
-        // serde_json escapes these properly
         assert!(js.contains(r#"it's \"quoted\"\nnewline"#), "js: {}", js);
     }
 
@@ -433,6 +745,7 @@ mod tests {
             text_gone: None,
             url: Some("https://example.com/*/page".to_string()),
             load_state: None,
+            networkidle: false,
             js_fn: None,
             timeout: 30000,
         };
@@ -450,6 +763,7 @@ mod tests {
             text_gone: None,
             url: None,
             load_state: None,
+            networkidle: false,
             js_fn: Some("document.querySelectorAll('.item').length > 3".to_string()),
             timeout: 30000,
         };
@@ -467,6 +781,7 @@ mod tests {
             text_gone: None,
             url: None,
             load_state: Some("domcontentloaded".to_string()),
+            networkidle: false,
             js_fn: None,
             timeout: 30000,
         };
@@ -484,16 +799,14 @@ mod tests {
             text_gone: None,
             url: None,
             load_state: None,
+            networkidle: false,
             js_fn: None,
             timeout: 30000,
         };
         let js = build_condition_check_js(&conds);
-        // Should have both checks
         assert!(js.contains("querySelector"), "js: {}", js);
         assert!(js.contains("includes("), "js: {}", js);
-        // Should combine with &&
         assert!(js.contains("c0 && c1"), "js: {}", js);
-        // time already met before polling, should be in met array
         assert!(js.contains(r#""time","#), "js: {}", js);
     }
 
@@ -506,11 +819,11 @@ mod tests {
             text_gone: Some("Loading...".to_string()),
             url: None,
             load_state: None,
+            networkidle: false,
             js_fn: None,
             timeout: 30000,
         };
         let js = build_condition_check_js(&conds);
-        // text_gone uses negation
         assert!(js.contains("!"), "should negate: {}", js);
         assert!(js.contains("includes("), "js: {}", js);
     }
@@ -518,5 +831,10 @@ mod tests {
     #[test]
     fn default_timeout_is_30s() {
         assert_eq!(DEFAULT_TIMEOUT_MS, 30_000);
+    }
+
+    #[test]
+    fn network_idle_quiet_window_is_500ms() {
+        assert_eq!(NETWORK_IDLE_QUIET_MS, 500);
     }
 }

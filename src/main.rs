@@ -176,6 +176,20 @@ pub enum Command {
         #[arg(short, long)]
         selector: Option<String>,
     },
+    /// Find elements by CSS selector (structured query)
+    FindElements {
+        /// CSS selector
+        selector: String,
+        /// Comma-separated attribute names to extract (e.g. id,href,class)
+        #[arg(long)]
+        attributes: Option<String>,
+        /// Maximum number of elements to return (default: 50)
+        #[arg(long)]
+        max: Option<usize>,
+        /// Include element inner text (truncated to 200 chars)
+        #[arg(long)]
+        include_text: bool,
+    },
     /// Reload current page
     Reload,
     /// Screenshot (supports one-shot with URL)
@@ -408,7 +422,7 @@ pub enum PageAction {
         /// Wait for URL to match (substring or glob)
         #[arg(long)]
         url: Option<String>,
-        /// Wait for load state (load, domcontentloaded)
+        /// Wait for load state (load, domcontentloaded, networkidle)
         #[arg(long)]
         load_state: Option<String>,
         /// Wait for JS expression to return truthy
@@ -417,6 +431,20 @@ pub enum PageAction {
         /// Timeout in milliseconds (default: 30000)
         #[arg(long, default_value = "30000")]
         timeout: u64,
+    },
+    /// Find elements by CSS selector (structured query)
+    FindElements {
+        /// CSS selector
+        selector: String,
+        /// Comma-separated attribute names to extract (e.g. id,href,class)
+        #[arg(long)]
+        attributes: Option<String>,
+        /// Maximum number of elements to return (default: 50)
+        #[arg(long)]
+        max: Option<usize>,
+        /// Include element inner text (truncated to 200 chars)
+        #[arg(long)]
+        include_text: bool,
     },
 }
 
@@ -832,6 +860,16 @@ async fn dispatch(cli: &Cli, client: &mut DaemonClient) -> Result<(), String> {
                     let resp = send_cmd(client, "page.wait", params).await?;
                     print_response(&resp, fmt);
                 }
+                PageAction::FindElements { selector, attributes, max, include_text } => {
+                    let mut params = json!({"wid": wid, "selector": selector, "include_text": include_text});
+                    if let Some(attrs) = attributes {
+                        let attr_list: Vec<&str> = attrs.split(',').map(|s| s.trim()).collect();
+                        params["attributes"] = json!(attr_list);
+                    }
+                    if let Some(m) = max { params["max"] = json!(m); }
+                    let resp = send_cmd(client, "page.find_elements", params).await?;
+                    print_response(&resp, fmt);
+                }
             }
         },
 
@@ -1009,6 +1047,18 @@ async fn dispatch(cli: &Cli, client: &mut DaemonClient) -> Result<(), String> {
             let mut params = json!({"wid": wid});
             if let Some(s) = selector { params["selector"] = json!(s); }
             let resp = send_cmd(client, "page.html", params).await?;
+            print_response(&resp, fmt);
+        }
+
+        Command::FindElements { selector, attributes, max, include_text } => {
+            let wid = resolve_workspace(&cli.workspace, client).await?;
+            let mut params = json!({"wid": wid, "selector": selector, "include_text": include_text});
+            if let Some(attrs) = attributes {
+                let attr_list: Vec<&str> = attrs.split(',').map(|s| s.trim()).collect();
+                params["attributes"] = json!(attr_list);
+            }
+            if let Some(m) = max { params["max"] = json!(m); }
+            let resp = send_cmd(client, "page.find_elements", params).await?;
             print_response(&resp, fmt);
         }
 

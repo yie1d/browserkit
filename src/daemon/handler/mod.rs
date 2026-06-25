@@ -61,6 +61,7 @@ pub async fn handle_request(
         "page.state" => page::handle_page_state(req, state).await,
         "page.search" => page::handle_page_search(req, state).await,
         "page.wait" => page::handle_page_wait(req, state).await,
+        "page.find_elements" => page::handle_find_elements(req, state).await,
         "act.click" => action::handle_click(req, state).await,
         "act.type" => action::handle_type(req, state).await,
         "act.scroll" => action::handle_scroll(req, state).await,

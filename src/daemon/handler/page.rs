@@ -174,3 +174,55 @@ async fn do_page_wait(req: &Request, state: &Arc<DaemonState>) -> Result<Respons
         "conditions_met": result.conditions_met,
     })))
 }
+
+handler!(handle_find_elements, do_find_elements(req, state));
+
+async fn do_find_elements(req: &Request, state: &Arc<DaemonState>) -> Result<Response, BkError> {
+    let ctx = resolve_context(req, state, "page.find_elements")?;
+
+    let selector = req
+        .params
+        .get("selector")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| BkError::InvalidRequest("page.find_elements requires 'selector' param".into()))?;
+
+    let attributes: Vec<String> = req
+        .params
+        .get("attributes")
+        .and_then(|v| v.as_array())
+        .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
+        .unwrap_or_default();
+
+    let max = req
+        .params
+        .get("max")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(crate::page::find_elements::DEFAULT_MAX_ELEMENTS as u64) as usize;
+
+    let include_text = req
+        .params
+        .get("include_text")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
+    let elements = crate::page::find_elements::find_elements(
+        &ctx.cdp,
+        &ctx.cdp_session_id,
+        selector,
+        &attributes,
+        max,
+        include_text,
+    )
+    .await?;
+
+    touch_workspace(state, &ctx.wid);
+    info!(wid = %ctx.wid, tid = %ctx.tid, selector = %selector, count = elements.len(), "page.find_elements");
+
+    Ok(Response::ok(json!({
+        "wid": ctx.wid,
+        "tid": ctx.tid,
+        "selector": selector,
+        "count": elements.len(),
+        "elements": elements,
+    })))
+}

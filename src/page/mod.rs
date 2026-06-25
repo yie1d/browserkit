@@ -1,5 +1,6 @@
 // Page/Tab: page-level operations
 pub mod capture;
+pub mod find_elements;
 pub mod interaction;
 pub mod navigation;
 pub mod state;
