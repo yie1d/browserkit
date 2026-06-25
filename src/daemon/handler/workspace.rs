@@ -88,6 +88,7 @@ async fn do_ws_new(
         let mut first_tid: Option<String> = None;
         let mut skipped: Vec<String> = Vec::new();
         let mut tab_sessions: Vec<(String, String)> = Vec::new();
+        let mut alias_seq: u64 = 0;
 
         for target in &matching_targets {
             // Skip targets already tracked in any workspace
@@ -123,6 +124,9 @@ async fn do_ws_new(
                 first_tid = Some(tid.clone());
             }
 
+            alias_seq += 1;
+            let alias = format!("t{}", alias_seq);
+
             let tab = Tab {
                 tid: tid.clone(),
                 target_id: target.target_id.clone(),
@@ -130,6 +134,7 @@ async fn do_ws_new(
                 url: target.url.clone(),
                 title: target.title.clone(),
                 managed: false, // user's existing tab — never close, only detach
+                alias,
             };
             tabs.insert(tid.clone(), tab);
             // Collect (tid, session_id) for dialog subscriptions after workspace creation
@@ -153,6 +158,7 @@ async fn do_ws_new(
             active_tab: first_tid.clone(),
             created_at: ts,
             last_active: ts,
+            next_alias_seq: alias_seq,
         };
 
         state.workspaces.insert(wid.clone(), workspace);
@@ -226,7 +232,7 @@ async fn do_ws_new(
         let tid = generate_hex_id();
         let ts = now_ts();
 
-        let tab = Tab { tid: tid.clone(), target_id, cdp_session_id: cdp_session_id.clone(), url: "about:blank".to_string(), title: String::new(), managed: true };
+        let tab = Tab { tid: tid.clone(), target_id, cdp_session_id: cdp_session_id.clone(), url: "about:blank".to_string(), title: String::new(), managed: true, alias: "t1".to_string() };
 
         let mut tabs = HashMap::new();
         tabs.insert(tid.clone(), tab);
@@ -241,6 +247,7 @@ async fn do_ws_new(
             active_tab: Some(tid.clone()),
             created_at: ts,
             last_active: ts,
+            next_alias_seq: 1,
         };
 
         state.workspaces.insert(wid.clone(), workspace);
@@ -449,6 +456,14 @@ async fn merge_into_existing_attached_ws(
         }
 
         let tid = generate_hex_id();
+        let alias = {
+            if let Some(mut ws) = state.workspaces.get_mut(existing_wid) {
+                ws.next_alias()
+            } else {
+                // Workspace removed during merge — skip
+                continue;
+            }
+        };
         let tab = Tab {
             tid: tid.clone(),
             target_id: target.target_id.clone(),
@@ -456,6 +471,7 @@ async fn merge_into_existing_attached_ws(
             url: target.url.clone(),
             title: target.title.clone(),
             managed: false,
+            alias: alias.clone(),
         };
 
         if let Some(mut ws) = state.workspaces.get_mut(existing_wid) {
@@ -834,6 +850,7 @@ async fn do_ws_attach(
     let mut first_tid: Option<String> = None;
     let mut skipped: Vec<String> = Vec::new();
     let mut tab_sessions_attach: Vec<(String, String)> = Vec::new();
+    let mut alias_seq: u64 = 0;
 
     for target in &matching_targets {
         // Skip targets already tracked in any workspace
@@ -871,6 +888,9 @@ async fn do_ws_attach(
             first_tid = Some(tid.clone());
         }
 
+        alias_seq += 1;
+        let alias = format!("t{}", alias_seq);
+
         let tab = Tab {
             tid: tid.clone(),
             target_id: target.target_id.clone(),
@@ -878,6 +898,7 @@ async fn do_ws_attach(
             url: target.url.clone(),
             title: target.title.clone(),
             managed: false, // user's existing tab — never close, only detach
+            alias,
         };
         tabs.insert(tid.clone(), tab);
         tab_sessions_attach.push((tid, cdp_session_id));
@@ -900,6 +921,7 @@ async fn do_ws_attach(
         active_tab: first_tid.clone(),
         created_at: ts,
         last_active: ts,
+        next_alias_seq: alias_seq,
     };
 
     state.workspaces.insert(wid.clone(), workspace);
@@ -1024,6 +1046,7 @@ mod tests {
             active_tab: None,
             created_at: 1000,
             last_active: 2000,
+            next_alias_seq: 0,
         }
     }
 
@@ -1038,6 +1061,7 @@ mod tests {
             active_tab: None,
             created_at: 1000,
             last_active: 2000,
+            next_alias_seq: 0,
         }
     }
 

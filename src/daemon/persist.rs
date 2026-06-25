@@ -47,6 +47,11 @@ pub struct PersistedWorkspace {
     pub active_tab: Option<String>,
     pub created_at: u64,
     pub last_active: u64,
+    /// Next alias sequence number for tab alias allocation.
+    /// Defaults to 0 for old data; on restore, tabs without aliases get
+    /// aliases assigned in order from this counter.
+    #[serde(default)]
+    pub next_alias_seq: u64,
 }
 
 fn default_mode_isolated() -> String {
@@ -67,6 +72,11 @@ pub struct PersistedTab {
     /// is both correct and safe.
     #[serde(default = "default_managed_true")]
     pub managed: bool,
+    /// Short alias for CLI addressing (e.g. "t1", "t2").
+    /// Defaults to empty string for old data; restored tabs without alias get
+    /// one assigned from the workspace's next_alias_seq counter.
+    #[serde(default)]
+    pub alias: String,
 }
 
 fn default_managed_true() -> bool {
@@ -115,6 +125,7 @@ impl PersistedWorkspace {
                 url: tab.url.clone(),
                 title: tab.title.clone(),
                 managed: tab.managed,
+                alias: tab.alias.clone(),
             })
             .collect();
 
@@ -133,6 +144,7 @@ impl PersistedWorkspace {
             active_tab: ws.active_tab.clone(),
             created_at: ws.created_at,
             last_active: ws.last_active,
+            next_alias_seq: ws.next_alias_seq,
         }
     }
 
@@ -140,9 +152,21 @@ impl PersistedWorkspace {
     ///
     /// The `cdp_session_id` for each tab is left empty — it will be
     /// re-established when the daemon re-attaches to targets.
+    ///
+    /// Backward compatibility: if `next_alias_seq` is 0 (old data) and tabs
+    /// have empty aliases, aliases are assigned in insertion order from seq=1.
     pub fn into_workspace(self) -> Workspace {
         let mut tabs = HashMap::new();
+        let mut seq = self.next_alias_seq;
+
         for pt in self.tabs {
+            let alias = if pt.alias.is_empty() {
+                // Old data without alias — assign one now
+                seq += 1;
+                format!("t{}", seq)
+            } else {
+                pt.alias
+            };
             let tab = Tab {
                 tid: pt.tid.clone(),
                 target_id: pt.target_id,
@@ -152,6 +176,7 @@ impl PersistedWorkspace {
                 url: pt.url,
                 title: pt.title,
                 managed: pt.managed,
+                alias,
             };
             tabs.insert(pt.tid, tab);
         }
@@ -171,6 +196,7 @@ impl PersistedWorkspace {
             active_tab: self.active_tab,
             created_at: self.created_at,
             last_active: self.last_active,
+            next_alias_seq: seq,
         }
     }
 }
@@ -517,10 +543,12 @@ mod tests {
                 url: "https://example.com".to_string(),
                 title: "Example".to_string(),
                 managed: true,
+                alias: "t1".to_string(),
             }],
             active_tab: Some("t001".to_string()),
             created_at: 1000,
             last_active: 2000,
+            next_alias_seq: 1,
         }
     }
 
@@ -675,10 +703,12 @@ mod tests {
                 url: "https://github.com".to_string(),
                 title: "GitHub".to_string(),
                 managed: false,
+                alias: "t1".to_string(),
             }],
             active_tab: Some("t100".to_string()),
             created_at: 5000,
             last_active: 6000,
+            next_alias_seq: 1,
         };
 
         // Serialize
@@ -808,6 +838,7 @@ mod tests {
             url: "https://github.com/dashboard".to_string(),
             title: "Dashboard".to_string(),
             managed: false,
+            alias: "t1".to_string(),
         };
 
         let json = serde_json::to_string(&pt).unwrap();
@@ -830,6 +861,7 @@ mod tests {
             url: "about:blank".to_string(),
             title: "".to_string(),
             managed: true,
+            alias: "t1".to_string(),
         };
 
         let json = serde_json::to_string(&pt).unwrap();
@@ -858,6 +890,7 @@ mod tests {
                     url: "about:blank".to_string(),
                     title: "".to_string(),
                     managed: true,
+                    alias: "t1".to_string(),
                 },
                 PersistedTab {
                     tid: "t_unmanaged_1".to_string(),
@@ -865,11 +898,13 @@ mod tests {
                     url: "https://example.com".to_string(),
                     title: "Example".to_string(),
                     managed: false,
+                    alias: "t2".to_string(),
                 },
             ],
             active_tab: Some("t_managed_1".to_string()),
             created_at: 1000,
             last_active: 2000,
+            next_alias_seq: 2,
         };
 
         // Convert to runtime Workspace
@@ -1003,6 +1038,7 @@ mod tests {
             url: "about:blank".to_string(),
             title: "".to_string(),
             managed: true,
+            alias: "t1".to_string(),
         });
         tabs.insert("t2".to_string(), Tab {
             tid: "t2".to_string(),
@@ -1011,6 +1047,7 @@ mod tests {
             url: "https://github.com".to_string(),
             title: "GitHub".to_string(),
             managed: false,
+            alias: "t2".to_string(),
         });
         tabs.insert("t3".to_string(), Tab {
             tid: "t3".to_string(),
@@ -1019,6 +1056,7 @@ mod tests {
             url: "https://example.com".to_string(),
             title: "Example".to_string(),
             managed: false,
+            alias: "t3".to_string(),
         });
 
         let ws = Workspace {
@@ -1031,6 +1069,7 @@ mod tests {
             active_tab: Some("t1".to_string()),
             created_at: 1000,
             last_active: 2000,
+            next_alias_seq: 3,
         };
 
         // Extract tab_info the same way do_ws_close does
@@ -1141,6 +1180,7 @@ mod tests {
             url: "https://example.com".to_string(),
             title: "Example".to_string(),
             managed: false,
+            alias: "t1".to_string(),
         });
 
         state.workspaces.insert("ws_other".to_string(), Workspace {
@@ -1153,6 +1193,7 @@ mod tests {
             active_tab: Some("t1".to_string()),
             created_at: 1000,
             last_active: 2000,
+            next_alias_seq: 1,
         });
 
         // Simulate the dedup check from do_tab_attach
@@ -1281,6 +1322,7 @@ mod tests {
             url: "https://a.com".to_string(),
             title: "Page A".to_string(),
             managed: true,
+            alias: "t1".to_string(),
         });
         tabs.insert("tid_b".to_string(), Tab {
             tid: "tid_b".to_string(),
@@ -1289,6 +1331,7 @@ mod tests {
             url: "https://b.com".to_string(),
             title: "Page B".to_string(),
             managed: false,
+            alias: "t2".to_string(),
         });
 
         let ws = Workspace {
@@ -1301,6 +1344,7 @@ mod tests {
             active_tab: Some("tid_a".to_string()),
             created_at: 5000,
             last_active: 6000,
+            next_alias_seq: 2,
         };
 
         let pw = PersistedWorkspace::from_workspace(&ws);
@@ -1394,6 +1438,7 @@ mod tests {
             active_tab: None,
             created_at: 1000,
             last_active: 2000,
+            next_alias_seq: 0,
         };
         let ws_unmanaged = PersistedWorkspace {
             wid: "ws_unmanaged_001".to_string(),
@@ -1405,6 +1450,7 @@ mod tests {
             active_tab: None,
             created_at: 1000,
             last_active: 2000,
+            next_alias_seq: 0,
         };
 
         let all_workspaces = vec![ws_managed.clone(), ws_unmanaged.clone()];
@@ -1477,5 +1523,142 @@ mod tests {
 
         assert_eq!(restorable.len(), 1);
         assert_eq!(restorable[0].wid, "ws_ok");
+    }
+
+    // ── Tab alias persistence ─────────────────────────────────────────────
+
+    #[test]
+    fn persisted_tab_old_format_no_alias_defaults_to_empty() {
+        // Old persisted data has no `alias` field. Serde default yields "".
+        let old_tab_json = r#"{
+            "tid": "t_old_alias",
+            "target_id": "TARGET_OLD_A",
+            "url": "https://example.com",
+            "title": "Old Tab",
+            "managed": true
+        }"#;
+
+        let pt: PersistedTab = serde_json::from_str(old_tab_json).unwrap();
+        assert_eq!(pt.alias, "", "missing alias field must default to empty string");
+    }
+
+    #[test]
+    fn persisted_tab_alias_roundtrip() {
+        let pt = PersistedTab {
+            tid: "t_alias_rt".to_string(),
+            target_id: "TGT_A".to_string(),
+            url: "https://a.com".to_string(),
+            title: "A".to_string(),
+            managed: true,
+            alias: "t5".to_string(),
+        };
+
+        let json = serde_json::to_string(&pt).unwrap();
+        let restored: PersistedTab = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.alias, "t5");
+        assert_eq!(restored, pt);
+    }
+
+    #[test]
+    fn persisted_workspace_old_format_no_alias_assigns_on_restore() {
+        // Old workspace JSON: no next_alias_seq, tabs have no alias.
+        // into_workspace should assign aliases t1, t2, ... and update seq.
+        let json = r#"{
+            "wid": "ws_old_alias_test",
+            "browser_host": "localhost:9222",
+            "browser_context_id": "CTX_OLD",
+            "label": null,
+            "tabs": [
+                {"tid": "tid_a", "target_id": "TGT_A", "url": "https://a.com", "title": "A", "managed": true},
+                {"tid": "tid_b", "target_id": "TGT_B", "url": "https://b.com", "title": "B", "managed": true}
+            ],
+            "active_tab": "tid_a",
+            "created_at": 100,
+            "last_active": 200
+        }"#;
+
+        let pw: PersistedWorkspace = serde_json::from_str(json).unwrap();
+        assert_eq!(pw.next_alias_seq, 0, "missing field defaults to 0");
+        assert_eq!(pw.tabs[0].alias, "", "missing alias defaults to empty");
+        assert_eq!(pw.tabs[1].alias, "", "missing alias defaults to empty");
+
+        let ws = pw.into_workspace();
+        // Both tabs should have been assigned aliases
+        assert_eq!(ws.next_alias_seq, 2);
+        let tab_a = ws.tabs.get("tid_a").unwrap();
+        let tab_b = ws.tabs.get("tid_b").unwrap();
+        // Aliases assigned in iteration order (not guaranteed, but both should be t1/t2)
+        let aliases: Vec<&str> = ws.tabs.values().map(|t| t.alias.as_str()).collect();
+        assert!(aliases.contains(&"t1"));
+        assert!(aliases.contains(&"t2"));
+        assert_ne!(tab_a.alias, tab_b.alias, "aliases must be unique");
+    }
+
+    #[test]
+    fn persisted_workspace_with_alias_preserves_on_restore() {
+        // New format: tabs have aliases, next_alias_seq is set.
+        let json = r#"{
+            "wid": "ws_new_alias",
+            "browser_host": "localhost:9222",
+            "browser_context_id": "CTX_1",
+            "mode": "isolated",
+            "label": null,
+            "tabs": [
+                {"tid": "tid_x", "target_id": "TGT_X", "url": "https://x.com", "title": "X", "managed": true, "alias": "t3"}
+            ],
+            "active_tab": "tid_x",
+            "created_at": 100,
+            "last_active": 200,
+            "next_alias_seq": 3
+        }"#;
+
+        let pw: PersistedWorkspace = serde_json::from_str(json).unwrap();
+        assert_eq!(pw.next_alias_seq, 3);
+        assert_eq!(pw.tabs[0].alias, "t3");
+
+        let ws = pw.into_workspace();
+        assert_eq!(ws.next_alias_seq, 3, "seq unchanged when all tabs have aliases");
+        let tab = ws.tabs.get("tid_x").unwrap();
+        assert_eq!(tab.alias, "t3");
+    }
+
+    #[test]
+    fn persisted_workspace_alias_from_workspace_roundtrip() {
+        use crate::page::Tab;
+        use crate::workspace::{Workspace, WorkspaceMode};
+
+        let mut tabs = HashMap::new();
+        tabs.insert("tid_1".to_string(), Tab {
+            tid: "tid_1".to_string(),
+            target_id: "TGT_1".to_string(),
+            cdp_session_id: "sess_1".to_string(),
+            url: "https://one.com".to_string(),
+            title: "One".to_string(),
+            managed: true,
+            alias: "t7".to_string(),
+        });
+
+        let ws = Workspace {
+            wid: "ws_alias_rt".to_string(),
+            browser_host: "localhost:9222".to_string(),
+            browser_context_id: Some("CTX_RT".to_string()),
+            mode: WorkspaceMode::Isolated,
+            label: None,
+            tabs,
+            active_tab: Some("tid_1".to_string()),
+            created_at: 1000,
+            last_active: 2000,
+            next_alias_seq: 7,
+        };
+
+        let pw = PersistedWorkspace::from_workspace(&ws);
+        assert_eq!(pw.next_alias_seq, 7);
+        assert_eq!(pw.tabs[0].alias, "t7");
+
+        // Full roundtrip
+        let ws2 = pw.into_workspace();
+        assert_eq!(ws2.next_alias_seq, 7);
+        let tab = ws2.tabs.get("tid_1").unwrap();
+        assert_eq!(tab.alias, "t7");
     }
 }

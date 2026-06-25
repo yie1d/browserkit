@@ -39,4 +39,18 @@ pub struct Workspace {
     pub created_at: u64,
     /// Unix timestamp of the last activity
     pub last_active: u64,
+    /// Next alias sequence number (monotonically increasing, never reused).
+    /// Aliases are `t1`, `t2`, ... scoped to this workspace.
+    pub next_alias_seq: u64,
+}
+
+impl Workspace {
+    /// Allocate the next short alias (`t1`, `t2`, ...) for a new tab.
+    ///
+    /// The sequence is monotonically increasing and never reuses numbers,
+    /// even after tab closure. This avoids user confusion from recycled aliases.
+    pub fn next_alias(&mut self) -> String {
+        self.next_alias_seq += 1;
+        format!("t{}", self.next_alias_seq)
+    }
 }

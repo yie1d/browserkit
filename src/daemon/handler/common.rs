@@ -60,12 +60,40 @@ pub fn touch_workspace(state: &Arc<DaemonState>, wid: &str) {
 }
 
 /// Resolve which tab to operate on.
+///
+/// Resolution order when `tab_param` is provided:
+///   1. Exact alias match (e.g. "t1", "t2")
+///   2. Exact tid match
+///   3. tid prefix match (unique)
+///   4. Error (not found or ambiguous)
+///
+/// When `tab_param` is `None`, returns the workspace's active tab.
 pub fn resolve_tab(ws: &Workspace, tab_param: Option<&str>) -> Result<String, BkError> {
-    if let Some(tid) = tab_param {
-        if ws.tabs.contains_key(tid) {
-            return Ok(tid.to_string());
+    if let Some(key) = tab_param {
+        // 1. Exact alias match
+        if let Some(tab) = ws.tabs.values().find(|t| t.alias == key) {
+            return Ok(tab.tid.clone());
         }
-        return Err(BkError::TabNotFound(tid.to_string()));
+
+        // 2. Exact tid match
+        if ws.tabs.contains_key(key) {
+            return Ok(key.to_string());
+        }
+
+        // 3. tid prefix match
+        let prefix_matches: Vec<&str> = ws.tabs.keys()
+            .filter(|tid| tid.starts_with(key))
+            .map(|s| s.as_str())
+            .collect();
+
+        match prefix_matches.len() {
+            1 => return Ok(prefix_matches[0].to_string()),
+            0 => return Err(BkError::TabNotFound(key.to_string())),
+            _ => return Err(BkError::Other(format!(
+                "ambiguous tab identifier '{}': matches {} tabs. Use a longer prefix or alias.",
+                key, prefix_matches.len()
+            ))),
+        }
     }
     ws.active_tab
         .clone()
@@ -104,4 +132,172 @@ pub fn resolve_context(
     let cdp = Arc::clone(&browser_entry.cdp);
 
     Ok(ResolvedContext { wid, tid, browser_context_id, cdp_session_id, cdp })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+    use crate::page::Tab;
+    use crate::workspace::{Workspace, WorkspaceMode};
+
+    fn make_ws_with_tabs() -> Workspace {
+        let mut tabs = HashMap::new();
+        tabs.insert("abcd1234abcd1234".to_string(), Tab {
+            tid: "abcd1234abcd1234".to_string(),
+            target_id: "TGT_1".to_string(),
+            cdp_session_id: "sess_1".to_string(),
+            url: "https://a.com".to_string(),
+            title: "A".to_string(),
+            managed: true,
+            alias: "t1".to_string(),
+        });
+        tabs.insert("efgh5678efgh5678".to_string(), Tab {
+            tid: "efgh5678efgh5678".to_string(),
+            target_id: "TGT_2".to_string(),
+            cdp_session_id: "sess_2".to_string(),
+            url: "https://b.com".to_string(),
+            title: "B".to_string(),
+            managed: true,
+            alias: "t2".to_string(),
+        });
+        tabs.insert("efgh9999efgh9999".to_string(), Tab {
+            tid: "efgh9999efgh9999".to_string(),
+            target_id: "TGT_3".to_string(),
+            cdp_session_id: "sess_3".to_string(),
+            url: "https://c.com".to_string(),
+            title: "C".to_string(),
+            managed: true,
+            alias: "t3".to_string(),
+        });
+        Workspace {
+            wid: "ws_test".to_string(),
+            browser_host: "localhost:9222".to_string(),
+            browser_context_id: Some("ctx1".to_string()),
+            mode: WorkspaceMode::Isolated,
+            label: None,
+            tabs,
+            active_tab: Some("abcd1234abcd1234".to_string()),
+            created_at: 1000,
+            last_active: 2000,
+            next_alias_seq: 3,
+        }
+    }
+
+    // ─── resolve_tab: alias resolution ───────────────────────────────────
+
+    #[test]
+    fn resolve_tab_by_exact_alias() {
+        let ws = make_ws_with_tabs();
+        let tid = resolve_tab(&ws, Some("t1")).unwrap();
+        assert_eq!(tid, "abcd1234abcd1234");
+
+        let tid = resolve_tab(&ws, Some("t2")).unwrap();
+        assert_eq!(tid, "efgh5678efgh5678");
+
+        let tid = resolve_tab(&ws, Some("t3")).unwrap();
+        assert_eq!(tid, "efgh9999efgh9999");
+    }
+
+    #[test]
+    fn resolve_tab_by_exact_tid() {
+        let ws = make_ws_with_tabs();
+        let tid = resolve_tab(&ws, Some("abcd1234abcd1234")).unwrap();
+        assert_eq!(tid, "abcd1234abcd1234");
+    }
+
+    #[test]
+    fn resolve_tab_by_tid_prefix_unique() {
+        let ws = make_ws_with_tabs();
+        // "abcd" is a unique prefix
+        let tid = resolve_tab(&ws, Some("abcd")).unwrap();
+        assert_eq!(tid, "abcd1234abcd1234");
+    }
+
+    #[test]
+    fn resolve_tab_by_tid_prefix_ambiguous() {
+        let ws = make_ws_with_tabs();
+        // "efgh" matches two tabs
+        let err = resolve_tab(&ws, Some("efgh")).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("ambiguous"), "expected ambiguous error, got: {msg}");
+    }
+
+    #[test]
+    fn resolve_tab_not_found() {
+        let ws = make_ws_with_tabs();
+        let err = resolve_tab(&ws, Some("zzz")).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("not found") || msg.contains("TabNotFound"), "expected not found: {msg}");
+    }
+
+    #[test]
+    fn resolve_tab_none_returns_active() {
+        let ws = make_ws_with_tabs();
+        let tid = resolve_tab(&ws, None).unwrap();
+        assert_eq!(tid, "abcd1234abcd1234");
+    }
+
+    #[test]
+    fn resolve_tab_none_no_active_errors() {
+        let mut ws = make_ws_with_tabs();
+        ws.active_tab = None;
+        let err = resolve_tab(&ws, None).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("no active tab") || msg.contains("NoActiveTab"), "got: {msg}");
+    }
+
+    #[test]
+    fn resolve_tab_alias_takes_priority_over_tid_prefix() {
+        // If an alias happens to look like a valid tid prefix, alias match wins.
+        // This is fine because aliases are "t<N>" format which can't collide with
+        // hex tid prefixes in practice.
+        let ws = make_ws_with_tabs();
+        // "t1" is an alias, not a tid prefix
+        let tid = resolve_tab(&ws, Some("t1")).unwrap();
+        assert_eq!(tid, "abcd1234abcd1234");
+    }
+
+    // ─── Workspace::next_alias: monotonic, no reuse ──────────────────────
+
+    #[test]
+    fn workspace_next_alias_monotonic() {
+        let mut ws = Workspace {
+            wid: "test".to_string(),
+            browser_host: "localhost:9222".to_string(),
+            browser_context_id: None,
+            mode: WorkspaceMode::Isolated,
+            label: None,
+            tabs: HashMap::new(),
+            active_tab: None,
+            created_at: 1000,
+            last_active: 2000,
+            next_alias_seq: 0,
+        };
+
+        assert_eq!(ws.next_alias(), "t1");
+        assert_eq!(ws.next_alias(), "t2");
+        assert_eq!(ws.next_alias(), "t3");
+        assert_eq!(ws.next_alias_seq, 3);
+    }
+
+    #[test]
+    fn workspace_next_alias_no_reuse_after_close() {
+        let mut ws = Workspace {
+            wid: "test".to_string(),
+            browser_host: "localhost:9222".to_string(),
+            browser_context_id: None,
+            mode: WorkspaceMode::Isolated,
+            label: None,
+            tabs: HashMap::new(),
+            active_tab: None,
+            created_at: 1000,
+            last_active: 2000,
+            next_alias_seq: 5, // simulates 5 tabs previously allocated
+        };
+
+        // Next alias should be t6, not t1
+        assert_eq!(ws.next_alias(), "t6");
+        assert_eq!(ws.next_alias(), "t7");
+    }
 }

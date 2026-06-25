@@ -228,6 +228,7 @@ mod tests {
             active_tab: None,
             created_at: 1000,
             last_active: 2000,
+            next_alias_seq: 0,
         }
     }
 

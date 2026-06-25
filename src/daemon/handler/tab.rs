@@ -84,7 +84,15 @@ async fn do_tab_new(
     let tid = generate_hex_id();
     let ts = now_ts();
 
-    let tab = Tab { tid: tid.clone(), target_id, cdp_session_id: cdp_session_id.clone(), url: url.to_string(), title: String::new(), managed: true };
+    let alias = {
+        let mut ws = state
+            .workspaces
+            .get_mut(&wid)
+            .ok_or_else(|| BkError::WorkspaceNotFound(wid.clone()))?;
+        ws.next_alias()
+    };
+
+    let tab = Tab { tid: tid.clone(), target_id, cdp_session_id: cdp_session_id.clone(), url: url.to_string(), title: String::new(), managed: true, alias: alias.clone() };
 
     if let Some(mut ws) = state.workspaces.get_mut(&wid) {
         ws.tabs.insert(tid.clone(), tab);
@@ -102,9 +110,9 @@ async fn do_tab_new(
     );
 
     state.request_persist();
-    info!(wid = %wid, tid = %tid, url = %url, "tab created");
+    info!(wid = %wid, tid = %tid, alias = %alias, url = %url, "tab created");
 
-    Ok(Response::ok(json!({ "wid": wid, "tid": tid, "url": url })))
+    Ok(Response::ok(json!({ "wid": wid, "tid": tid, "alias": alias, "url": url })))
 }
 
 handler!(handle_tab_list, do_tab_list(req, state));
@@ -130,6 +138,7 @@ async fn do_tab_list(
         .values()
         .map(|tab| json!({
             "tid": tab.tid,
+            "alias": tab.alias,
             "url": tab.url,
             "title": tab.title,
             "active": ws.active_tab.as_deref() == Some(&tab.tid),
@@ -150,7 +159,7 @@ async fn do_tab_switch(
         .get("wid")
         .and_then(|v| v.as_str())
         .ok_or_else(|| BkError::InvalidRequest("tab.switch requires 'wid' param".into()))?;
-    let tid = req
+    let tab_key = req
         .params
         .get("tid")
         .and_then(|v| v.as_str())
@@ -162,15 +171,15 @@ async fn do_tab_switch(
         .get_mut(&wid)
         .ok_or_else(|| BkError::WorkspaceNotFound(wid.clone()))?;
 
-    if !ws.tabs.contains_key(tid) {
-        return Err(BkError::TabNotFound(tid.to_string()));
-    }
+    let tid = super::common::resolve_tab(&ws, Some(tab_key))?;
 
-    ws.active_tab = Some(tid.to_string());
+    ws.active_tab = Some(tid.clone());
     ws.last_active = now_ts();
 
-    info!(wid = %wid, tid = %tid, "tab switched");
-    Ok(Response::ok(json!({ "wid": wid, "tid": tid, "status": "switched" })))
+    let alias = ws.tabs.get(&tid).map(|t| t.alias.clone()).unwrap_or_default();
+
+    info!(wid = %wid, tid = %tid, alias = %alias, "tab switched");
+    Ok(Response::ok(json!({ "wid": wid, "tid": tid, "alias": alias, "status": "switched" })))
 }
 
 handler!(handle_tab_close, do_tab_close(req, state));
@@ -184,7 +193,7 @@ async fn do_tab_close(
         .get("wid")
         .and_then(|v| v.as_str())
         .ok_or_else(|| BkError::InvalidRequest("tab.close requires 'wid' param".into()))?;
-    let tid = req
+    let tab_key = req
         .params
         .get("tid")
         .and_then(|v| v.as_str())
@@ -192,17 +201,19 @@ async fn do_tab_close(
 
     let wid = resolve_wid(state, wid_prefix)?;
 
-    let (target_id, cdp_session_id, cdp, tab_managed) = {
+    // Resolve tab key (alias / tid / prefix) and extract needed info
+    let (tid, target_id, cdp_session_id, cdp, tab_managed) = {
         let ws = state
             .workspaces
             .get(&wid)
             .ok_or_else(|| BkError::WorkspaceNotFound(wid.clone()))?;
-        let tab = ws.tabs.get(tid).ok_or_else(|| BkError::TabNotFound(tid.to_string()))?;
+        let tid = super::common::resolve_tab(&ws, Some(tab_key))?;
+        let tab = ws.tabs.get(&tid).ok_or_else(|| BkError::TabNotFound(tid.to_string()))?;
         let browser = state
             .browsers
             .get(&ws.browser_host)
             .ok_or_else(|| BkError::BrowserConnectionFailed(format!("no connection for host: {}", ws.browser_host)))?;
-        (tab.target_id.clone(), tab.cdp_session_id.clone(), Arc::clone(&browser.cdp), tab.managed)
+        (tid, tab.target_id.clone(), tab.cdp_session_id.clone(), Arc::clone(&browser.cdp), tab.managed)
     };
 
     if tab_managed {
@@ -221,15 +232,15 @@ async fn do_tab_close(
     }
 
     if let Some(mut ws) = state.workspaces.get_mut(&wid) {
-        ws.tabs.remove(tid);
-        if ws.active_tab.as_deref() == Some(tid) {
+        ws.tabs.remove(&tid);
+        if ws.active_tab.as_deref() == Some(&tid) {
             ws.active_tab = ws.tabs.keys().next().cloned();
         }
         ws.last_active = now_ts();
     }
 
     // Cancel dialog subscription for this tab
-    state.dialog_state.cancel_subscription(&wid, tid);
+    state.dialog_state.cancel_subscription(&wid, &tid);
 
     state.request_persist();
     info!(wid = %wid, tid = %tid, "tab closed");
@@ -375,6 +386,14 @@ async fn do_tab_attach(
         )));
     }
 
+    let alias = {
+        let mut ws = state
+            .workspaces
+            .get_mut(&wid)
+            .ok_or_else(|| BkError::WorkspaceNotFound(wid.clone()))?;
+        ws.next_alias()
+    };
+
     let tab = Tab {
         tid: tid.clone(),
         target_id: target_id.clone(),
@@ -382,6 +401,7 @@ async fn do_tab_attach(
         url: target_url.clone(),
         title: target_title.clone(),
         managed: false, // user's existing tab
+        alias: alias.clone(),
     };
 
     if let Some(mut ws) = state.workspaces.get_mut(&wid) {
@@ -400,11 +420,12 @@ async fn do_tab_attach(
     );
 
     state.request_persist();
-    info!(wid = %wid, tid = %tid, target_id = %target_id, "tab attached");
+    info!(wid = %wid, tid = %tid, alias = %alias, target_id = %target_id, "tab attached");
 
     Ok(Response::ok(json!({
         "wid": wid,
         "tid": tid,
+        "alias": alias,
         "target_id": target_id,
         "url": target_url,
         "title": target_title,
@@ -441,6 +462,7 @@ mod tests {
             url: "https://example.com".to_string(),
             title: "Example".to_string(),
             managed: false,
+            alias: "t1".to_string(),
         };
         let mut tabs = HashMap::new();
         tabs.insert(tid.clone(), tab);
@@ -454,6 +476,7 @@ mod tests {
             active_tab: Some(tid),
             created_at: 1000,
             last_active: 2000,
+            next_alias_seq: 1,
         }
     }
 
@@ -478,6 +501,7 @@ mod tests {
             active_tab: None,
             created_at: 1000,
             last_active: 1000,
+            next_alias_seq: 0,
         };
         state.workspaces.insert(wid.clone(), ws);
 
@@ -490,6 +514,7 @@ mod tests {
             url: "https://new.tab".to_string(),
             title: String::new(),
             managed: true,
+            alias: "t1".to_string(),
         };
         if let Some(mut ws) = state.workspaces.get_mut(&wid) {
             ws.tabs.insert(tid.clone(), tab);
@@ -572,6 +597,7 @@ mod tests {
             url: "https://close.me".to_string(),
             title: "Close Me".to_string(),
             managed: true,
+            alias: "t1".to_string(),
         };
         let tab_remain = Tab {
             tid: tid_remaining.clone(),
@@ -580,6 +606,7 @@ mod tests {
             url: "https://stay.here".to_string(),
             title: "Stay".to_string(),
             managed: true,
+            alias: "t2".to_string(),
         };
 
         let mut tabs = HashMap::new();
@@ -596,6 +623,7 @@ mod tests {
             active_tab: Some(tid_to_close.clone()),
             created_at: 1000,
             last_active: 1000,
+            next_alias_seq: 2,
         };
         state.workspaces.insert(wid.clone(), ws);
 

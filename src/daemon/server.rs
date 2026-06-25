@@ -366,6 +366,7 @@ mod tests {
             active_tab: None,
             created_at: last_active,
             last_active,
+            next_alias_seq: 0,
         }
     }
 

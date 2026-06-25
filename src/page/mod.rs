@@ -41,6 +41,9 @@ pub struct Tab {
     /// - `managed = false`: bk attached to a pre-existing user tab (via `ws attach` / `tab attach`).
     ///   On close, bk will only `DetachFromTarget`, leaving the tab open.
     pub managed: bool,
+    /// Short human-friendly alias for CLI addressing (`t1`, `t2`, ...).
+    /// Workspace-scoped, monotonically increasing, never reused after close.
+    pub alias: String,
 }
 
 /// A text search match found on the page.

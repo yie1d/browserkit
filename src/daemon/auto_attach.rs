@@ -100,6 +100,7 @@ pub fn handle_target_attached(
         url: url.to_string(),
         title: title.to_string(),
         managed: false, // auto-discovered user tab
+        alias: String::new(), // placeholder, assigned below in lock scope
     };
 
     if let Some(mut ws) = state.workspaces.get_mut(&wid) {
@@ -109,6 +110,9 @@ pub fn handle_target_attached(
             debug!(target_id, "auto-attach: target appeared in ws during insert, skipping");
             return None;
         }
+        let alias = ws.next_alias();
+        let mut tab = tab;
+        tab.alias = alias;
         ws.tabs.insert(tid.clone(), tab);
         // If no active tab, set this as active
         if ws.active_tab.is_none() {
@@ -481,6 +485,7 @@ mod tests {
             active_tab: None,
             created_at: 1000,
             last_active: 2000,
+            next_alias_seq: 0,
         }
     }
 
@@ -492,6 +497,7 @@ mod tests {
             url: "https://example.com".to_string(),
             title: "Example".to_string(),
             managed: false,
+            alias: "t1".to_string(),
         };
         let mut tabs = HashMap::new();
         tabs.insert(tid.to_string(), tab);
@@ -505,6 +511,7 @@ mod tests {
             active_tab: Some(tid.to_string()),
             created_at: 1000,
             last_active: 2000,
+            next_alias_seq: 1,
         }
     }
 
@@ -560,6 +567,7 @@ mod tests {
             active_tab: None,
             created_at: 1000,
             last_active: 2000,
+            next_alias_seq: 0,
         });
 
         let result = find_attached_ws_for_host(&state, "localhost:9222");
@@ -739,6 +747,7 @@ mod tests {
             url: "https://a.com".to_string(),
             title: "A".to_string(),
             managed: false,
+            alias: "t1".to_string(),
         };
         let tab2 = Tab {
             tid: "tid2".to_string(),
@@ -747,6 +756,7 @@ mod tests {
             url: "https://b.com".to_string(),
             title: "B".to_string(),
             managed: false,
+            alias: "t2".to_string(),
         };
         ws.tabs.insert("tid1".to_string(), tab1);
         ws.tabs.insert("tid2".to_string(), tab2);

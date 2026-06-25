@@ -378,12 +378,12 @@ pub enum TabAction {
     List,
     /// Switch active tab
     Switch {
-        /// Tab ID
+        /// Tab alias (t1, t2, ...) or tid/prefix
         tid: String,
     },
     /// Close a tab
     Close {
-        /// Tab ID
+        /// Tab alias (t1, t2, ...) or tid/prefix
         tid: String,
     },
 }
