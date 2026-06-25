@@ -145,3 +145,37 @@ async fn do_act_dropdown_options(req: &Request, state: &Arc<DaemonState>) -> Res
     info!(wid = %ctx.wid, tid = %ctx.tid, index = index, "dropdown_options");
     Ok(Response::ok(result))
 }
+
+handler!(handle_act_upload, do_act_upload(req, state));
+
+async fn do_act_upload(req: &Request, state: &Arc<DaemonState>) -> Result<Response, BkError> {
+    let ctx = resolve_context(req, state, "act.upload")?;
+
+    let index = req.params.get("index").and_then(|v| v.as_u64()).map(|v| v as usize);
+    let selector = req.params.get("selector").and_then(|v| v.as_str());
+
+    let files: Vec<String> = req.params.get("files")
+        .and_then(|v| v.as_array())
+        .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        .unwrap_or_default();
+
+    if files.is_empty() {
+        return Err(BkError::InvalidRequest("act.upload requires at least one file path".into()));
+    }
+
+    match (index, selector) {
+        (Some(idx), _) => {
+            let elements = crate::page::state::get_page_state(&ctx.cdp, &ctx.cdp_session_id).await?;
+            crate::page::interaction::upload_files_by_index(&ctx.cdp, &ctx.cdp_session_id, &elements, idx, &files).await?;
+            info!(wid = %ctx.wid, tid = %ctx.tid, index = idx, count = files.len(), "upload by index");
+        }
+        (None, Some(sel)) => {
+            crate::page::interaction::upload_files_by_selector(&ctx.cdp, &ctx.cdp_session_id, sel, &files).await?;
+            info!(wid = %ctx.wid, tid = %ctx.tid, selector = %sel, count = files.len(), "upload by selector");
+        }
+        _ => return Err(BkError::InvalidRequest("act.upload requires 'index' or 'selector' param".into())),
+    }
+
+    touch_workspace(state, &ctx.wid);
+    Ok(Response::ok(json!({ "wid": ctx.wid, "tid": ctx.tid, "status": "uploaded", "files": files })))
+}

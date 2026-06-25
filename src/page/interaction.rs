@@ -581,6 +581,145 @@ pub async fn focus_element(
     Ok(())
 }
 
+/// Upload files to a `<input type="file">` element located by index.
+///
+/// 1. Uses Runtime.evaluate (without returnByValue) to get the element's objectId
+/// 2. Validates the element is an input[type=file] via JS
+/// 3. Validates file paths exist on disk
+/// 4. Calls DOM.setFileInputFiles with the objectId
+pub async fn upload_files_by_index(
+    cdp: &Arc<CDP>,
+    session_id: &str,
+    elements: &[ElementInfo],
+    index: usize,
+    files: &[String],
+) -> Result<(), BkError> {
+    let _el = get_element(elements, index)?;
+
+    // Validate all file paths exist
+    validate_file_paths(files)?;
+
+    let session = cdp.session(session_id);
+
+    // Get element reference (objectId) and validate it's a file input — in one evaluate call
+    let js = format!(
+        r#"(() => {{
+    const selectors = 'a, button, input, textarea, select, [role="button"], [onclick]';
+    const all = Array.from(document.querySelectorAll(selectors)).filter(el => {{
+        const r = el.getBoundingClientRect();
+        return r.width > 0 && r.height > 0;
+    }});
+    const el = all[{index}];
+    if (!el) throw new Error('element not found at index {index}');
+    if (el.tagName.toLowerCase() !== 'input' || el.type.toLowerCase() !== 'file')
+        throw new Error('element at index {index} is not an input[type=file], got: <' + el.tagName.toLowerCase() + ' type="' + (el.type || '') + '">');
+    return el;
+}})()"#
+    );
+
+    let resp = cdpkit::runtime::methods::Evaluate::new(&js)
+        .send(&session)
+        .await?;
+
+    if let Some(details) = &resp.exception_details {
+        return Err(BkError::Other(format!("upload: {}", exception_message(details))));
+    }
+
+    // The evaluate without returnByValue gives us an objectId for the DOM element
+    let object_id = resp.result.object_id.ok_or_else(|| {
+        BkError::Other("upload: no objectId returned for element".into())
+    })?;
+
+    // Call DOM.setFileInputFiles
+    cdpkit::dom::methods::SetFileInputFiles::new(files.to_vec())
+        .with_object_id(object_id)
+        .send(&session)
+        .await?;
+
+    Ok(())
+}
+
+/// Upload files to a `<input type="file">` element located by CSS selector.
+///
+/// 1. Uses Runtime.evaluate (without returnByValue) to get the element's objectId
+/// 2. Validates the element is an input[type=file] via JS
+/// 3. Validates file paths exist on disk
+/// 4. Calls DOM.setFileInputFiles with the objectId
+pub async fn upload_files_by_selector(
+    cdp: &Arc<CDP>,
+    session_id: &str,
+    selector: &str,
+    files: &[String],
+) -> Result<(), BkError> {
+    // Validate all file paths exist
+    validate_file_paths(files)?;
+
+    let session = cdp.session(session_id);
+
+    // Use serde_json::to_string to produce a safe JS string literal
+    let selector_js = serde_json::to_string(selector)
+        .map_err(|e| BkError::Other(format!("upload: failed to serialize selector: {}", e)))?;
+
+    let js = format!(
+        r#"(() => {{
+    const el = document.querySelector({selector_js});
+    if (!el) throw new Error('element not found for selector: ' + {selector_js});
+    if (el.tagName.toLowerCase() !== 'input' || el.type.toLowerCase() !== 'file')
+        throw new Error('element matching selector is not an input[type=file], got: <' + el.tagName.toLowerCase() + ' type="' + (el.type || '') + '">');
+    return el;
+}})()"#
+    );
+
+    let resp = cdpkit::runtime::methods::Evaluate::new(&js)
+        .send(&session)
+        .await?;
+
+    if let Some(details) = &resp.exception_details {
+        return Err(BkError::Other(format!("upload: {}", exception_message(details))));
+    }
+
+    let object_id = resp.result.object_id.ok_or_else(|| {
+        BkError::Other("upload: no objectId returned for element".into())
+    })?;
+
+    // Call DOM.setFileInputFiles
+    cdpkit::dom::methods::SetFileInputFiles::new(files.to_vec())
+        .with_object_id(object_id)
+        .send(&session)
+        .await?;
+
+    Ok(())
+}
+
+/// Validate that all file paths exist. Returns an error with the first missing path.
+///
+/// Requires absolute paths. Relative paths are rejected because the daemon's CWD
+/// may differ from the user's shell CWD, making relative paths unreliable.
+fn validate_file_paths(files: &[String]) -> Result<(), BkError> {
+    for path_str in files {
+        let path = std::path::Path::new(path_str);
+        if !path.is_absolute() {
+            return Err(BkError::InvalidRequest(format!(
+                "file path must be absolute: '{}' (relative paths are unreliable because the daemon runs in a different working directory)",
+                path_str
+            )));
+        }
+        if !path.exists() {
+            return Err(BkError::InvalidRequest(format!(
+                "file not found: '{}'",
+                path_str
+            )));
+        }
+        if !path.is_file() {
+            return Err(BkError::InvalidRequest(format!(
+                "path is not a file: '{}'",
+                path_str
+            )));
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -929,5 +1068,141 @@ mod tests {
         let focus_pos = js.find("el.focus()").unwrap();
         let setter_pos = js.find("nativeInputValueSetter").unwrap();
         assert!(focus_pos < setter_pos, "focus should come before clearing");
+    }
+
+    // ── Upload tests ──────────────────────────────────────────────────
+
+    /// Helper: build the upload-by-index JS (same logic as the real function)
+    fn build_upload_by_index_js(index: usize) -> String {
+        format!(
+            r#"(() => {{
+    const selectors = 'a, button, input, textarea, select, [role="button"], [onclick]';
+    const all = Array.from(document.querySelectorAll(selectors)).filter(el => {{
+        const r = el.getBoundingClientRect();
+        return r.width > 0 && r.height > 0;
+    }});
+    const el = all[{index}];
+    if (!el) throw new Error('element not found at index {index}');
+    if (el.tagName.toLowerCase() !== 'input' || el.type.toLowerCase() !== 'file')
+        throw new Error('element at index {index} is not an input[type=file], got: <' + el.tagName.toLowerCase() + ' type="' + (el.type || '') + '">');
+    return el;
+}})()"#
+        )
+    }
+
+    /// Helper: build the upload-by-selector JS (same logic as the real function)
+    fn build_upload_by_selector_js(selector: &str) -> String {
+        let selector_js = serde_json::to_string(selector).unwrap();
+        format!(
+            r#"(() => {{
+    const el = document.querySelector({selector_js});
+    if (!el) throw new Error('element not found for selector: ' + {selector_js});
+    if (el.tagName.toLowerCase() !== 'input' || el.type.toLowerCase() !== 'file')
+        throw new Error('element matching selector is not an input[type=file], got: <' + el.tagName.toLowerCase() + ' type="' + (el.type || '') + '">');
+    return el;
+}})()"#
+        )
+    }
+
+    #[test]
+    fn upload_by_index_js_validates_file_input() {
+        let js = build_upload_by_index_js(3);
+        assert!(js.contains("all[3]"), "should reference correct index: {}", js);
+        assert!(js.contains("tagName.toLowerCase() !== 'input'"), "should check tagName: {}", js);
+        assert!(js.contains("type.toLowerCase() !== 'file'"), "should check type=file: {}", js);
+    }
+
+    #[test]
+    fn upload_by_index_js_throws_on_wrong_element() {
+        let js = build_upload_by_index_js(0);
+        assert!(js.contains("throw new Error"), "should throw on wrong element type: {}", js);
+        assert!(js.contains("is not an input[type=file]"), "error message should describe the issue: {}", js);
+    }
+
+    #[test]
+    fn upload_by_index_js_returns_element_reference() {
+        let js = build_upload_by_index_js(0);
+        // Must return `el` (not a serialized value) so we get an objectId
+        assert!(js.contains("return el;"), "should return element reference: {}", js);
+        assert!(!js.contains("JSON.stringify"), "should not stringify the result: {}", js);
+        assert!(!js.contains("JSON.parse"), "should not use JSON.parse: {}", js);
+    }
+
+    #[test]
+    fn upload_by_selector_js_validates_file_input() {
+        let js = build_upload_by_selector_js("input[type=file]");
+        assert!(js.contains(r#"document.querySelector("input[type=file]")"#), "should embed selector: {}", js);
+        assert!(js.contains("tagName.toLowerCase() !== 'input'"), "should check tagName: {}", js);
+        assert!(js.contains("type.toLowerCase() !== 'file'"), "should check type=file: {}", js);
+    }
+
+    #[test]
+    fn upload_by_selector_js_escapes_special_chars() {
+        let js = build_upload_by_selector_js(r#"input[name="avatar"]"#);
+        assert!(!js.contains("JSON.parse("), "should not use JSON.parse");
+        // serde_json should escape internal quotes
+        assert!(js.contains(r#"input[name=\"avatar\"]"#), "should escape quotes: {}", js);
+    }
+
+    #[test]
+    fn upload_by_selector_js_returns_element_reference() {
+        let js = build_upload_by_selector_js("#file-input");
+        assert!(js.contains("return el;"), "should return element reference: {}", js);
+        assert!(!js.contains("JSON.stringify"), "should not stringify: {}", js);
+    }
+
+    #[test]
+    fn validate_file_paths_rejects_relative() {
+        let files = vec!["relative/path.txt".to_string()];
+        let err = validate_file_paths(&files).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("must be absolute"), "should require absolute path: {}", msg);
+        assert!(msg.contains("relative/path.txt"), "should mention the path: {}", msg);
+    }
+
+    #[test]
+    fn validate_file_paths_rejects_nonexistent() {
+        let files = vec![if cfg!(windows) {
+            r"C:\nonexistent_bk_test_file_12345.txt".to_string()
+        } else {
+            "/nonexistent_bk_test_file_12345.txt".to_string()
+        }];
+        let err = validate_file_paths(&files).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("file not found"), "should report not found: {}", msg);
+    }
+
+    #[test]
+    fn validate_file_paths_accepts_existing_file() {
+        // Use Cargo.toml as a known existing file
+        let manifest = std::env::var("CARGO_MANIFEST_DIR").unwrap();
+        let cargo_toml = std::path::PathBuf::from(manifest).join("Cargo.toml");
+        let files = vec![cargo_toml.to_string_lossy().to_string()];
+        assert!(validate_file_paths(&files).is_ok(), "should accept existing file");
+    }
+
+    #[test]
+    fn validate_file_paths_rejects_directory() {
+        let manifest = std::env::var("CARGO_MANIFEST_DIR").unwrap();
+        let files = vec![manifest];
+        let err = validate_file_paths(&files).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("not a file"), "should reject directory: {}", msg);
+    }
+
+    #[test]
+    fn validate_file_paths_checks_all_files() {
+        // First file valid, second invalid
+        let manifest = std::env::var("CARGO_MANIFEST_DIR").unwrap();
+        let cargo_toml = std::path::PathBuf::from(&manifest).join("Cargo.toml");
+        let bad_file = if cfg!(windows) {
+            r"C:\nonexistent_bk_test_99999.txt".to_string()
+        } else {
+            "/nonexistent_bk_test_99999.txt".to_string()
+        };
+        let files = vec![cargo_toml.to_string_lossy().to_string(), bad_file];
+        let err = validate_file_paths(&files).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("file not found"), "should catch second bad file: {}", msg);
     }
 }

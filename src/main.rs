@@ -165,6 +165,18 @@ pub enum Command {
         #[arg(short, long)]
         index: usize,
     },
+    /// Upload files to a file input element
+    Upload {
+        /// Element index (from page state)
+        #[arg(short, long, group = "target")]
+        index: Option<usize>,
+        /// CSS selector for the file input
+        #[arg(short, long, group = "target")]
+        selector: Option<String>,
+        /// File paths to upload
+        #[arg(required = true)]
+        files: Vec<String>,
+    },
     /// Execute JS expression (async-capable, maps to js.await)
     Eval {
         /// JavaScript expression
@@ -1036,6 +1048,15 @@ async fn dispatch(cli: &Cli, client: &mut DaemonClient) -> Result<(), String> {
 
         Command::Focus { index } => {
             ws_cmd!(cli, client, fmt, "act.focus", { "index" => index });
+        }
+
+        Command::Upload { index, selector, files } => {
+            let wid = resolve_workspace(&cli.workspace, client).await?;
+            let mut params = json!({"wid": wid, "files": files});
+            if let Some(i) = index { params["index"] = json!(i); }
+            if let Some(s) = selector { params["selector"] = json!(s); }
+            let resp = send_cmd(client, "act.upload", params).await?;
+            print_response(&resp, fmt);
         }
 
         Command::Eval { expr } => {
