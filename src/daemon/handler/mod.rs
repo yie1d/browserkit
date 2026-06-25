@@ -69,6 +69,7 @@ pub async fn handle_request(
         "act.select" => action::handle_act_select(req, state).await,
         "act.hover" => action::handle_act_hover(req, state).await,
         "act.focus" => action::handle_act_focus(req, state).await,
+        "act.fill" => action::handle_act_fill(req, state).await,
         "act.upload" => action::handle_act_upload(req, state).await,
         "act.dropdown_options" => action::handle_act_dropdown_options(req, state).await,
         "js.eval" | "js.await" => js::handle_eval(req, state).await,

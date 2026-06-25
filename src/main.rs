@@ -152,6 +152,12 @@ pub enum Command {
         /// Option value or display text
         value: String,
     },
+    /// Batch fill form fields
+    Fill {
+        /// Field assignments: <index>=<value> (repeatable)
+        #[arg(long = "set", required = true)]
+        set: Vec<String>,
+    },
     /// List options in a dropdown (select element)
     DropdownOptions {
         /// Element index
@@ -1097,6 +1103,18 @@ async fn dispatch(cli: &Cli, client: &mut DaemonClient) -> Result<(), String> {
 
         Command::Select { index, value } => {
             ws_cmd!(cli, client, fmt, "act.select", { "index" => index, "value" => value });
+        }
+
+        Command::Fill { set } => {
+            use browserkit::page::interaction::parse_fill_set;
+            let mut fields = Vec::new();
+            for s in set {
+                let field = parse_fill_set(s)?;
+                fields.push(serde_json::json!({"index": field.index, "value": field.value}));
+            }
+            let wid = resolve_workspace(&cli.workspace, client).await?;
+            let resp = send_cmd(client, "act.fill", json!({"wid": wid, "fields": fields})).await?;
+            print_response(&resp, fmt);
         }
 
         Command::DropdownOptions { index } => {

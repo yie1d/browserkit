@@ -146,6 +146,41 @@ async fn do_act_dropdown_options(req: &Request, state: &Arc<DaemonState>) -> Res
     Ok(Response::ok(result))
 }
 
+handler!(handle_act_fill, do_act_fill(req, state));
+
+async fn do_act_fill(req: &Request, state: &Arc<DaemonState>) -> Result<Response, BkError> {
+    let ctx = resolve_context(req, state, "act.fill")?;
+
+    let fields_arr = req.params.get("fields")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| BkError::InvalidRequest("act.fill requires 'fields' array param".into()))?;
+
+    let mut fields = Vec::with_capacity(fields_arr.len());
+    for item in fields_arr {
+        let index = item.get("index").and_then(|v| v.as_u64()).map(|v| v as usize)
+            .ok_or_else(|| BkError::InvalidRequest("each fill field requires 'index' (number)".into()))?;
+        let value = item.get("value").and_then(|v| v.as_str())
+            .ok_or_else(|| BkError::InvalidRequest("each fill field requires 'value' (string)".into()))?;
+        fields.push(crate::page::interaction::FillField { index, value: value.to_string() });
+    }
+
+    if fields.is_empty() {
+        return Err(BkError::InvalidRequest("act.fill requires at least one field".into()));
+    }
+
+    let results = crate::page::interaction::fill_fields(&ctx.cdp, &ctx.cdp_session_id, &fields).await?;
+    touch_workspace(state, &ctx.wid);
+
+    let has_errors = results.iter().any(|r| r.status == "error");
+    info!(wid = %ctx.wid, tid = %ctx.tid, count = fields.len(), errors = has_errors, "fill");
+
+    Ok(Response::ok(json!({
+        "wid": ctx.wid,
+        "tid": ctx.tid,
+        "results": results,
+    })))
+}
+
 handler!(handle_act_upload, do_act_upload(req, state));
 
 async fn do_act_upload(req: &Request, state: &Arc<DaemonState>) -> Result<Response, BkError> {
