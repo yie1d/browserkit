@@ -5,6 +5,7 @@ use std::sync::Arc;
 use serde_json::json;
 use tracing::info;
 
+use crate::daemon::dialog::spawn_dialog_subscription;
 use crate::daemon::protocol::{Request, Response};
 use crate::daemon::state::{generate_hex_id, resolve_wid, DaemonState};
 use crate::error::BkError;
@@ -83,13 +84,22 @@ async fn do_tab_new(
     let tid = generate_hex_id();
     let ts = now_ts();
 
-    let tab = Tab { tid: tid.clone(), target_id, cdp_session_id, url: url.to_string(), title: String::new(), managed: true };
+    let tab = Tab { tid: tid.clone(), target_id, cdp_session_id: cdp_session_id.clone(), url: url.to_string(), title: String::new(), managed: true };
 
     if let Some(mut ws) = state.workspaces.get_mut(&wid) {
         ws.tabs.insert(tid.clone(), tab);
         ws.active_tab = Some(tid.clone());
         ws.last_active = ts;
     }
+
+    // Start dialog subscription for this tab's session
+    spawn_dialog_subscription(
+        Arc::clone(state),
+        Arc::clone(&cdp),
+        cdp_session_id,
+        wid.clone(),
+        tid.clone(),
+    );
 
     state.request_persist();
     info!(wid = %wid, tid = %tid, url = %url, "tab created");
@@ -217,6 +227,9 @@ async fn do_tab_close(
         }
         ws.last_active = now_ts();
     }
+
+    // Cancel dialog subscription for this tab
+    state.dialog_state.cancel_subscription(&wid, tid);
 
     state.request_persist();
     info!(wid = %wid, tid = %tid, "tab closed");
@@ -365,7 +378,7 @@ async fn do_tab_attach(
     let tab = Tab {
         tid: tid.clone(),
         target_id: target_id.clone(),
-        cdp_session_id,
+        cdp_session_id: cdp_session_id.clone(),
         url: target_url.clone(),
         title: target_title.clone(),
         managed: false, // user's existing tab
@@ -376,6 +389,15 @@ async fn do_tab_attach(
         ws.active_tab = Some(tid.clone());
         ws.last_active = ts;
     }
+
+    // Start dialog subscription for this tab's session
+    spawn_dialog_subscription(
+        Arc::clone(state),
+        Arc::clone(&cdp),
+        cdp_session_id,
+        wid.clone(),
+        tid.clone(),
+    );
 
     state.request_persist();
     info!(wid = %wid, tid = %tid, target_id = %target_id, "tab attached");

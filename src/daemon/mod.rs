@@ -1,5 +1,6 @@
 // Daemon: background process lifecycle (start/stop/status)
 pub mod auto_attach;
+pub mod dialog;
 pub mod handler;
 pub mod persist;
 pub mod protocol;

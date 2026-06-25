@@ -10,6 +10,7 @@ use tokio::sync::Mutex as AsyncMutex;
 use tokio_util::sync::CancellationToken;
 
 use crate::config::Config;
+use crate::daemon::dialog::DialogState;
 use crate::daemon::persist::PersistTx;
 use crate::workspace::Workspace;
 
@@ -58,6 +59,8 @@ pub struct DaemonState {
     /// tracks target lifecycle events. The token allows stopping the task when
     /// the browser disconnects or the last attached workspace is closed.
     pub auto_attach_tasks: DashMap<String, CancellationToken>,
+    /// Dialog management state: pending dialogs, policies, subscription tokens.
+    pub dialog_state: DialogState,
 }
 
 impl DaemonState {
@@ -84,6 +87,7 @@ impl DaemonState {
             persist_tx,
             _persist_rx_guard: Some(persist_rx),
             auto_attach_tasks: DashMap::new(),
+            dialog_state: DialogState::new(),
         }
     }
 

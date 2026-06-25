@@ -12,6 +12,7 @@ mod js;
 mod storage;
 mod network;
 mod debug;
+mod dialog;
 
 use std::sync::Arc;
 
@@ -84,6 +85,10 @@ pub async fn handle_request(
         "network.unblock" => network::handle_network_unblock(req, state).await,
         "cdp.send" => debug::handle_cdp_send(req, state).await,
         "cdp.events" => debug::handle_cdp_events(req, state).await,
+        "dialog.list" => dialog::handle_dialog_list(req, state).await,
+        "dialog.accept" => dialog::handle_dialog_accept(req, state).await,
+        "dialog.dismiss" => dialog::handle_dialog_dismiss(req, state).await,
+        "dialog.policy" => dialog::handle_dialog_policy(req, state).await,
         _ => Response::err(format!("unknown command: {}", req.cmd)),
     }
 }

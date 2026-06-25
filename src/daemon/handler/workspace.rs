@@ -7,6 +7,7 @@ use serde_json::json;
 use tracing::{debug, info};
 
 use crate::daemon::auto_attach;
+use crate::daemon::dialog::spawn_dialog_subscription;
 use crate::daemon::protocol::{Request, Response};
 use crate::daemon::state::{generate_hex_id, resolve_wid, DaemonState};
 use crate::error::BkError;
@@ -86,6 +87,7 @@ async fn do_ws_new(
         let mut tabs = HashMap::new();
         let mut first_tid: Option<String> = None;
         let mut skipped: Vec<String> = Vec::new();
+        let mut tab_sessions: Vec<(String, String)> = Vec::new();
 
         for target in &matching_targets {
             // Skip targets already tracked in any workspace
@@ -124,12 +126,14 @@ async fn do_ws_new(
             let tab = Tab {
                 tid: tid.clone(),
                 target_id: target.target_id.clone(),
-                cdp_session_id,
+                cdp_session_id: cdp_session_id.clone(),
                 url: target.url.clone(),
                 title: target.title.clone(),
                 managed: false, // user's existing tab — never close, only detach
             };
-            tabs.insert(tid, tab);
+            tabs.insert(tid.clone(), tab);
+            // Collect (tid, session_id) for dialog subscriptions after workspace creation
+            tab_sessions.push((tid, cdp_session_id));
         }
 
         if tabs.is_empty() {
@@ -159,6 +163,17 @@ async fn do_ws_new(
 
         // Start auto-attach background task if not already running for this host
         ensure_auto_attach_task(state, &host, &cdp);
+
+        // Start dialog subscriptions for all tabs we just attached
+        for (tid, session_id) in &tab_sessions {
+            spawn_dialog_subscription(
+                Arc::clone(state),
+                Arc::clone(&cdp),
+                session_id.clone(),
+                wid.clone(),
+                tid.clone(),
+            );
+        }
 
         let attached_count = state.workspaces.get(&wid).map(|ws| ws.tabs.len()).unwrap_or(0);
         info!(wid = %wid, host = %host, mode = "attached", tabs = attached_count, skipped = skipped.len(), "workspace created");
@@ -211,7 +226,7 @@ async fn do_ws_new(
         let tid = generate_hex_id();
         let ts = now_ts();
 
-        let tab = Tab { tid: tid.clone(), target_id, cdp_session_id, url: "about:blank".to_string(), title: String::new(), managed: true };
+        let tab = Tab { tid: tid.clone(), target_id, cdp_session_id: cdp_session_id.clone(), url: "about:blank".to_string(), title: String::new(), managed: true };
 
         let mut tabs = HashMap::new();
         tabs.insert(tid.clone(), tab);
@@ -233,6 +248,15 @@ async fn do_ws_new(
             state.set_default_wid(Some(wid.clone()));
         }
         state.request_persist();
+
+        // Start dialog subscription for the initial tab
+        spawn_dialog_subscription(
+            Arc::clone(state),
+            Arc::clone(&cdp),
+            cdp_session_id,
+            wid.clone(),
+            tid.clone(),
+        );
 
         info!(wid = %wid, host = %host, mode = "isolated", "workspace created");
 
@@ -428,7 +452,7 @@ async fn merge_into_existing_attached_ws(
         let tab = Tab {
             tid: tid.clone(),
             target_id: target.target_id.clone(),
-            cdp_session_id,
+            cdp_session_id: cdp_session_id.clone(),
             url: target.url.clone(),
             title: target.title.clone(),
             managed: false,
@@ -441,6 +465,15 @@ async fn merge_into_existing_attached_ws(
                 ws.active_tab = Some(tid.clone());
             }
         }
+
+        // Start dialog subscription for this newly merged tab
+        spawn_dialog_subscription(
+            Arc::clone(state),
+            Arc::clone(cdp),
+            cdp_session_id,
+            existing_wid.to_string(),
+            tid.clone(),
+        );
 
         newly_attached.push(json!({
             "target_id": target.target_id,
@@ -652,6 +685,10 @@ async fn do_ws_close(
         }
     }
 
+    // Cancel all dialog subscriptions for this workspace BEFORE removing it
+    // (prevents race where tasks write to a removed workspace)
+    state.dialog_state.cancel_all_for_ws(&wid);
+
     state.workspaces.remove(&wid);
 
     if state.get_default_wid().as_deref() == Some(&wid) {
@@ -796,6 +833,7 @@ async fn do_ws_attach(
     let mut tabs = HashMap::new();
     let mut first_tid: Option<String> = None;
     let mut skipped: Vec<String> = Vec::new();
+    let mut tab_sessions_attach: Vec<(String, String)> = Vec::new();
 
     for target in &matching_targets {
         // Skip targets already tracked in any workspace
@@ -836,12 +874,13 @@ async fn do_ws_attach(
         let tab = Tab {
             tid: tid.clone(),
             target_id: target.target_id.clone(),
-            cdp_session_id,
+            cdp_session_id: cdp_session_id.clone(),
             url: target.url.clone(),
             title: target.title.clone(),
             managed: false, // user's existing tab — never close, only detach
         };
-        tabs.insert(tid, tab);
+        tabs.insert(tid.clone(), tab);
+        tab_sessions_attach.push((tid, cdp_session_id));
     }
 
     if tabs.is_empty() {
@@ -871,6 +910,17 @@ async fn do_ws_attach(
 
     // Start auto-attach background task if not already running for this host
     ensure_auto_attach_task(state, &host, &cdp);
+
+    // Start dialog subscriptions for all tabs we just attached
+    for (tid, session_id) in &tab_sessions_attach {
+        spawn_dialog_subscription(
+            Arc::clone(state),
+            Arc::clone(&cdp),
+            session_id.clone(),
+            wid.clone(),
+            tid.clone(),
+        );
+    }
 
     let attached_count = state.workspaces.get(&wid).map(|ws| ws.tabs.len()).unwrap_or(0);
     info!(wid = %wid, host = %host, tabs = attached_count, skipped = skipped.len(), "attached workspace created");

@@ -91,6 +91,11 @@ pub enum Command {
         #[command(subcommand)]
         action: DebugAction,
     },
+    /// JavaScript dialog management (alert/confirm/prompt/beforeunload)
+    Dialog {
+        #[command(subcommand)]
+        action: DialogAction,
+    },
 
     // ── Top-level shortcuts ────────────────────────────────
 
@@ -561,6 +566,32 @@ pub enum DebugAction {
     },
 }
 
+#[derive(Subcommand)]
+pub enum DialogAction {
+    /// List pending dialogs in current workspace
+    List,
+    /// Accept (confirm) a pending dialog
+    Accept {
+        /// Tab ID (required if multiple pending dialogs)
+        #[arg(long)]
+        tid: Option<String>,
+        /// Text to enter for prompt dialogs
+        #[arg(long)]
+        text: Option<String>,
+    },
+    /// Dismiss (cancel) a pending dialog
+    Dismiss {
+        /// Tab ID (required if multiple pending dialogs)
+        #[arg(long)]
+        tid: Option<String>,
+    },
+    /// View or set the dialog handling policy for this workspace
+    Policy {
+        /// Policy to set: manual, accept, dismiss (omit to view current)
+        policy: Option<String>,
+    },
+}
+
 // ── Main ───────────────────────────────────────────────────────
 
 #[tokio::main]
@@ -995,6 +1026,36 @@ async fn dispatch(cli: &Cli, client: &mut DaemonClient) -> Result<(), String> {
                     let resp = send_cmd(client, "cdp.events", params).await?;
                     print_response(&resp, fmt);
                     run_streaming(client, fmt).await;
+                }
+            }
+        },
+
+        // ── Dialog ────────────────────────────────────────────
+        Command::Dialog { action } => {
+            let wid = resolve_workspace(&cli.workspace, client).await?;
+            match action {
+                DialogAction::List => {
+                    let resp = send_cmd(client, "dialog.list", json!({"wid": wid})).await?;
+                    print_response(&resp, fmt);
+                }
+                DialogAction::Accept { tid, text } => {
+                    let mut params = json!({"wid": wid});
+                    if let Some(t) = tid { params["tid"] = json!(t); }
+                    if let Some(txt) = text { params["text"] = json!(txt); }
+                    let resp = send_cmd(client, "dialog.accept", params).await?;
+                    print_response(&resp, fmt);
+                }
+                DialogAction::Dismiss { tid } => {
+                    let mut params = json!({"wid": wid});
+                    if let Some(t) = tid { params["tid"] = json!(t); }
+                    let resp = send_cmd(client, "dialog.dismiss", params).await?;
+                    print_response(&resp, fmt);
+                }
+                DialogAction::Policy { policy } => {
+                    let mut params = json!({"wid": wid});
+                    if let Some(p) = policy { params["policy"] = json!(p); }
+                    let resp = send_cmd(client, "dialog.policy", params).await?;
+                    print_response(&resp, fmt);
                 }
             }
         },

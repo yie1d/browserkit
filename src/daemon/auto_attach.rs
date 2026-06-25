@@ -11,6 +11,7 @@ use futures::StreamExt;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
+use crate::daemon::dialog::spawn_dialog_subscription;
 use crate::daemon::state::{generate_hex_id, DaemonState};
 use crate::page::Tab;
 
@@ -58,7 +59,9 @@ pub fn find_attached_ws_for_host(state: &DaemonState, browser_host: &str) -> Opt
 /// This is the pure logic extracted for testability. It checks exclusions,
 /// deduplication, and inserts the tab into the appropriate workspace.
 ///
-/// Returns `Some(tid)` if a new tab was added, `None` if skipped.
+/// Returns `Some((wid, tid))` if a new tab was added, `None` if skipped.
+/// The returned `wid` is the exact workspace the tab was inserted into,
+/// so callers can use it directly without a second lookup.
 pub fn handle_target_attached(
     state: &DaemonState,
     browser_host: &str,
@@ -67,7 +70,7 @@ pub fn handle_target_attached(
     type_: &str,
     url: &str,
     title: &str,
-) -> Option<String> {
+) -> Option<(String, String)> {
     // Filter out non-page / internal targets
     if should_exclude_target(type_, url) {
         debug!(target_id, type_, url, "auto-attach: skipping non-page/internal target");
@@ -117,7 +120,7 @@ pub fn handle_target_attached(
     }
 
     info!(wid = %wid, tid = %tid, target_id, url, "auto-attach: new tab tracked");
-    Some(tid)
+    Some((wid, tid))
 }
 
 /// Handle a target being destroyed.
@@ -252,7 +255,14 @@ pub fn spawn_auto_attach_task(
 
                     // Only proceed for trackable targets
                     if !should_exclude_target(&target_info.type_, &target_info.url) {
-                        // Enable Page/Runtime/Network on the new session (best-effort)
+                        // Enable Page/Runtime/Network on the new session (best-effort).
+                        //
+                        // Known limitation: there is a tiny window between Page.enable and
+                        // the dialog subscription (spawned after handle_target_attached below)
+                        // where a dialog could fire and be missed. Subscribing before enable
+                        // is not viable because CDP won't emit Page events until the domain
+                        // is enabled. This is an accepted trade-off; in practice the window
+                        // is sub-millisecond.
                         let _ = cdpkit::page::methods::Enable::new()
                             .send(&owned_session).await;
                         let _ = cdpkit::page::methods::SetLifecycleEventsEnabled::new(true)
@@ -273,7 +283,15 @@ pub fn spawn_auto_attach_task(
                         &target_info.url,
                         &target_info.title,
                     );
-                    if added.is_some() {
+                    if let Some((ref wid, ref tid)) = added {
+                        // Start dialog subscription for this auto-attached tab
+                        spawn_dialog_subscription(
+                            Arc::clone(&state),
+                            Arc::clone(&cdp),
+                            session_id.clone(),
+                            wid.clone(),
+                            tid.clone(),
+                        );
                         state.request_persist();
                     }
                 }
@@ -288,7 +306,8 @@ pub fn spawn_auto_attach_task(
                         "auto-attach: TargetDestroyed event received"
                     );
                     let removed = handle_target_destroyed(&state, &ev.target_id);
-                    if removed.is_some() {
+                    if let Some((ref wid, ref tid)) = removed {
+                        state.dialog_state.cancel_subscription(wid, tid);
                         state.request_persist();
                     }
                 }
@@ -330,7 +349,8 @@ pub fn spawn_auto_attach_task(
                     // This handles cases where Chrome detaches a target (e.g. tab crash).
                     let session_id = &ev.session_id;
                     let removed = handle_session_detached(&state, session_id);
-                    if removed.is_some() {
+                    if let Some((ref wid, ref tid)) = removed {
+                        state.dialog_state.cancel_subscription(wid, tid);
                         state.request_persist();
                     }
                 }
@@ -395,7 +415,15 @@ pub fn spawn_auto_attach_task(
                         &target_info.url,
                         &target_info.title,
                     );
-                    if added.is_some() {
+                    if let Some((ref wid, ref tid)) = added {
+                        // Start dialog subscription for this auto-attached tab
+                        spawn_dialog_subscription(
+                            Arc::clone(&state),
+                            Arc::clone(&cdp),
+                            session_id.clone(),
+                            wid.clone(),
+                            tid.clone(),
+                        );
                         state.request_persist();
                     }
                 }
@@ -579,7 +607,8 @@ mod tests {
         );
 
         assert!(result.is_some());
-        let tid = result.unwrap();
+        let (wid, tid) = result.unwrap();
+        assert_eq!(wid, "ws1");
 
         // Verify tab was inserted
         let ws = state.workspaces.get("ws1").unwrap();
@@ -626,7 +655,7 @@ mod tests {
         );
         assert!(result.is_some(), "chrome://newtab/ page targets must be tracked");
 
-        let tid = result.unwrap();
+        let (_wid, tid) = result.unwrap();
         let ws = state.workspaces.get("ws1").unwrap();
         let tab = ws.tabs.get(&tid).unwrap();
         assert_eq!(tab.url, "chrome://newtab/");
@@ -658,7 +687,7 @@ mod tests {
         let state = DaemonState::new();
         state.workspaces.insert("ws1".to_string(), make_attached_workspace("ws1", "localhost:9222"));
 
-        let tid = handle_target_attached(
+        let (_wid, tid) = handle_target_attached(
             &state,
             "localhost:9222",
             "TARGET_FIRST",
@@ -792,7 +821,7 @@ mod tests {
         state.workspaces.insert("ws1".to_string(), make_attached_workspace("ws1", "localhost:9222"));
 
         // Register the tab as chrome://newtab/ (type=page, tracked at creation)
-        let tid = handle_target_attached(
+        let (_wid, tid) = handle_target_attached(
             &state,
             "localhost:9222",
             "TARGET_NEWTAB_NAV",
@@ -861,7 +890,7 @@ mod tests {
         );
         assert!(result.is_some());
 
-        let tid = result.unwrap();
+        let (_wid, tid) = result.unwrap();
         let ws = state.workspaces.get("ws1").unwrap();
         let tab = ws.tabs.get(&tid).unwrap();
         assert_eq!(tab.target_id, "TARGET_NEW_TAB");
@@ -931,6 +960,31 @@ mod tests {
         assert!(should_exclude_target("background_page", "https://example.com"));
         assert!(should_exclude_target("browser_ui", "chrome://omnibox"));
         assert!(should_exclude_target("other", "chrome://glic/"));
+    }
+
+    #[test]
+    fn handle_target_attached_returns_correct_wid() {
+        // Verifies that the returned wid matches the workspace the tab was inserted into
+        let state = DaemonState::new();
+        state.workspaces.insert("ws_alpha".to_string(), make_attached_workspace("ws_alpha", "localhost:9222"));
+        state.workspaces.insert("ws_beta".to_string(), make_attached_workspace("ws_beta", "localhost:9333"));
+
+        let result = handle_target_attached(
+            &state,
+            "localhost:9333",
+            "TARGET_BETA",
+            "session_beta",
+            "page",
+            "https://beta.com",
+            "Beta",
+        );
+        assert!(result.is_some());
+        let (wid, tid) = result.unwrap();
+        assert_eq!(wid, "ws_beta");
+
+        // Confirm the tab is actually in ws_beta
+        let ws = state.workspaces.get("ws_beta").unwrap();
+        assert!(ws.tabs.contains_key(&tid));
     }
 
     #[test]
