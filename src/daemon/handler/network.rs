@@ -15,7 +15,8 @@ handler!(handle_network_monitor, do_network_monitor(req, state));
 
 async fn do_network_monitor(req: &Request, state: &Arc<DaemonState>) -> Result<Response, BkError> {
     let ctx = resolve_context(req, state, "network.monitor")?;
-    ctx.cdp.send(cdpkit::network::methods::Enable::new(), Some(&ctx.cdp_session_id)).await?;
+    let session = ctx.cdp.session(&ctx.cdp_session_id);
+    cdpkit::network::methods::Enable::new().send(&session).await?;
     touch_workspace(state, &ctx.wid);
     info!(wid = %ctx.wid, "network monitoring enabled");
     Ok(Response::ok(json!({
@@ -35,7 +36,8 @@ async fn do_network_har(req: &Request, state: &Arc<DaemonState>) -> Result<Respo
     let url = req.params.get("url").and_then(|v| v.as_str())
         .ok_or_else(|| BkError::InvalidRequest("network.har requires 'url' param".into()))?;
 
-    ctx.cdp.send(cdpkit::network::methods::Enable::new(), Some(&ctx.cdp_session_id)).await?;
+    let session = ctx.cdp.session(&ctx.cdp_session_id);
+    cdpkit::network::methods::Enable::new().send(&session).await?;
     let nav_url = crate::page::navigation::goto(&ctx.cdp, &ctx.cdp_session_id, url).await?;
 
     if let Some(mut ws) = state.workspaces.get_mut(&ctx.wid) {
@@ -95,7 +97,8 @@ async fn do_network_block(req: &Request, state: &Arc<DaemonState>) -> Result<Res
         .ok_or_else(|| BkError::InvalidRequest("network.block requires 'pattern' param".into()))?;
     #[allow(deprecated)]
     let cmd = cdpkit::network::methods::SetBlockedUrLs::new().with_urls(vec![pattern.to_string()]);
-    ctx.cdp.send(cmd, Some(&ctx.cdp_session_id)).await?;
+    let session = ctx.cdp.session(&ctx.cdp_session_id);
+    cmd.send(&session).await?;
     touch_workspace(state, &ctx.wid);
     info!(wid = %ctx.wid, pattern = %pattern, "network requests blocked");
     Ok(Response::ok(json!({ "wid": ctx.wid, "pattern": pattern, "status": "blocked" })))
@@ -107,7 +110,8 @@ async fn do_network_unblock(req: &Request, state: &Arc<DaemonState>) -> Result<R
     let ctx = resolve_context(req, state, "network.unblock")?;
     #[allow(deprecated)]
     let cmd = cdpkit::network::methods::SetBlockedUrLs::new().with_urls(Vec::<String>::new());
-    ctx.cdp.send(cmd, Some(&ctx.cdp_session_id)).await?;
+    let session = ctx.cdp.session(&ctx.cdp_session_id);
+    cmd.send(&session).await?;
     touch_workspace(state, &ctx.wid);
     info!(wid = %ctx.wid, "network request blocking removed");
     Ok(Response::ok(json!({ "wid": ctx.wid, "status": "unblocked" })))

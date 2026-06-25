@@ -25,32 +25,28 @@ fn element_center(el: &ElementInfo) -> (f64, f64) {
     (el.x + el.width / 2.0, el.y + el.height / 2.0)
 }
 
-/// Send the mouseMoved → mousePressed → mouseReleased triple at (x, y).
+/// Send the mouseMoved -> mousePressed -> mouseReleased triple at (x, y).
 async fn click_at(cdp: &Arc<CDP>, session_id: &str, x: f64, y: f64) -> Result<(), BkError> {
+    let session = cdp.session(session_id);
+
     // 1. mouseMoved
-    cdp.send(
-        cdpkit::input::methods::DispatchMouseEvent::new("mouseMoved", x, y),
-        Some(session_id),
-    )
-    .await?;
+    cdpkit::input::methods::DispatchMouseEvent::new("mouseMoved", x, y)
+        .send(&session)
+        .await?;
 
     // 2. mousePressed
-    cdp.send(
-        cdpkit::input::methods::DispatchMouseEvent::new("mousePressed", x, y)
-            .with_button(cdpkit::input::types::MouseButton::Left)
-            .with_click_count(1),
-        Some(session_id),
-    )
-    .await?;
+    cdpkit::input::methods::DispatchMouseEvent::new("mousePressed", x, y)
+        .with_button(cdpkit::input::types::MouseButton::Left)
+        .with_click_count(1)
+        .send(&session)
+        .await?;
 
     // 3. mouseReleased
-    cdp.send(
-        cdpkit::input::methods::DispatchMouseEvent::new("mouseReleased", x, y)
-            .with_button(cdpkit::input::types::MouseButton::Left)
-            .with_click_count(1),
-        Some(session_id),
-    )
-    .await?;
+    cdpkit::input::methods::DispatchMouseEvent::new("mouseReleased", x, y)
+        .with_button(cdpkit::input::types::MouseButton::Left)
+        .with_click_count(1)
+        .send(&session)
+        .await?;
 
     Ok(())
 }
@@ -67,6 +63,7 @@ pub async fn click_element(
     index: usize,
 ) -> Result<(), BkError> {
     let el = get_element(elements, index)?;
+    let session = cdp.session(session_id);
 
     // Scroll the element into view via JS (simpler than DOM.scrollIntoViewIfNeeded
     // which requires an objectId). We use the element's known coordinates to
@@ -86,11 +83,9 @@ pub async fn click_element(
 }})()"#
     );
 
-    let resp = cdp
-        .send(
-            cdpkit::runtime::methods::Evaluate::new(&js).with_return_by_value(true),
-            Some(session_id),
-        )
+    let resp = cdpkit::runtime::methods::Evaluate::new(&js)
+        .with_return_by_value(true)
+        .send(&session)
         .await?;
 
     if let Some(details) = &resp.exception_details {
@@ -139,11 +134,10 @@ pub async fn type_text(
     click_element(cdp, session_id, elements, index).await?;
 
     // Insert text in bulk
-    cdp.send(
-        cdpkit::input::methods::InsertText::new(text),
-        Some(session_id),
-    )
-    .await?;
+    let session = cdp.session(session_id);
+    cdpkit::input::methods::InsertText::new(text)
+        .send(&session)
+        .await?;
 
     Ok(())
 }
@@ -172,13 +166,12 @@ pub async fn scroll_page(
     };
 
     // Send mouseWheel at viewport center (approximate)
-    cdp.send(
-        cdpkit::input::methods::DispatchMouseEvent::new("mouseWheel", 400.0, 300.0)
-            .with_delta_x(delta_x)
-            .with_delta_y(delta_y),
-        Some(session_id),
-    )
-    .await?;
+    let session = cdp.session(session_id);
+    cdpkit::input::methods::DispatchMouseEvent::new("mouseWheel", 400.0, 300.0)
+        .with_delta_x(delta_x)
+        .with_delta_y(delta_y)
+        .send(&session)
+        .await?;
 
     Ok(())
 }
@@ -195,8 +188,9 @@ pub async fn select_option(
     value: &str,
 ) -> Result<(), BkError> {
     let _el = get_element(elements, index)?;
+    let session = cdp.session(session_id);
 
-    // Use serde_json::to_string for safe JS string escaping (handles \n, \r, \0, \u2028, \u2029, quotes, etc.)
+    // Use serde_json::to_string for safe JS string escaping (handles \n, \r, \0,  ,  , quotes, etc.)
     let json_value = serde_json::to_string(value)
         .map_err(|e| BkError::Other(format!("failed to serialize value: {}", e)))?;
     let js = format!(
@@ -215,11 +209,9 @@ pub async fn select_option(
 }})()"#
     );
 
-    let resp = cdp
-        .send(
-            cdpkit::runtime::methods::Evaluate::new(&js).with_return_by_value(true),
-            Some(session_id),
-        )
+    let resp = cdpkit::runtime::methods::Evaluate::new(&js)
+        .with_return_by_value(true)
+        .send(&session)
         .await?;
 
     if let Some(details) = &resp.exception_details {
@@ -251,12 +243,11 @@ pub async fn hover_element(
 ) -> Result<(), BkError> {
     let el = get_element(elements, index)?;
     let (cx, cy) = element_center(el);
+    let session = cdp.session(session_id);
 
-    cdp.send(
-        cdpkit::input::methods::DispatchMouseEvent::new("mouseMoved", cx, cy),
-        Some(session_id),
-    )
-    .await?;
+    cdpkit::input::methods::DispatchMouseEvent::new("mouseMoved", cx, cy)
+        .send(&session)
+        .await?;
 
     Ok(())
 }
@@ -271,6 +262,7 @@ pub async fn focus_element(
     index: usize,
 ) -> Result<(), BkError> {
     let _el = get_element(elements, index)?;
+    let session = cdp.session(session_id);
 
     let js = format!(
         r#"(() => {{
@@ -286,11 +278,9 @@ pub async fn focus_element(
 }})()"#
     );
 
-    let resp = cdp
-        .send(
-            cdpkit::runtime::methods::Evaluate::new(&js).with_return_by_value(true),
-            Some(session_id),
-        )
+    let resp = cdpkit::runtime::methods::Evaluate::new(&js)
+        .with_return_by_value(true)
+        .send(&session)
         .await?;
 
     if let Some(details) = &resp.exception_details {

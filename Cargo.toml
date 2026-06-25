@@ -11,7 +11,7 @@ name = "bk"
 path = "src/main.rs"
 
 [dependencies]
-cdpkit = "0.2.2"
+cdpkit = "0.3.0"
 tokio = { version = "1", features = ["full"] }
 clap = { version = "4", features = ["derive", "env"] }
 serde = { version = "1", features = ["derive"] }

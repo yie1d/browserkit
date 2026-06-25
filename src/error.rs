@@ -20,6 +20,10 @@ pub enum BkError {
     #[error("Browser startup timeout (5s)")]
     BrowserStartupTimeout,
 
+    /// CDP connection attempt timed out.
+    #[error("Browser connection timeout ({0}s): {1}")]
+    BrowserConnectionTimeout(u64, String),
+
     // ── Workspace related ────────────────────────────────────────────
 
     /// No workspace matches the given wid or prefix.

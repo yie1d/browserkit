@@ -39,7 +39,7 @@ pub struct HandlerContext {
 pub struct ResolvedContext {
     pub wid: String,
     pub tid: String,
-    pub browser_context_id: String,
+    pub browser_context_id: Option<String>,
     pub cdp_session_id: String,
     pub cdp: Arc<cdpkit::CDP>,
 }

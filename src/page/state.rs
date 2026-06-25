@@ -45,12 +45,10 @@ pub async fn get_page_state(
     cdp: &Arc<CDP>,
     session_id: &str,
 ) -> Result<Vec<ElementInfo>, BkError> {
-    let resp = cdp
-        .send(
-            cdpkit::runtime::methods::Evaluate::new(DISCOVER_ELEMENTS_JS)
-                .with_return_by_value(true),
-            Some(session_id),
-        )
+    let session = cdp.session(session_id);
+    let resp = cdpkit::runtime::methods::Evaluate::new(DISCOVER_ELEMENTS_JS)
+        .with_return_by_value(true)
+        .send(&session)
         .await?;
 
     if let Some(details) = &resp.exception_details {
@@ -117,12 +115,11 @@ pub async fn search_page(
     text: &str,
 ) -> Result<Vec<SearchMatch>, BkError> {
     let js = build_search_js(text);
+    let session = cdp.session(session_id);
 
-    let resp = cdp
-        .send(
-            cdpkit::runtime::methods::Evaluate::new(&js).with_return_by_value(true),
-            Some(session_id),
-        )
+    let resp = cdpkit::runtime::methods::Evaluate::new(&js)
+        .with_return_by_value(true)
+        .send(&session)
         .await?;
 
     if let Some(details) = &resp.exception_details {

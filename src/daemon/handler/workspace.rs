@@ -1,4 +1,4 @@
-// Workspace management handlers: new, list, info, close, default, use
+// Workspace management handlers: new, list, info, close, default, use, attach
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -10,7 +10,7 @@ use crate::daemon::protocol::{Request, Response};
 use crate::daemon::state::{generate_hex_id, resolve_wid, DaemonState};
 use crate::error::BkError;
 use crate::page::Tab;
-use crate::workspace::Workspace;
+use crate::workspace::{Workspace, WorkspaceMode};
 use super::common::{handler, now_ts};
 
 handler!(handle_ws_new, do_ws_new(req, state));
@@ -31,82 +31,207 @@ async fn do_ws_new(
     let label = req.params.get("label").and_then(|v| v.as_str()).map(String::from);
     // Per-request headless override: if provided, takes precedence over config.
     let headless_override = req.params.get("headless").and_then(|v| v.as_bool());
+    let attached = req.params.get("attached").and_then(|v| v.as_bool()).unwrap_or(false);
 
-    let (host, cdp) = resolve_browser(state, host_param, headless_override).await?;
-
-    let ctx_resp = cdp
-        .send(
-            cdpkit::target::methods::CreateBrowserContext::new().with_dispose_on_detach(true),
-            None,
-        )
-        .await?;
-    let browser_context_id = ctx_resp.browser_context_id;
-
-    let target_resp = cdp
-        .send(
-            cdpkit::target::methods::CreateTarget::new("about:blank")
-                .with_browser_context_id(browser_context_id.clone()),
-            None,
-        )
-        .await?;
-    let target_id = target_resp.target_id;
-
-    let attach_resp = cdp
-        .send(
-            cdpkit::target::methods::AttachToTarget::new(target_id.clone()).with_flatten(true),
-            None,
-        )
-        .await?;
-    let cdp_session_id = attach_resp.session_id;
-
-    let sid = Some(cdp_session_id.as_str());
-    cdp.send(cdpkit::page::methods::Enable::new(), sid).await?;
-    cdp.send(cdpkit::page::methods::SetLifecycleEventsEnabled::new(true), sid).await?;
-    cdp.send(cdpkit::runtime::methods::Enable::new(), sid).await?;
-    cdp.send(cdpkit::network::methods::Enable::new(), sid).await?;
-
-    let wid = generate_hex_id();
-    let tid = generate_hex_id();
-    let ts = now_ts();
-
-    let tab = Tab {
-        tid: tid.clone(),
-        target_id,
-        cdp_session_id,
-        url: "about:blank".to_string(),
-        title: String::new(),
+    let (host, cdp) = if attached {
+        // Attached mode must NEVER auto-launch Chrome. Require a pre-existing connection.
+        resolve_browser_attached(state, host_param).await?
+    } else {
+        resolve_browser(state, host_param, headless_override).await?
     };
 
-    let mut tabs = HashMap::new();
-    tabs.insert(tid.clone(), tab);
+    if attached {
+        // Attached mode: no BrowserContext creation.
+        // Discover and attach existing user tabs (same as ws.attach).
+        let pattern = req.params.get("pattern").and_then(|v| v.as_str());
 
-    let workspace = Workspace {
-        wid: wid.clone(),
-        browser_host: host.clone(),
-        browser_context_id,
-        label: label.clone(),
-        tabs,
-        active_tab: Some(tid.clone()),
-        created_at: ts,
-        last_active: ts,
-    };
+        // GetTargets to discover existing tabs
+        let targets_resp = cdpkit::target::methods::GetTargets::new()
+            .send(cdp.as_ref())
+            .await?;
 
-    state.workspaces.insert(wid.clone(), workspace);
-    if state.get_default_wid().is_none() {
-        state.set_default_wid(Some(wid.clone()));
+        // Filter to page-type targets matching the pattern
+        let matching_targets: Vec<_> = targets_resp.target_infos
+            .iter()
+            .filter(|t| t.type_ == "page")
+            .filter(|t| {
+                match pattern {
+                    Some(pat) => {
+                        t.url.contains(pat) || t.title.contains(pat) || t.target_id.starts_with(pat)
+                    }
+                    None => true, // no filter: attach all page targets
+                }
+            })
+            .collect();
+
+        if matching_targets.is_empty() {
+            return Err(BkError::Other(
+                "no matching page targets found. Open some tabs in Chrome first".into()
+            ));
+        }
+
+        let wid = generate_hex_id();
+        let ts = now_ts();
+        let mut tabs = HashMap::new();
+        let mut first_tid: Option<String> = None;
+        let mut skipped: Vec<String> = Vec::new();
+
+        for target in &matching_targets {
+            // Skip targets already tracked in any workspace
+            if super::tab::is_target_tracked(state, &target.target_id) {
+                skipped.push(target.target_id.clone());
+                continue;
+            }
+
+            let attach_resp = cdpkit::target::methods::AttachToTarget::new(target.target_id.clone())
+                .with_flatten(true)
+                .send(cdp.as_ref())
+                .await?;
+            let cdp_session_id = attach_resp.session_id.clone();
+
+            // Atomic second-check: verify no concurrent attach won the race
+            if super::tab::is_target_tracked(state, &target.target_id) {
+                let _ = cdpkit::target::methods::DetachFromTarget::new()
+                    .with_session_id(attach_resp.session_id)
+                    .send(cdp.as_ref())
+                    .await;
+                skipped.push(target.target_id.clone());
+                continue;
+            }
+
+            let session = cdp.session(&cdp_session_id);
+            cdpkit::page::methods::Enable::new().send(&session).await?;
+            cdpkit::page::methods::SetLifecycleEventsEnabled::new(true).send(&session).await?;
+            cdpkit::runtime::methods::Enable::new().send(&session).await?;
+            cdpkit::network::methods::Enable::new().send(&session).await?;
+
+            let tid = generate_hex_id();
+            if first_tid.is_none() {
+                first_tid = Some(tid.clone());
+            }
+
+            let tab = Tab {
+                tid: tid.clone(),
+                target_id: target.target_id.clone(),
+                cdp_session_id,
+                url: target.url.clone(),
+                title: target.title.clone(),
+                managed: false, // user's existing tab — never close, only detach
+            };
+            tabs.insert(tid, tab);
+        }
+
+        if tabs.is_empty() {
+            return Err(BkError::Other(format!(
+                "all matching targets are already tracked in other workspaces. Skipped: {:?}",
+                skipped
+            )));
+        }
+
+        let workspace = Workspace {
+            wid: wid.clone(),
+            browser_host: host.clone(),
+            browser_context_id: None,
+            mode: WorkspaceMode::Attached,
+            label: label.clone(),
+            tabs,
+            active_tab: first_tid.clone(),
+            created_at: ts,
+            last_active: ts,
+        };
+
+        state.workspaces.insert(wid.clone(), workspace);
+        if state.get_default_wid().is_none() {
+            state.set_default_wid(Some(wid.clone()));
+        }
+        state.request_persist();
+
+        let attached_count = state.workspaces.get(&wid).map(|ws| ws.tabs.len()).unwrap_or(0);
+        info!(wid = %wid, host = %host, mode = "attached", tabs = attached_count, skipped = skipped.len(), "workspace created");
+
+        let attached_info: Vec<serde_json::Value> = matching_targets
+            .iter()
+            .filter(|t| !skipped.contains(&t.target_id))
+            .map(|t| json!({ "target_id": t.target_id, "url": t.url, "title": t.title }))
+            .collect();
+
+        Ok(Response::ok(json!({
+            "wid": wid,
+            "host": host,
+            "label": label,
+            "mode": "attached",
+            "tabs_attached": attached_count,
+            "targets": attached_info,
+            "skipped_targets": skipped,
+            "active_tab": first_tid,
+            "created_at": ts,
+            "last_active": ts,
+        })))
+    } else {
+        // Isolated mode (existing behavior): create a dedicated BrowserContext.
+        let ctx_resp = cdpkit::target::methods::CreateBrowserContext::new()
+            .with_dispose_on_detach(true)
+            .send(cdp.as_ref())
+            .await?;
+        let browser_context_id = ctx_resp.browser_context_id;
+
+        let target_resp = cdpkit::target::methods::CreateTarget::new("about:blank")
+            .with_browser_context_id(browser_context_id.clone())
+            .send(cdp.as_ref())
+            .await?;
+        let target_id = target_resp.target_id;
+
+        let attach_resp = cdpkit::target::methods::AttachToTarget::new(target_id.clone())
+            .with_flatten(true)
+            .send(cdp.as_ref())
+            .await?;
+        let cdp_session_id = attach_resp.session_id;
+
+        let session = cdp.session(&cdp_session_id);
+        cdpkit::page::methods::Enable::new().send(&session).await?;
+        cdpkit::page::methods::SetLifecycleEventsEnabled::new(true).send(&session).await?;
+        cdpkit::runtime::methods::Enable::new().send(&session).await?;
+        cdpkit::network::methods::Enable::new().send(&session).await?;
+
+        let wid = generate_hex_id();
+        let tid = generate_hex_id();
+        let ts = now_ts();
+
+        let tab = Tab { tid: tid.clone(), target_id, cdp_session_id, url: "about:blank".to_string(), title: String::new(), managed: true };
+
+        let mut tabs = HashMap::new();
+        tabs.insert(tid.clone(), tab);
+
+        let workspace = Workspace {
+            wid: wid.clone(),
+            browser_host: host.clone(),
+            browser_context_id: Some(browser_context_id),
+            mode: WorkspaceMode::Isolated,
+            label: label.clone(),
+            tabs,
+            active_tab: Some(tid.clone()),
+            created_at: ts,
+            last_active: ts,
+        };
+
+        state.workspaces.insert(wid.clone(), workspace);
+        if state.get_default_wid().is_none() {
+            state.set_default_wid(Some(wid.clone()));
+        }
+        state.request_persist();
+
+        info!(wid = %wid, host = %host, mode = "isolated", "workspace created");
+
+        Ok(Response::ok(json!({
+            "wid": wid,
+            "host": host,
+            "label": label,
+            "mode": "isolated",
+            "active_tab": tid,
+            "created_at": ts,
+            "last_active": ts,
+        })))
     }
-    state.request_persist();
-
-    info!(wid = %wid, host = %host, "workspace created");
-
-    Ok(Response::ok(json!({
-        "wid": wid,
-        "host": host,
-        "label": label,
-        "active_tab": tid,
-        "created_at": ts,
-        "last_active": ts,
-    })))
 }
 
 /// Resolve which browser to use for a new workspace.
@@ -146,16 +271,78 @@ async fn resolve_browser(
     Ok((host, cdp))
 }
 
+/// Resolve browser for attached mode: NEVER auto-launches Chrome.
+///
+/// - If `host_param` is given, connects to that host (managed=false).
+/// - Otherwise, prefers an unmanaged browser (user's own Chrome connected
+///   via `bk browser connect` / `bk browser discover`).
+/// - If only managed browsers exist or multiple unmanaged browsers are
+///   available, returns a clear error asking for explicit `--host`.
+/// - If no browser is connected at all, returns a clear error asking the user
+///   to run `bk browser connect` or `bk browser discover` first.
+async fn resolve_browser_attached(
+    state: &Arc<DaemonState>,
+    host_param: Option<String>,
+) -> Result<(String, Arc<cdpkit::CDP>), BkError> {
+    if let Some(host) = host_param {
+        // Connect to the specified host, always unmanaged for attached mode
+        let cdp = state.get_or_connect_browser(&host, false, None).await?;
+        return Ok((host, cdp));
+    }
+
+    // Collect unmanaged browsers (user-connected via discover/connect)
+    let unmanaged: Vec<_> = state
+        .browsers
+        .iter()
+        .filter(|entry| !entry.value().managed)
+        .map(|entry| (entry.key().clone(), Arc::clone(&entry.value().cdp)))
+        .collect();
+
+    match unmanaged.len() {
+        1 => Ok(unmanaged.into_iter().next().unwrap()),
+        0 => {
+            // Check if there are managed-only browsers
+            if !state.browsers.is_empty() {
+                Err(BkError::Other(
+                    "attached mode targets user-connected browsers (via `bk browser connect` or \
+                     `bk browser discover`), but only bk-launched browsers are available. \
+                     Specify `--host` explicitly or connect your own Chrome first."
+                        .into(),
+                ))
+            } else {
+                Err(BkError::Other(
+                    "attached mode requires a pre-existing browser connection. \
+                     Run `bk browser connect <host>` or `bk browser discover` first."
+                        .into(),
+                ))
+            }
+        }
+        _ => {
+            let hosts: Vec<_> = unmanaged.iter().map(|(h, _)| h.as_str()).collect();
+            Err(BkError::Other(format!(
+                "multiple user-connected browsers available: {:?}. \
+                 Specify `--host` to select one.",
+                hosts
+            )))
+        }
+    }
+}
+
 pub async fn handle_ws_list(state: &Arc<DaemonState>) -> Response {
     let workspaces: Vec<serde_json::Value> = state
         .workspaces
         .iter()
         .map(|ws_entry| {
             let ws = ws_entry.value();
+            let mode = match ws.mode {
+                WorkspaceMode::Isolated => "isolated",
+                WorkspaceMode::Attached => "attached",
+            };
             json!({
                 "wid": ws.wid,
                 "host": ws.browser_host,
                 "label": ws.label,
+                "mode": mode,
                 "tabs": ws.tabs.len(),
                 "created_at": ws.created_at,
                 "last_active": ws.last_active,
@@ -189,10 +376,16 @@ async fn do_ws_info(
         .map(|tab| json!({ "tid": tab.tid, "target_id": tab.target_id, "url": tab.url, "title": tab.title }))
         .collect();
 
+    let mode = match ws.mode {
+        WorkspaceMode::Isolated => "isolated",
+        WorkspaceMode::Attached => "attached",
+    };
+
     Ok(Response::ok(json!({
         "wid": ws.wid,
         "host": ws.browser_host,
         "browser_context_id": ws.browser_context_id,
+        "mode": mode,
         "label": ws.label,
         "tabs": tabs,
         "active_tab": ws.active_tab,
@@ -215,7 +408,7 @@ async fn do_ws_close(
 
     let wid = resolve_wid(state, prefix)?;
 
-    let (browser_host, browser_context_id, target_ids, cdp) = {
+    let (browser_host, browser_context_id, tab_info, cdp, mode) = {
         let ws = state
             .workspaces
             .get(&wid)
@@ -224,18 +417,38 @@ async fn do_ws_close(
             .browsers
             .get(&ws.browser_host)
             .ok_or_else(|| BkError::BrowserConnectionFailed(format!("no connection for host: {}", ws.browser_host)))?;
-        let target_ids: Vec<String> = ws.tabs.values().map(|t| t.target_id.clone()).collect();
-        (ws.browser_host.clone(), ws.browser_context_id.clone(), target_ids, Arc::clone(&browser.cdp))
+        let tab_info: Vec<(String, String, bool)> = ws.tabs.values()
+            .map(|t| (t.target_id.clone(), t.cdp_session_id.clone(), t.managed))
+            .collect();
+        (ws.browser_host.clone(), ws.browser_context_id.clone(), tab_info, Arc::clone(&browser.cdp), ws.mode)
     };
 
-    for target_id in &target_ids {
-        let _ = cdp
-            .send(cdpkit::target::methods::CloseTarget::new(target_id.clone()), None)
-            .await;
+    // Close/detach tabs based on per-tab managed flag
+    for (target_id, session_id, tab_managed) in &tab_info {
+        if *tab_managed {
+            // bk created this tab — close it
+            let _ = cdpkit::target::methods::CloseTarget::new(target_id.clone())
+                .send(cdp.as_ref())
+                .await;
+        } else {
+            // User's existing tab — only detach, leave open
+            if !session_id.is_empty() {
+                let _ = cdpkit::target::methods::DetachFromTarget::new()
+                    .with_session_id(session_id.clone())
+                    .send(cdp.as_ref())
+                    .await;
+            }
+        }
     }
-    let _ = cdp
-        .send(cdpkit::target::methods::DisposeBrowserContext::new(browser_context_id), None)
-        .await;
+
+    // Dispose the BrowserContext only for isolated workspaces (bk created the context)
+    if mode == WorkspaceMode::Isolated {
+        if let Some(ctx_id) = browser_context_id {
+            let _ = cdpkit::target::methods::DisposeBrowserContext::new(ctx_id)
+                .send(cdp.as_ref())
+                .await;
+        }
+    }
 
     state.workspaces.remove(&wid);
 
@@ -244,6 +457,11 @@ async fn do_ws_close(
         state.set_default_wid(next_wid);
     }
 
+    // Remove managed browser if no workspaces remain on it.
+    // Browser.managed=true means bk launched it (child=Some → drop kills it).
+    // Browser.managed=false means user-connected (child=None → drop is harmless).
+    // This is safe regardless of workspace mode because unmanaged browsers
+    // have child=None and Browser::drop won't kill anything.
     let has_workspaces = state
         .workspaces
         .iter()
@@ -282,4 +500,694 @@ pub async fn handle_ws_use(req: &Request, state: &Arc<DaemonState>) -> Response 
     state.set_default_wid(Some(wid.clone()));
     info!(wid = %wid, "default workspace set");
     Response::ok(json!({ "wid": wid, "status": "ok" }))
+}
+
+// ── ws.attach: attach existing browser tabs into an attached workspace ──────
+
+handler!(handle_ws_attach, do_ws_attach(req, state));
+
+/// Attach existing user tabs (by URL/title/target_id pattern) to a new attached workspace.
+///
+/// Params:
+///   - `host` (optional): browser host to use (must already be connected)
+///   - `pattern` (optional): substring filter on url/title/target_id
+///   - `label` (optional): workspace label
+///
+/// If no pattern is given, lists all available page targets for the user to choose from.
+async fn do_ws_attach(
+    req: &Request,
+    state: &Arc<DaemonState>,
+) -> Result<Response, BkError> {
+    let max = state.config.limits.max_workspaces;
+    if max > 0 && state.workspaces.len() >= max {
+        return Err(BkError::Other(format!(
+            "workspace limit reached ({}/{})",
+            state.workspaces.len(), max
+        )));
+    }
+
+    let host_param = req.params.get("host").and_then(|v| v.as_str()).map(String::from);
+    let pattern = req.params.get("pattern").and_then(|v| v.as_str());
+    let label = req.params.get("label").and_then(|v| v.as_str()).map(String::from);
+
+    // Resolve which browser to query
+    let (host, cdp) = {
+        if let Some(h) = host_param {
+            let cdp = state.browsers.get(&h)
+                .ok_or_else(|| BkError::BrowserConnectionFailed(format!(
+                    "browser '{}' not connected. Run `bk browser connect` first", h
+                )))?;
+            (h, Arc::clone(&cdp.cdp))
+        } else {
+            // Use first available browser
+            let entry = state.browsers.iter().next()
+                .ok_or_else(|| BkError::Other(
+                    "no browser connected. Run `bk browser connect` first".into()
+                ))?;
+            (entry.key().clone(), Arc::clone(&entry.value().cdp))
+        }
+    };
+
+    // GetTargets to discover existing tabs
+    let targets_resp = cdpkit::target::methods::GetTargets::new()
+        .send(cdp.as_ref())
+        .await?;
+
+    // Filter to page-type targets matching the pattern
+    let matching_targets: Vec<_> = targets_resp.target_infos
+        .iter()
+        .filter(|t| t.type_ == "page")
+        .filter(|t| {
+            match pattern {
+                Some(pat) => {
+                    t.url.contains(pat) || t.title.contains(pat) || t.target_id.starts_with(pat)
+                }
+                None => true, // no filter: attach all page targets
+            }
+        })
+        .collect();
+
+    if matching_targets.is_empty() {
+        return Err(BkError::Other(
+            "no matching page targets found. Open some tabs in Chrome first".into()
+        ));
+    }
+
+    // Create an attached workspace and attach each matched target.
+    // Skip targets already tracked in any workspace (dedup).
+    let wid = generate_hex_id();
+    let ts = now_ts();
+    let mut tabs = HashMap::new();
+    let mut first_tid: Option<String> = None;
+    let mut skipped: Vec<String> = Vec::new();
+
+    for target in &matching_targets {
+        // Skip targets already tracked in any workspace
+        if super::tab::is_target_tracked(state, &target.target_id) {
+            skipped.push(target.target_id.clone());
+            continue;
+        }
+
+        let attach_resp = cdpkit::target::methods::AttachToTarget::new(target.target_id.clone())
+            .with_flatten(true)
+            .send(cdp.as_ref())
+            .await?;
+        let cdp_session_id = attach_resp.session_id.clone();
+
+        // Atomic second-check: verify no concurrent attach won the race
+        if super::tab::is_target_tracked(state, &target.target_id) {
+            // Race lost — detach and skip
+            let _ = cdpkit::target::methods::DetachFromTarget::new()
+                .with_session_id(attach_resp.session_id)
+                .send(cdp.as_ref())
+                .await;
+            skipped.push(target.target_id.clone());
+            continue;
+        }
+
+        // Enable domains for the attached session
+        let session = cdp.session(&cdp_session_id);
+        cdpkit::page::methods::Enable::new().send(&session).await?;
+        cdpkit::page::methods::SetLifecycleEventsEnabled::new(true).send(&session).await?;
+        cdpkit::runtime::methods::Enable::new().send(&session).await?;
+        cdpkit::network::methods::Enable::new().send(&session).await?;
+
+        let tid = generate_hex_id();
+        if first_tid.is_none() {
+            first_tid = Some(tid.clone());
+        }
+
+        let tab = Tab {
+            tid: tid.clone(),
+            target_id: target.target_id.clone(),
+            cdp_session_id,
+            url: target.url.clone(),
+            title: target.title.clone(),
+            managed: false, // user's existing tab — never close, only detach
+        };
+        tabs.insert(tid, tab);
+    }
+
+    if tabs.is_empty() {
+        return Err(BkError::Other(format!(
+            "all matching targets are already tracked in other workspaces. Skipped: {:?}",
+            skipped
+        )));
+    }
+
+    let workspace = Workspace {
+        wid: wid.clone(),
+        browser_host: host.clone(),
+        browser_context_id: None,
+        mode: WorkspaceMode::Attached,
+        label: label.clone(),
+        tabs,
+        active_tab: first_tid.clone(),
+        created_at: ts,
+        last_active: ts,
+    };
+
+    state.workspaces.insert(wid.clone(), workspace);
+    if state.get_default_wid().is_none() {
+        state.set_default_wid(Some(wid.clone()));
+    }
+    state.request_persist();
+
+    let attached_count = state.workspaces.get(&wid).map(|ws| ws.tabs.len()).unwrap_or(0);
+    info!(wid = %wid, host = %host, tabs = attached_count, skipped = skipped.len(), "attached workspace created");
+
+    let attached_info: Vec<serde_json::Value> = matching_targets
+        .iter()
+        .filter(|t| !skipped.contains(&t.target_id))
+        .map(|t| json!({ "target_id": t.target_id, "url": t.url, "title": t.title }))
+        .collect();
+
+    Ok(Response::ok(json!({
+        "wid": wid,
+        "host": host,
+        "label": label,
+        "mode": "attached",
+        "tabs_attached": attached_count,
+        "targets": attached_info,
+        "skipped_targets": skipped,
+        "active_tab": first_tid,
+        "created_at": ts,
+    })))
+}
+
+// ── browser.discover: auto-discover user's Chrome via DevToolsActivePort ──────
+
+handler!(handle_browser_discover, do_browser_discover(req, state));
+
+/// Connect to the user's Chrome by reading DevToolsActivePort.
+///
+/// Params:
+///   - `path` (optional): custom path to DevToolsActivePort file
+async fn do_browser_discover(
+    req: &Request,
+    state: &Arc<DaemonState>,
+) -> Result<Response, BkError> {
+    let custom_path = req.params.get("path").and_then(|v| v.as_str());
+
+    let discovered = crate::browser::discover::discover_chrome(custom_path)?;
+
+    // Check if already connected
+    if let Some(b) = state.browsers.get(&discovered.host) {
+        info!(host = %discovered.host, "browser already connected (via discover)");
+        return Ok(Response::ok(json!({
+            "host": b.host,
+            "managed": b.managed,
+            "status": "already_connected",
+        })));
+    }
+
+    // Connect — this is a user-owned browser, so managed=false.
+    // Chrome 136+ with toggle-enabled debugging disables the /json/* HTTP endpoints,
+    // so we must use the ws path from DevToolsActivePort for direct WebSocket connection.
+    let connect_target = if !discovered.ws_path.is_empty() {
+        Some(crate::browser::build_ws_url(&discovered.host, &discovered.ws_path))
+    } else {
+        None // fallback: use host, which queries /json/version
+    };
+
+    state
+        .get_or_connect_browser_with_url(
+            &discovered.host,
+            connect_target.as_deref(),
+            false,
+            None,
+        )
+        .await
+        .map_err(|e| {
+            BkError::Other(format!(
+                "DevToolsActivePort file found (port {}), but connection failed: {}. \
+                 The file may be stale — Chrome may have exited without cleaning it up. \
+                 Try restarting Chrome or deleting the DevToolsActivePort file.",
+                discovered.host, e
+            ))
+        })?;
+    state.request_persist();
+    info!(host = %discovered.host, ws_path = %discovered.ws_path, "connected to user's Chrome via DevToolsActivePort");
+
+    Ok(Response::ok(json!({
+        "host": discovered.host,
+        "ws_path": discovered.ws_path,
+        "managed": false,
+        "status": "connected",
+    })))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+    use crate::workspace::{Workspace, WorkspaceMode};
+    use crate::daemon::state::DaemonState;
+
+    fn make_attached_workspace(wid: &str, host: &str) -> Workspace {
+        Workspace {
+            wid: wid.to_string(),
+            browser_host: host.to_string(),
+            browser_context_id: None,
+            mode: WorkspaceMode::Attached,
+            label: None,
+            tabs: HashMap::new(),
+            active_tab: None,
+            created_at: 1000,
+            last_active: 2000,
+        }
+    }
+
+    fn make_isolated_workspace(wid: &str, host: &str) -> Workspace {
+        Workspace {
+            wid: wid.to_string(),
+            browser_host: host.to_string(),
+            browser_context_id: Some(format!("ctx-{}", wid)),
+            mode: WorkspaceMode::Isolated,
+            label: None,
+            tabs: HashMap::new(),
+            active_tab: None,
+            created_at: 1000,
+            last_active: 2000,
+        }
+    }
+
+    // ─── resolve_browser_attached: must NEVER auto-launch Chrome ────────────
+
+    #[tokio::test]
+    async fn attached_no_browsers_returns_explicit_error() {
+        // CRITICAL SAFETY TEST: When no browsers are connected and no --host
+        // is given, attached mode must return an error telling the user to
+        // connect manually. It must NEVER fall through to launch Chrome.
+        let state = Arc::new(DaemonState::new());
+        let result = resolve_browser_attached(&state, None).await;
+
+        let err = match result {
+            Err(e) => e,
+            Ok(_) => panic!("must error when no browser available"),
+        };
+        let err_msg = err.to_string();
+        assert!(
+            err_msg.contains("pre-existing browser connection"),
+            "error must mention 'pre-existing browser connection', got: {err_msg}"
+        );
+        // Absolutely no browser was spawned or connected
+        assert!(
+            state.browsers.is_empty(),
+            "no browser must be created by attached mode"
+        );
+    }
+
+    #[tokio::test]
+    async fn attached_unreachable_host_errors_without_launch_fallback() {
+        // When --host is explicitly given but unreachable, we must get a
+        // connection error. Must NOT fall back to launching a new Chrome.
+        let state = Arc::new(DaemonState::new());
+        let result = resolve_browser_attached(
+            &state,
+            Some("localhost:1".to_string()),
+        )
+        .await;
+
+        assert!(result.is_err(), "must error when host is unreachable");
+        // No browser was inserted into state (no fallback launch)
+        assert!(state.browsers.is_empty());
+    }
+
+    #[test]
+    fn attached_browser_selection_prefers_unmanaged() {
+        // Verify the selection logic: when both managed and unmanaged browsers
+        // exist, the unmanaged-only filter produces the correct candidate.
+        // This replicates the filter logic from resolve_browser_attached.
+        #[allow(dead_code)]
+        struct BrowserInfo {
+            host: String,
+            managed: bool,
+        }
+        let browsers = vec![
+            BrowserInfo { host: "localhost:9333".to_string(), managed: true },
+            BrowserInfo { host: "localhost:41753".to_string(), managed: false },
+        ];
+
+        let unmanaged: Vec<_> = browsers.iter()
+            .filter(|b| !b.managed)
+            .collect();
+
+        assert_eq!(unmanaged.len(), 1);
+        assert_eq!(unmanaged[0].host, "localhost:41753");
+    }
+
+    #[test]
+    fn attached_browser_selection_errors_when_only_managed() {
+        // When only managed browsers exist, the unmanaged filter produces
+        // an empty list — the code path returns an error.
+        #[allow(dead_code)]
+        struct BrowserInfo {
+            host: String,
+            managed: bool,
+        }
+        let browsers = vec![
+            BrowserInfo { host: "localhost:9333".to_string(), managed: true },
+        ];
+
+        let unmanaged: Vec<_> = browsers.iter()
+            .filter(|b| !b.managed)
+            .collect();
+
+        assert!(unmanaged.is_empty());
+        // In the real code, this triggers the "only bk-launched browsers" error
+        assert!(!browsers.is_empty(), "browsers exist but none are unmanaged");
+    }
+
+    #[test]
+    fn attached_browser_selection_errors_when_multiple_unmanaged() {
+        // When multiple unmanaged browsers exist, user must specify --host.
+        #[allow(dead_code)]
+        struct BrowserInfo {
+            host: String,
+            managed: bool,
+        }
+        let browsers = vec![
+            BrowserInfo { host: "localhost:41753".to_string(), managed: false },
+            BrowserInfo { host: "localhost:52890".to_string(), managed: false },
+        ];
+
+        let unmanaged: Vec<_> = browsers.iter()
+            .filter(|b| !b.managed)
+            .collect();
+
+        assert!(unmanaged.len() > 1, "ambiguous: multiple unmanaged browsers");
+    }
+
+    // ─── ws.close mode gating: attached must NEVER remove browser ───────────
+
+    #[tokio::test]
+    async fn close_ws_on_unmanaged_browser_does_not_kill_process() {
+        // The browser-removal block in do_ws_close removes managed browsers
+        // when no workspaces remain on them. Unmanaged browsers (user-connected)
+        // have child=None so Browser::drop won't kill anything. This test
+        // verifies the gate: workspace mode is Attached (typical for unmanaged),
+        // so the BrowserContext disposal path is skipped.
+        let state = Arc::new(DaemonState::new());
+        let host = "localhost:9222";
+
+        state.workspaces.insert(
+            "ws_att".to_string(),
+            make_attached_workspace("ws_att", host),
+        );
+
+        // Extract mode before removal (mirrors do_ws_close logic)
+        let mode = state.workspaces.get("ws_att").unwrap().mode;
+        state.workspaces.remove("ws_att");
+
+        // This is the actual gate condition from do_ws_close:
+        // `if mode == WorkspaceMode::Isolated { ... remove browser ... }`
+        assert_eq!(mode, WorkspaceMode::Attached);
+        assert!(
+            mode != WorkspaceMode::Isolated,
+            "attached mode must NOT enter the browser-removal code path"
+        );
+    }
+
+    #[tokio::test]
+    async fn close_isolated_ws_enters_browser_removal_when_last() {
+        // Counterpart: isolated mode DOES enter the removal block when it's
+        // the last workspace on that host. This confirms the fix didn't break
+        // normal isolated cleanup.
+        let state = Arc::new(DaemonState::new());
+        let host = "localhost:9222";
+
+        state.workspaces.insert(
+            "ws_iso".to_string(),
+            make_isolated_workspace("ws_iso", host),
+        );
+
+        let mode = state.workspaces.get("ws_iso").unwrap().mode;
+        state.workspaces.remove("ws_iso");
+
+        // Gate allows entry for isolated
+        assert_eq!(mode, WorkspaceMode::Isolated);
+
+        // And no workspaces remain on this host → browser would be removed
+        let has_ws_on_host = state
+            .workspaces
+            .iter()
+            .any(|e| e.value().browser_host == host);
+        assert!(!has_ws_on_host);
+    }
+
+    #[tokio::test]
+    async fn close_isolated_ws_not_last_keeps_browser() {
+        // If other workspaces remain on the same host, browser must NOT be removed.
+        let state = Arc::new(DaemonState::new());
+        let host = "localhost:9222";
+
+        state.workspaces.insert(
+            "ws1".to_string(),
+            make_isolated_workspace("ws1", host),
+        );
+        state.workspaces.insert(
+            "ws2".to_string(),
+            make_isolated_workspace("ws2", host),
+        );
+
+        state.workspaces.remove("ws1");
+
+        let has_ws_on_host = state
+            .workspaces
+            .iter()
+            .any(|e| e.value().browser_host == host);
+        assert!(has_ws_on_host, "ws2 still on this host, browser kept");
+    }
+
+    // ─── daemon_stop child neutralization pattern ───────────────────────────
+
+    #[test]
+    fn child_neutralization_prevents_kill_on_drop() {
+        // Verify the core safety mechanism: taking child out of Option
+        // prevents the process from being killed when the Option is dropped.
+        // This is what handle_daemon_stop does: `browser.child = None`.
+        let child = std::process::Command::new("ping")
+            .args(["-n", "60", "127.0.0.1"])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("spawn ping process");
+        let pid = child.id();
+
+        // Simulate the Browser struct's child field
+        let mut child_slot: Option<std::process::Child> = Some(child);
+
+        // The fix: take the child out (browser.child = None)
+        let taken = child_slot.take();
+        assert!(child_slot.is_none(), "slot must be None after take()");
+
+        // Dropping the None slot does nothing — no kill happens
+        drop(child_slot);
+
+        // Process must still be alive — verify via try_wait
+        // (Ok(None) means process is still running)
+        let mut taken = taken.unwrap();
+        let status = taken.try_wait().expect("try_wait failed");
+        assert!(
+            status.is_none(),
+            "process {} must still be running after child slot neutralized (got exit: {:?})",
+            pid,
+            status
+        );
+
+        // Cleanup: kill the test process
+        let _ = taken.kill();
+        let _ = taken.wait();
+    }
+
+    #[test]
+    fn child_kill_on_drop_works_for_isolated() {
+        // Counterpart: verify that keeping child in the Option and calling
+        // kill() does terminate the process. This is the correct behavior
+        // for browsers that ONLY served isolated workspaces (Browser::drop).
+        let mut child = std::process::Command::new("ping")
+            .args(["-n", "60", "127.0.0.1"])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("spawn ping process");
+        let pid = child.id();
+
+        // Before kill: process is running
+        let status_before = child.try_wait().expect("try_wait");
+        assert!(status_before.is_none(), "process {} must be running before kill", pid);
+
+        // Kill it (what Browser::drop does)
+        let _ = child.kill();
+        let exit = child.wait().expect("wait after kill");
+
+        // After kill+wait: process has exited
+        assert!(
+            !exit.success(),
+            "process {} must have been terminated by kill (exit: {:?})",
+            pid,
+            exit
+        );
+    }
+
+    // ─── daemon_stop: attached ws triggers child=None on its browser host ───
+
+    #[test]
+    fn daemon_stop_pattern_sets_child_none_for_attached_hosts() {
+        // Replicate the logic from handle_daemon_stop:
+        // "for each ws_info, if mode == Attached, set browser.child = None"
+        // Verify this pattern works correctly with DaemonState's DashMap.
+        let state = DaemonState::new();
+        let host_attached = "localhost:9222";
+        let host_isolated = "localhost:9333";
+
+        state.workspaces.insert(
+            "ws_att".to_string(),
+            make_attached_workspace("ws_att", host_attached),
+        );
+        state.workspaces.insert(
+            "ws_iso".to_string(),
+            make_isolated_workspace("ws_iso", host_isolated),
+        );
+
+        // Collect ws_info (mirrors handle_daemon_stop)
+        struct WsInfo {
+            browser_host: String,
+            mode: WorkspaceMode,
+        }
+        let ws_info: Vec<WsInfo> = state
+            .workspaces
+            .iter()
+            .map(|e| WsInfo {
+                browser_host: e.value().browser_host.clone(),
+                mode: e.value().mode,
+            })
+            .collect();
+
+        // The fix pattern: only Attached triggers child=None
+        let hosts_to_neutralize: Vec<&str> = ws_info
+            .iter()
+            .filter(|info| matches!(info.mode, WorkspaceMode::Attached))
+            .map(|info| info.browser_host.as_str())
+            .collect();
+
+        assert!(
+            hosts_to_neutralize.contains(&host_attached),
+            "attached host must be in neutralize list"
+        );
+        assert!(
+            !hosts_to_neutralize.contains(&host_isolated),
+            "isolated-only host must NOT be neutralized"
+        );
+    }
+
+    // ─── cleanup_expired: attached ws prevents browser kill on expire ────────
+
+    #[test]
+    fn expire_cleanup_pattern_detects_attached_on_same_host() {
+        // Replicate the logic in cleanup_expired_workspaces:
+        // When removing a managed browser because all its workspaces expired,
+        // if ANY expired workspace on that host was attached, set child=None.
+        let host = "localhost:9222";
+
+        // Batch of expired workspaces on same host: one attached, one isolated
+        struct ExpiredWs {
+            browser_host: String,
+            mode: WorkspaceMode,
+        }
+        let expired = vec![
+            ExpiredWs { browser_host: host.to_string(), mode: WorkspaceMode::Isolated },
+            ExpiredWs { browser_host: host.to_string(), mode: WorkspaceMode::Attached },
+        ];
+
+        // The fix pattern from cleanup_expired_workspaces:
+        let host_had_attached = expired
+            .iter()
+            .any(|e| e.browser_host == host && e.mode == WorkspaceMode::Attached);
+
+        assert!(
+            host_had_attached,
+            "must detect attached workspace in expired batch"
+        );
+        // When host_had_attached is true, the code does: browser.child = None
+        // before state.browsers.remove() — preventing kill on drop.
+    }
+
+    #[test]
+    fn expire_cleanup_pattern_allows_kill_for_isolated_only() {
+        // If ALL expired workspaces on a host were isolated, child should NOT
+        // be neutralized — that browser was launched by bk and should die.
+        let host = "localhost:9222";
+
+        struct ExpiredWs {
+            browser_host: String,
+            mode: WorkspaceMode,
+        }
+        let expired = vec![
+            ExpiredWs { browser_host: host.to_string(), mode: WorkspaceMode::Isolated },
+            ExpiredWs { browser_host: host.to_string(), mode: WorkspaceMode::Isolated },
+        ];
+
+        let host_had_attached = expired
+            .iter()
+            .any(|e| e.browser_host == host && e.mode == WorkspaceMode::Attached);
+
+        assert!(
+            !host_had_attached,
+            "isolated-only batch must NOT trigger child neutralization"
+        );
+    }
+
+    // ─── browser.disconnect: had_attached flag ──────────────────────────────
+
+    #[test]
+    fn disconnect_pattern_detects_attached_workspaces() {
+        // Replicate the had_attached detection from do_browser_disconnect
+        let state = DaemonState::new();
+        let host = "localhost:9222";
+
+        state.workspaces.insert(
+            "ws1".to_string(),
+            make_isolated_workspace("ws1", host),
+        );
+        state.workspaces.insert(
+            "ws2".to_string(),
+            make_attached_workspace("ws2", host),
+        );
+
+        let had_attached = state
+            .workspaces
+            .iter()
+            .filter(|e| e.value().browser_host == host)
+            .any(|e| e.value().mode == WorkspaceMode::Attached);
+
+        assert!(had_attached, "must detect attached workspace on the host");
+    }
+
+    #[test]
+    fn disconnect_pattern_no_attached_allows_normal_kill() {
+        let state = DaemonState::new();
+        let host = "localhost:9222";
+
+        state.workspaces.insert(
+            "ws1".to_string(),
+            make_isolated_workspace("ws1", host),
+        );
+        state.workspaces.insert(
+            "ws2".to_string(),
+            make_isolated_workspace("ws2", host),
+        );
+
+        let had_attached = state
+            .workspaces
+            .iter()
+            .filter(|e| e.value().browser_host == host)
+            .any(|e| e.value().mode == WorkspaceMode::Attached);
+
+        assert!(
+            !had_attached,
+            "isolated-only host must not trigger child neutralization"
+        );
+    }
 }

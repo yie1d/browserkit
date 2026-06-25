@@ -4,6 +4,17 @@ use std::collections::HashMap;
 
 use crate::page::Tab;
 
+/// Workspace mode: determines isolation and close semantics.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkspaceMode {
+    /// Isolated workspace: has its own BrowserContext with independent cookies/storage.
+    /// On close: CloseTarget + DisposeBrowserContext.
+    Isolated,
+    /// Attached workspace: shares the user's default BrowserContext.
+    /// On close: only detach sessions, never close targets or dispose context.
+    Attached,
+}
+
 /// A workspace — the business isolation unit based on a CDP BrowserContext.
 ///
 /// Each workspace has its own cookie/storage isolation and contains one or more tabs.
@@ -13,8 +24,11 @@ pub struct Workspace {
     pub wid: String,
     /// Host of the browser this workspace belongs to, e.g. "localhost:9222"
     pub browser_host: String,
-    /// CDP BrowserContext ID for cookie/storage isolation
-    pub browser_context_id: String,
+    /// CDP BrowserContext ID for cookie/storage isolation.
+    /// `None` for attached workspaces (they use the browser's default context).
+    pub browser_context_id: Option<String>,
+    /// Workspace mode: Isolated (owns a BrowserContext) or Attached (shares default).
+    pub mode: WorkspaceMode,
     /// Optional business label
     pub label: Option<String>,
     /// tid → Tab

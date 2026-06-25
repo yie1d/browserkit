@@ -31,7 +31,8 @@ async fn do_eval(req: &Request, state: &Arc<DaemonState>) -> Result<Response, Bk
         eval = eval.with_timeout(js_timeout_seconds as f64 * 1000.0);
     }
 
-    let resp = ctx.cdp.send(eval, Some(&ctx.cdp_session_id)).await?;
+    let session = ctx.cdp.session(&ctx.cdp_session_id);
+    let resp = eval.send(&session).await?;
 
     if let Some(details) = &resp.exception_details {
         return Err(BkError::JsError(details.text.clone()));

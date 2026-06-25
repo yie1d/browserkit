@@ -19,6 +19,13 @@ pub struct Tab {
     pub url: String,
     /// Current page title
     pub title: String,
+    /// Whether this tab was created by bk (`true`) or is a user's existing tab (`false`).
+    ///
+    /// - `managed = true`: bk created this tab (via `tab new` or isolated `ws new`).
+    ///   On close, bk will `CloseTarget`.
+    /// - `managed = false`: bk attached to a pre-existing user tab (via `ws attach` / `tab attach`).
+    ///   On close, bk will only `DetachFromTarget`, leaving the tab open.
+    pub managed: bool,
 }
 
 /// A text search match found on the page.

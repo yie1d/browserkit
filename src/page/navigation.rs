@@ -18,6 +18,7 @@ pub const PAGE_LOAD_TIMEOUT: Duration = Duration::from_secs(30);
 /// stale connection from its pool.
 pub async fn goto(cdp: &Arc<CDP>, session_id: &str, url: &str) -> Result<String, BkError> {
     let mut last_err = None;
+    let session = cdp.session(session_id);
 
     for attempt in 0..2 {
         if attempt > 0 {
@@ -25,11 +26,8 @@ pub async fn goto(cdp: &Arc<CDP>, session_id: &str, url: &str) -> Result<String,
             tokio::time::sleep(Duration::from_millis(500)).await;
         }
 
-        let resp = cdp
-            .send(
-                cdpkit::page::methods::Navigate::new(url),
-                Some(session_id),
-            )
+        let resp = cdpkit::page::methods::Navigate::new(url)
+            .send(&session)
             .await?;
 
         if let Some(error_text) = &resp.error_text {
@@ -54,11 +52,10 @@ pub async fn goto(cdp: &Arc<CDP>, session_id: &str, url: &str) -> Result<String,
 
 /// Reload the current page using CDP `Page.reload`.
 pub async fn reload(cdp: &Arc<CDP>, session_id: &str) -> Result<(), BkError> {
-    cdp.send(
-        cdpkit::page::methods::Reload::new(),
-        Some(session_id),
-    )
-    .await?;
+    let session = cdp.session(session_id);
+    cdpkit::page::methods::Reload::new()
+        .send(&session)
+        .await?;
 
     wait_for_load(cdp, session_id, PAGE_LOAD_TIMEOUT).await?;
 
@@ -67,11 +64,9 @@ pub async fn reload(cdp: &Arc<CDP>, session_id: &str) -> Result<(), BkError> {
 
 /// Navigate back in history using `Page.getNavigationHistory` + `Page.navigateToHistoryEntry`.
 pub async fn back(cdp: &Arc<CDP>, session_id: &str) -> Result<(), BkError> {
-    let history = cdp
-        .send(
-            cdpkit::page::methods::GetNavigationHistory::new(),
-            Some(session_id),
-        )
+    let session = cdp.session(session_id);
+    let history = cdpkit::page::methods::GetNavigationHistory::new()
+        .send(&session)
         .await?;
 
     // Safely check bounds: current_index is i64 from CDP, subtraction won't overflow
@@ -85,11 +80,9 @@ pub async fn back(cdp: &Arc<CDP>, session_id: &str) -> Result<(), BkError> {
     }
 
     let entry_id = history.entries[new_index].id;
-    cdp.send(
-        cdpkit::page::methods::NavigateToHistoryEntry::new(entry_id),
-        Some(session_id),
-    )
-    .await?;
+    cdpkit::page::methods::NavigateToHistoryEntry::new(entry_id)
+        .send(&session)
+        .await?;
 
     wait_for_load(cdp, session_id, PAGE_LOAD_TIMEOUT).await?;
 
@@ -98,11 +91,9 @@ pub async fn back(cdp: &Arc<CDP>, session_id: &str) -> Result<(), BkError> {
 
 /// Navigate forward in history using `Page.getNavigationHistory` + `Page.navigateToHistoryEntry`.
 pub async fn forward(cdp: &Arc<CDP>, session_id: &str) -> Result<(), BkError> {
-    let history = cdp
-        .send(
-            cdpkit::page::methods::GetNavigationHistory::new(),
-            Some(session_id),
-        )
+    let session = cdp.session(session_id);
+    let history = cdpkit::page::methods::GetNavigationHistory::new()
+        .send(&session)
         .await?;
 
     // Guard against negative current_index (CDP returns i64)
@@ -116,11 +107,9 @@ pub async fn forward(cdp: &Arc<CDP>, session_id: &str) -> Result<(), BkError> {
     }
 
     let entry_id = history.entries[new_index as usize].id;
-    cdp.send(
-        cdpkit::page::methods::NavigateToHistoryEntry::new(entry_id),
-        Some(session_id),
-    )
-    .await?;
+    cdpkit::page::methods::NavigateToHistoryEntry::new(entry_id)
+        .send(&session)
+        .await?;
 
     wait_for_load(cdp, session_id, PAGE_LOAD_TIMEOUT).await?;
 
@@ -129,12 +118,10 @@ pub async fn forward(cdp: &Arc<CDP>, session_id: &str) -> Result<(), BkError> {
 
 /// Get the current page URL via `Runtime.evaluate("window.location.href")`.
 pub async fn get_url(cdp: &Arc<CDP>, session_id: &str) -> Result<String, BkError> {
-    let resp = cdp
-        .send(
-            cdpkit::runtime::methods::Evaluate::new("window.location.href")
-                .with_return_by_value(true),
-            Some(session_id),
-        )
+    let session = cdp.session(session_id);
+    let resp = cdpkit::runtime::methods::Evaluate::new("window.location.href")
+        .with_return_by_value(true)
+        .send(&session)
         .await?;
 
     if let Some(details) = &resp.exception_details {
@@ -151,12 +138,10 @@ pub async fn get_url(cdp: &Arc<CDP>, session_id: &str) -> Result<String, BkError
 
 /// Get the current page title via `Runtime.evaluate("document.title")`.
 pub async fn get_title(cdp: &Arc<CDP>, session_id: &str) -> Result<String, BkError> {
-    let resp = cdp
-        .send(
-            cdpkit::runtime::methods::Evaluate::new("document.title")
-                .with_return_by_value(true),
-            Some(session_id),
-        )
+    let session = cdp.session(session_id);
+    let resp = cdpkit::runtime::methods::Evaluate::new("document.title")
+        .with_return_by_value(true)
+        .send(&session)
         .await?;
 
     if let Some(details) = &resp.exception_details {
@@ -189,18 +174,16 @@ pub async fn wait_for_load(
     let start = tokio::time::Instant::now();
     let mut poll_interval = Duration::from_millis(50);
     let max_interval = Duration::from_millis(500);
+    let session = cdp.session(session_id);
 
     loop {
         if start.elapsed() >= timeout {
             return Err(BkError::Timeout("waiting for page load".into()));
         }
 
-        let resp = cdp
-            .send(
-                cdpkit::runtime::methods::Evaluate::new("document.readyState")
-                    .with_return_by_value(true),
-                Some(session_id),
-            )
+        let resp = cdpkit::runtime::methods::Evaluate::new("document.readyState")
+            .with_return_by_value(true)
+            .send(&session)
             .await;
 
         match resp {

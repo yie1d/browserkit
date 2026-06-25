@@ -210,7 +210,8 @@ mod tests {
         Workspace {
             wid: wid.to_string(),
             browser_host: "localhost:9222".to_string(),
-            browser_context_id: format!("ctx-{}", wid),
+            browser_context_id: Some(format!("ctx-{}", wid)),
+            mode: crate::workspace::WorkspaceMode::Isolated,
             label: None,
             tabs: HashMap::new(),
             active_tab: None,

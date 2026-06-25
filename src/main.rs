@@ -247,6 +247,12 @@ pub enum BrowserAction {
         /// CDP endpoint host (e.g. localhost:9222)
         host: String,
     },
+    /// Auto-discover user's Chrome via DevToolsActivePort
+    Discover {
+        /// Custom path to DevToolsActivePort file
+        #[arg(long)]
+        path: Option<String>,
+    },
     /// List connected browsers
     List,
     /// Disconnect from a browser
@@ -269,6 +275,24 @@ pub enum WsAction {
         /// Show browser window (override config headless = true)
         #[arg(long)]
         no_headless: bool,
+        /// Create in attached mode (share user's browser context, no isolation)
+        #[arg(long)]
+        attached: bool,
+        /// URL/title/target_id pattern to filter tabs (only with --attached)
+        #[arg(short, long)]
+        pattern: Option<String>,
+    },
+    /// Attach existing browser tabs into a new attached workspace
+    Attach {
+        /// URL/title/target_id pattern to filter tabs
+        #[arg(short, long)]
+        pattern: Option<String>,
+        /// Browser host (must already be connected)
+        #[arg(long)]
+        host: Option<String>,
+        /// Workspace label
+        #[arg(short, long)]
+        label: Option<String>,
     },
     /// List all workspaces
     List,
@@ -295,6 +319,11 @@ pub enum TabAction {
     New {
         /// Initial URL (default: about:blank)
         url: Option<String>,
+    },
+    /// Attach an existing browser tab by URL/title/target_id pattern
+    Attach {
+        /// Substring to match against URL, title, or target_id prefix
+        pattern: String,
     },
     /// List tabs in workspace
     List,
@@ -466,7 +495,37 @@ async fn main() {
         return;
     }
 
-    // All other commands need a daemon connection
+    // daemon stop / daemon status: connect-only, never auto-start a daemon
+    if let Command::Daemon { action: _action @ (DaemonAction::Stop | DaemonAction::Status) } = &cli.command {
+        match DaemonClient::connect_only().await {
+            Ok(mut client) => {
+                let result = dispatch(&cli, &mut client).await;
+                if let Err(msg) = result {
+                    eprintln!("error: {}", msg);
+                    std::process::exit(1);
+                }
+                // After daemon.stop, wait for the daemon process to actually exit
+                // by polling until the port is no longer reachable.
+                if let Command::Daemon { action: DaemonAction::Stop } = &cli.command {
+                    drop(client); // close our connection first
+                    wait_for_daemon_exit().await;
+                }
+            }
+            Err(_) => {
+                // No daemon running — report cleanly and exit 0
+                let msg = "daemon not running";
+                match &cli.format {
+                    OutputFormat::Json => {
+                        println!("{}", serde_json::json!({"ok": true, "data": {"status": msg}}));
+                    }
+                    _ => println!("{}", msg),
+                }
+            }
+        }
+        return;
+    }
+
+    // All other commands need a daemon connection (auto-starts if needed)
     let mut client = match DaemonClient::connect_or_start().await {
         Ok(c) => c,
         Err(e) => {
@@ -495,14 +554,19 @@ async fn run_daemon_start() {
         .init();
 
     match daemon::start_daemon().await {
-        Ok(_server) => {
-            println!("daemon started on port {}", _server.port);
-            // Wait for Ctrl+C to keep the daemon running in foreground
-            tokio::signal::ctrl_c()
-                .await
-                .expect("failed to listen for Ctrl+C");
+        Ok(result) => {
+            println!("daemon started on port {}", result.server.port);
+            // Wait for either Ctrl+C or a shutdown signal (from daemon.stop handler)
+            let mut shutdown_rx = result.shutdown_rx;
+            tokio::select! {
+                _ = tokio::signal::ctrl_c() => {}
+                _ = shutdown_rx.changed() => {}
+            }
             println!("\nshutting down...");
             daemon::stop_daemon_cleanup();
+            // Force exit to ensure all background tasks (persist, cleanup, restore)
+            // are terminated and the process doesn't hang.
+            std::process::exit(0);
         }
         Err(e) => {
             eprintln!("error: {}", e);
@@ -585,6 +649,12 @@ async fn dispatch(cli: &Cli, client: &mut DaemonClient) -> Result<(), String> {
                 let resp = send_cmd(client, "browser.connect", json!({"host": host})).await?;
                 print_response(&resp, fmt);
             }
+            BrowserAction::Discover { path } => {
+                let mut params = json!({});
+                if let Some(p) = path { params["path"] = json!(p); }
+                let resp = send_cmd(client, "browser.discover", params).await?;
+                print_response(&resp, fmt);
+            }
             BrowserAction::List => {
                 let resp = send_cmd(client, "browser.list", json!({})).await?;
                 print_response(&resp, fmt);
@@ -597,12 +667,22 @@ async fn dispatch(cli: &Cli, client: &mut DaemonClient) -> Result<(), String> {
 
         // ── Workspace ──────────────────────────────────────
         Command::Ws { action } => match action {
-            WsAction::New { host, label, no_headless } => {
+            WsAction::New { host, label, no_headless, attached, pattern } => {
                 let mut params = json!({});
                 if let Some(h) = host { params["host"] = json!(h); }
                 if let Some(l) = label { params["label"] = json!(l); }
                 if *no_headless { params["headless"] = json!(false); }
+                if *attached { params["attached"] = json!(true); }
+                if let Some(p) = pattern { params["pattern"] = json!(p); }
                 let resp = send_cmd(client, "ws.new", params).await?;
+                print_response(&resp, fmt);
+            }
+            WsAction::Attach { pattern, host, label } => {
+                let mut params = json!({});
+                if let Some(p) = pattern { params["pattern"] = json!(p); }
+                if let Some(h) = host { params["host"] = json!(h); }
+                if let Some(l) = label { params["label"] = json!(l); }
+                let resp = send_cmd(client, "ws.attach", params).await?;
                 print_response(&resp, fmt);
             }
             WsAction::List => {
@@ -635,6 +715,10 @@ async fn dispatch(cli: &Cli, client: &mut DaemonClient) -> Result<(), String> {
                     let mut params = json!({"wid": wid});
                     if let Some(u) = url { params["url"] = json!(u); }
                     let resp = send_cmd(client, "tab.new", params).await?;
+                    print_response(&resp, fmt);
+                }
+                TabAction::Attach { pattern } => {
+                    let resp = send_cmd(client, "tab.attach", json!({"wid": wid, "pattern": pattern})).await?;
                     print_response(&resp, fmt);
                 }
                 TabAction::List => {
@@ -1205,6 +1289,43 @@ async fn dispatch_status(client: &mut DaemonClient, fmt: &OutputFormat) -> Resul
     }
 
     Ok(())
+}
+
+// ── Daemon exit wait ──────────────────────────────────────────
+
+/// After sending `daemon.stop`, poll the port until the daemon process exits
+/// (port becomes unreachable). Gives up after 5 seconds with a warning.
+async fn wait_for_daemon_exit() {
+    let port = match browserkit::daemon::read_port_file() {
+        Some(p) => p,
+        None => return, // port file already gone, daemon exited
+    };
+
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+    let poll_interval = std::time::Duration::from_millis(50);
+
+    loop {
+        if tokio::time::Instant::now() >= deadline {
+            eprintln!("warning: daemon did not exit within 5s, may need manual cleanup");
+            return;
+        }
+        // Check if port is still reachable
+        match tokio::time::timeout(
+            std::time::Duration::from_millis(200),
+            tokio::net::TcpStream::connect(format!("127.0.0.1:{}", port)),
+        )
+        .await
+        {
+            Ok(Ok(_)) => {
+                // Still alive, wait and retry
+                tokio::time::sleep(poll_interval).await;
+            }
+            _ => {
+                // Connection refused or timeout — daemon is gone
+                return;
+            }
+        }
+    }
 }
 
 // ── One-shot helpers ───────────────────────────────────────────

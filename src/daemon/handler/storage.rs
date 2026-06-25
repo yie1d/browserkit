@@ -4,6 +4,8 @@ use std::sync::Arc;
 
 use serde_json::json;
 
+use cdpkit::Sender;
+
 use crate::daemon::protocol::{Request, Response};
 use crate::daemon::state::DaemonState;
 use crate::error::BkError;
@@ -55,7 +57,7 @@ handler!(handle_storage_cookies_get, do_storage_cookies_get(req, state));
 
 async fn do_storage_cookies_get(req: &Request, state: &Arc<DaemonState>) -> Result<Response, BkError> {
     let ctx = resolve_context(req, state, "storage.cookies.get")?;
-    let resp = ctx.cdp.send(StorageGetCookies { browser_context_id: Some(ctx.browser_context_id) }, None).await?;
+    let resp = ctx.cdp.send_cmd(StorageGetCookies { browser_context_id: ctx.browser_context_id }).await?;
     touch_workspace(state, &ctx.wid);
     Ok(Response::ok(json!({ "cookies": resp.cookies })))
 }
@@ -70,7 +72,7 @@ async fn do_storage_cookies_set(req: &Request, state: &Arc<DaemonState>) -> Resu
         .and_then(|v| v.as_array())
         .ok_or_else(|| BkError::InvalidRequest("storage.cookies.set requires 'cookies' array param".into()))?
         .clone();
-    ctx.cdp.send(StorageSetCookies { cookies, browser_context_id: Some(ctx.browser_context_id) }, None).await?;
+    ctx.cdp.send_cmd(StorageSetCookies { cookies, browser_context_id: ctx.browser_context_id }).await?;
     touch_workspace(state, &ctx.wid);
     Ok(Response::ok(json!({ "status": "cookies set" })))
 }
@@ -79,7 +81,7 @@ handler!(handle_storage_cookies_clear, do_storage_cookies_clear(req, state));
 
 async fn do_storage_cookies_clear(req: &Request, state: &Arc<DaemonState>) -> Result<Response, BkError> {
     let ctx = resolve_context(req, state, "storage.cookies.clear")?;
-    ctx.cdp.send(StorageClearCookies { browser_context_id: Some(ctx.browser_context_id) }, None).await?;
+    ctx.cdp.send_cmd(StorageClearCookies { browser_context_id: ctx.browser_context_id }).await?;
     touch_workspace(state, &ctx.wid);
     Ok(Response::ok(json!({ "status": "cookies cleared" })))
 }
@@ -93,7 +95,8 @@ async fn do_storage_local_get(req: &Request, state: &Arc<DaemonState>) -> Result
     let json_key = serde_json::to_string(key)
         .map_err(|e| BkError::Other(format!("failed to serialize key: {}", e)))?;
     let js = format!("window.localStorage.getItem(JSON.parse({}))", json_key);
-    let resp = ctx.cdp.send(cdpkit::runtime::methods::Evaluate::new(&js).with_return_by_value(true), Some(&ctx.cdp_session_id)).await?;
+    let session = ctx.cdp.session(&ctx.cdp_session_id);
+    let resp = cdpkit::runtime::methods::Evaluate::new(&js).with_return_by_value(true).send(&session).await?;
     if let Some(details) = &resp.exception_details {
         return Err(BkError::Other(format!("JS exception: {}", details.text)));
     }
@@ -115,7 +118,8 @@ async fn do_storage_local_set(req: &Request, state: &Arc<DaemonState>) -> Result
     let json_value = serde_json::to_string(value)
         .map_err(|e| BkError::Other(format!("failed to serialize value: {}", e)))?;
     let js = format!("window.localStorage.setItem(JSON.parse({}), JSON.parse({}))", json_key, json_value);
-    let resp = ctx.cdp.send(cdpkit::runtime::methods::Evaluate::new(&js).with_return_by_value(true), Some(&ctx.cdp_session_id)).await?;
+    let session = ctx.cdp.session(&ctx.cdp_session_id);
+    let resp = cdpkit::runtime::methods::Evaluate::new(&js).with_return_by_value(true).send(&session).await?;
     if let Some(details) = &resp.exception_details {
         return Err(BkError::Other(format!("JS exception: {}", details.text)));
     }
@@ -127,16 +131,14 @@ handler!(handle_storage_export, do_storage_export(req, state));
 
 async fn do_storage_export(req: &Request, state: &Arc<DaemonState>) -> Result<Response, BkError> {
     let ctx = resolve_context(req, state, "storage.export")?;
-    let cookie_resp = ctx.cdp.send(StorageGetCookies { browser_context_id: Some(ctx.browser_context_id) }, None).await?;
-    let ls_resp = ctx.cdp
-        .send(
-            cdpkit::runtime::methods::Evaluate::new(
-                "JSON.stringify(Object.fromEntries(Object.entries(window.localStorage)))",
-            )
-            .with_return_by_value(true),
-            Some(&ctx.cdp_session_id),
-        )
-        .await?;
+    let cookie_resp = ctx.cdp.send_cmd(StorageGetCookies { browser_context_id: ctx.browser_context_id }).await?;
+    let session = ctx.cdp.session(&ctx.cdp_session_id);
+    let ls_resp = cdpkit::runtime::methods::Evaluate::new(
+        "JSON.stringify(Object.fromEntries(Object.entries(window.localStorage)))",
+    )
+    .with_return_by_value(true)
+    .send(&session)
+    .await?;
     let local_storage = if let Some(details) = &ls_resp.exception_details {
         tracing::warn!("localStorage export failed: {}", details.text);
         json!({})
@@ -160,9 +162,9 @@ async fn do_storage_import(req: &Request, state: &Arc<DaemonState>) -> Result<Re
         .ok_or_else(|| BkError::InvalidRequest("storage.import requires 'state' param".into()))?;
 
     if let Some(cookies) = import_state.get("cookies").and_then(|v| v.as_array()) {
-        ctx.cdp.send(StorageClearCookies { browser_context_id: Some(ctx.browser_context_id.clone()) }, None).await?;
+        ctx.cdp.send_cmd(StorageClearCookies { browser_context_id: ctx.browser_context_id.clone() }).await?;
         if !cookies.is_empty() {
-            ctx.cdp.send(StorageSetCookies { cookies: cookies.clone(), browser_context_id: Some(ctx.browser_context_id) }, None).await?;
+            ctx.cdp.send_cmd(StorageSetCookies { cookies: cookies.clone(), browser_context_id: ctx.browser_context_id }).await?;
         }
     }
 
@@ -176,7 +178,8 @@ async fn do_storage_import(req: &Request, state: &Arc<DaemonState>) -> Result<Re
                 "(() => {{ window.localStorage.clear(); const d = JSON.parse(JSON.parse({})); for (const [k, v] of Object.entries(d)) {{ window.localStorage.setItem(k, v); }} }})()",
                 json_escaped
             );
-            let resp = ctx.cdp.send(cdpkit::runtime::methods::Evaluate::new(&js).with_return_by_value(true), Some(&ctx.cdp_session_id)).await?;
+            let session = ctx.cdp.session(&ctx.cdp_session_id);
+            let resp = cdpkit::runtime::methods::Evaluate::new(&js).with_return_by_value(true).send(&session).await?;
             if let Some(details) = &resp.exception_details {
                 return Err(BkError::Other(format!("localStorage import failed: {}", details.text)));
             }

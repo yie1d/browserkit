@@ -104,12 +104,15 @@ async fn cleanup_expired_workspaces(state: &Arc<DaemonState>) {
         .map(|entry| {
             let ws = entry.value();
             let cdp = state.browsers.get(&ws.browser_host).map(|b| Arc::clone(&b.cdp));
-            let target_ids: Vec<String> = ws.tabs.values().map(|t| t.target_id.clone()).collect();
+            let tab_info: Vec<(String, String, bool)> = ws.tabs.values()
+                .map(|t| (t.target_id.clone(), t.cdp_session_id.clone(), t.managed))
+                .collect();
             ExpiredWorkspace {
                 wid: entry.key().clone(),
                 browser_host: ws.browser_host.clone(),
                 browser_context_id: ws.browser_context_id.clone(),
-                target_ids,
+                mode: ws.mode,
+                tab_info,
                 cdp,
             }
         })
@@ -122,17 +125,27 @@ async fn cleanup_expired_workspaces(state: &Arc<DaemonState>) {
     // Best-effort CDP cleanup (no lock held during async I/O)
     for ew in &expired {
         if let Some(cdp) = &ew.cdp {
-            for target_id in &ew.target_ids {
-                let _ = cdp
-                    .send(cdpkit::target::methods::CloseTarget::new(target_id.clone()), None)
-                    .await;
+            // Close/detach tabs based on per-tab managed flag
+            for (target_id, session_id, tab_managed) in &ew.tab_info {
+                if *tab_managed {
+                    let _ = cdpkit::target::methods::CloseTarget::new(target_id.clone())
+                        .send(cdp.as_ref())
+                        .await;
+                } else if !session_id.is_empty() {
+                    let _ = cdpkit::target::methods::DetachFromTarget::new()
+                        .with_session_id(session_id.clone())
+                        .send(cdp.as_ref())
+                        .await;
+                }
             }
-            let _ = cdp
-                .send(
-                    cdpkit::target::methods::DisposeBrowserContext::new(ew.browser_context_id.clone()),
-                    None,
-                )
-                .await;
+            // Dispose BrowserContext only for isolated workspaces
+            if ew.mode == crate::workspace::WorkspaceMode::Isolated {
+                if let Some(ctx_id) = &ew.browser_context_id {
+                    let _ = cdpkit::target::methods::DisposeBrowserContext::new(ctx_id.clone())
+                        .send(cdp.as_ref())
+                        .await;
+                }
+            }
         }
     }
 
@@ -151,6 +164,9 @@ async fn cleanup_expired_workspaces(state: &Arc<DaemonState>) {
 
         state.workspaces.remove(&ew.wid);
 
+        // Remove managed browser if no workspaces remain on it.
+        // Browser.managed=false (user-connected) has child=None, so removal is safe
+        // (Browser::drop won't kill anything). No need for mode-based gating.
         let has_workspaces = state
             .workspaces
             .iter()
@@ -171,8 +187,9 @@ async fn cleanup_expired_workspaces(state: &Arc<DaemonState>) {
 struct ExpiredWorkspace {
     wid: String,
     browser_host: String,
-    browser_context_id: String,
-    target_ids: Vec<String>,
+    browser_context_id: Option<String>,
+    mode: crate::workspace::WorkspaceMode,
+    tab_info: Vec<(String, String, bool)>, // (target_id, session_id, managed)
     cdp: Option<Arc<cdpkit::CDP>>,
 }
 
@@ -342,7 +359,8 @@ mod tests {
         Workspace {
             wid: wid.to_string(),
             browser_host: host.to_string(),
-            browser_context_id: format!("ctx-{}", wid),
+            browser_context_id: Some(format!("ctx-{}", wid)),
+            mode: crate::workspace::WorkspaceMode::Isolated,
             label: None,
             tabs: HashMap::new(),
             active_tab: None,

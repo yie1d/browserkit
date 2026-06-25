@@ -81,12 +81,25 @@ pub async fn check_existing_daemon() -> Option<u16> {
     }
 }
 
+/// Result of starting the daemon: server handle + shutdown receiver.
+///
+/// The `shutdown_rx` can be awaited to detect when `daemon.stop` is invoked
+/// (or any other code sends `true` on the shutdown channel). The caller
+/// should use this to break out of its keep-alive loop and exit the process.
+pub struct DaemonStartResult {
+    pub server: server::DaemonServer,
+    pub shutdown_rx: tokio::sync::watch::Receiver<bool>,
+}
+
 /// Start the daemon: check for existing → clean stale port file → start server → write port file.
 ///
 /// If a daemon is already running (verified via health check), returns an error
 /// with the existing port. If a stale port file exists (health check fails),
 /// it is cleaned up before starting a new daemon.
-pub async fn start_daemon() -> Result<server::DaemonServer, crate::error::BkError> {
+///
+/// Browser state restoration (reconnecting to managed browsers and re-attaching
+/// tabs) runs in a background task and does not block daemon readiness.
+pub async fn start_daemon() -> Result<DaemonStartResult, crate::error::BkError> {
     // Check if daemon is already running
     if let Some(port) = check_existing_daemon().await {
         tracing::info!(port, "daemon already running");
@@ -103,31 +116,42 @@ pub async fn start_daemon() -> Result<server::DaemonServer, crate::error::BkErro
     let config = crate::config::load_config();
     let cleanup_interval = config.daemon.cleanup_interval_seconds;
 
-    // Restore state from persisted files (reconnects to browsers)
-    let mut restored = persist::restore_state().await;
-    restored.config = config;
+    // Create empty state (no restore yet — that happens in background after bind)
+    let mut fresh_state = state::DaemonState::new();
+    fresh_state.config = config;
 
     // Take the receiver that was created alongside persist_tx in DaemonState::new(),
     // then wrap in Arc. The real persist task will use this receiver.
-    let persist_rx = restored._persist_rx_guard.take()
+    let persist_rx = fresh_state._persist_rx_guard.take()
         .expect("DaemonState::new() always creates a receiver");
-    let state = Arc::new(restored);
+    let state = Arc::new(fresh_state);
     persist::spawn_persist_task_with_rx(Arc::clone(&state), persist_rx);
 
+    // Bind TCP listener + write port file FIRST so daemon is immediately reachable
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+    // Clone a receiver for the caller (run_daemon_start) to await shutdown signal
+    let caller_shutdown_rx = shutdown_rx.clone();
     let server = server::DaemonServer::start(state.clone(), shutdown_tx, shutdown_rx)
         .await
         .map_err(crate::error::BkError::Io)?;
 
-    // Spawn background cleanup task for expired workspaces; store handle to
-    // detect panics. If the task exits unexpectedly, we log a warning.
-    let _cleanup_handle = server::spawn_cleanup_task(state, cleanup_interval);
-
-    // Write port file
     write_port_file(server.port).map_err(crate::error::BkError::Io)?;
+    tracing::info!(port = server.port, "daemon started (ready for connections)");
 
-    tracing::info!(port = server.port, "daemon started");
-    Ok(server)
+    // Spawn background cleanup task for expired workspaces
+    let _cleanup_handle = server::spawn_cleanup_task(state.clone(), cleanup_interval);
+
+    // Spawn background restore: reconnect managed browsers + re-attach tabs
+    // This does NOT block daemon readiness — clients can connect immediately.
+    let restore_state = Arc::clone(&state);
+    tokio::spawn(async move {
+        persist::restore_into_state(&restore_state).await;
+    });
+
+    Ok(DaemonStartResult {
+        server,
+        shutdown_rx: caller_shutdown_rx,
+    })
 }
 
 /// Stop the daemon by cleaning up the port file.
@@ -203,12 +227,12 @@ mod tests {
         // Clean up any leftover port file from other tests
         remove_port_file();
 
-        let server = start_daemon().await.unwrap();
-        assert!(server.port > 0);
+        let result = start_daemon().await.unwrap();
+        assert!(result.server.port > 0);
 
         // Verify port file was written
         let port = read_port_file();
-        assert_eq!(port, Some(server.port));
+        assert_eq!(port, Some(result.server.port));
 
         // Clean up
         remove_port_file();
@@ -221,8 +245,8 @@ mod tests {
         remove_port_file();
 
         // Start first daemon
-        let server1 = start_daemon().await.unwrap();
-        let port1 = server1.port;
+        let result1 = start_daemon().await.unwrap();
+        let port1 = result1.server.port;
 
         // Try to start second daemon — should fail because first is running
         let result = start_daemon().await;
@@ -248,13 +272,13 @@ mod tests {
         write_port_file(stale_port).unwrap();
 
         // start_daemon should detect the stale file, clean it, and start fresh
-        let server = start_daemon().await.unwrap();
-        assert!(server.port > 0);
-        assert_ne!(server.port, stale_port);
+        let result = start_daemon().await.unwrap();
+        assert!(result.server.port > 0);
+        assert_ne!(result.server.port, stale_port);
 
         // Verify port file now has the new port
         let port = read_port_file();
-        assert_eq!(port, Some(server.port));
+        assert_eq!(port, Some(result.server.port));
 
         // Clean up
         remove_port_file();
@@ -273,6 +297,60 @@ mod tests {
     fn remove_port_file_is_idempotent() {
         // Calling remove when file doesn't exist should not panic
         remove_port_file();
+        remove_port_file();
+    }
+
+    /// Regression test: after `daemon.stop` is sent, the shutdown_rx fires,
+    /// confirming that `run_daemon_start`'s select! would break out.
+    /// We cannot test `std::process::exit` directly, but we verify the signal
+    /// propagation that makes exit reachable.
+    #[tokio::test]
+    async fn shutdown_signal_propagates_to_caller_rx() {
+        let _guard = PORT_FILE_MUTEX.lock().await;
+        remove_port_file();
+
+        let result = start_daemon().await.unwrap();
+        let port = result.server.port;
+        let mut shutdown_rx = result.shutdown_rx;
+
+        // Send daemon.stop via TCP (same as `bk daemon stop` would)
+        use tokio::io::{AsyncWriteExt, AsyncBufReadExt, BufReader};
+        let stream = tokio::net::TcpStream::connect(format!("127.0.0.1:{}", port))
+            .await
+            .unwrap();
+        let (reader, mut writer) = stream.into_split();
+        let mut reader = BufReader::new(reader);
+
+        let req = r#"{"cmd":"daemon.stop","params":{}}"#;
+        writer.write_all(format!("{}\n", req).as_bytes()).await.unwrap();
+        writer.flush().await.unwrap();
+
+        let mut line = String::new();
+        reader.read_line(&mut line).await.unwrap();
+        // Confirm response is ok
+        let resp: crate::daemon::protocol::Response = serde_json::from_str(line.trim()).unwrap();
+        assert!(resp.ok);
+
+        // The shutdown_rx should now fire (the handler sent true on the channel)
+        let changed = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            shutdown_rx.changed(),
+        )
+        .await;
+        assert!(changed.is_ok(), "shutdown_rx.changed() should resolve after daemon.stop");
+        assert_eq!(*shutdown_rx.borrow(), true);
+
+        // The TCP server accept loop should have stopped — new connections should fail
+        let mut failed = false;
+        for _ in 0..20 {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            if tokio::net::TcpStream::connect(format!("127.0.0.1:{}", port)).await.is_err() {
+                failed = true;
+                break;
+            }
+        }
+        assert!(failed, "server should stop accepting after shutdown signal");
+
         remove_port_file();
     }
 }

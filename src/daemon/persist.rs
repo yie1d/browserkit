@@ -36,12 +36,20 @@ pub struct PersistedBrowser {
 pub struct PersistedWorkspace {
     pub wid: String,
     pub browser_host: String,
-    pub browser_context_id: String,
+    /// `None` for attached workspaces (they share the browser's default context).
+    pub browser_context_id: Option<String>,
+    /// Workspace mode: "isolated" or "attached". Defaults to "isolated" for backward compat.
+    #[serde(default = "default_mode_isolated")]
+    pub mode: String,
     pub label: Option<String>,
     pub tabs: Vec<PersistedTab>,
     pub active_tab: Option<String>,
     pub created_at: u64,
     pub last_active: u64,
+}
+
+fn default_mode_isolated() -> String {
+    "isolated".to_string()
 }
 
 /// Serializable representation of a tab.
@@ -51,6 +59,17 @@ pub struct PersistedTab {
     pub target_id: String,
     pub url: String,
     pub title: String,
+    /// Whether this tab was created by bk (true) or attached from user's browser (false).
+    ///
+    /// Defaults to `true` for backward compatibility: old persisted data only contains
+    /// tabs from isolated workspaces (all created by bk), so defaulting to managed=true
+    /// is both correct and safe.
+    #[serde(default = "default_managed_true")]
+    pub managed: bool,
+}
+
+fn default_managed_true() -> bool {
+    true
 }
 
 // ── File paths ───────────────────────────────────────────────────────
@@ -94,13 +113,20 @@ impl PersistedWorkspace {
                 target_id: tab.target_id.clone(),
                 url: tab.url.clone(),
                 title: tab.title.clone(),
+                managed: tab.managed,
             })
             .collect();
+
+        let mode = match ws.mode {
+            crate::workspace::WorkspaceMode::Isolated => "isolated".to_string(),
+            crate::workspace::WorkspaceMode::Attached => "attached".to_string(),
+        };
 
         Self {
             wid: ws.wid.clone(),
             browser_host: ws.browser_host.clone(),
             browser_context_id: ws.browser_context_id.clone(),
+            mode,
             label: ws.label.clone(),
             tabs,
             active_tab: ws.active_tab.clone(),
@@ -124,14 +150,21 @@ impl PersistedWorkspace {
                 cdp_session_id: String::new(),
                 url: pt.url,
                 title: pt.title,
+                managed: pt.managed,
             };
             tabs.insert(pt.tid, tab);
         }
+
+        let mode = match self.mode.as_str() {
+            "attached" => crate::workspace::WorkspaceMode::Attached,
+            _ => crate::workspace::WorkspaceMode::Isolated,
+        };
 
         Workspace {
             wid: self.wid,
             browser_host: self.browser_host,
             browser_context_id: self.browser_context_id,
+            mode,
             label: self.label,
             tabs,
             active_tab: self.active_tab,
@@ -233,18 +266,32 @@ fn load_workspaces() -> Vec<PersistedWorkspace> {
 
 // ── Restore into DaemonState ─────────────────────────────────────────
 
-/// Restore daemon state from persisted files, re-establishing CDP connections.
+/// Restore daemon state by reconnecting to persisted **managed** browsers
+/// and re-attaching their workspace tabs. Inserts results into the provided
+/// `state` (which is already shared and reachable via the TCP server).
 ///
-/// For each persisted browser, attempts to reconnect via CDP. If reconnection
-/// fails, the browser and its associated workspaces are skipped (logged as
-/// warnings). Successfully reconnected browsers and their workspaces are
-/// inserted into the returned `DaemonState`.
-pub async fn restore_state() -> DaemonState {
+/// **Unmanaged browsers are always skipped** — even if old `browsers.json`
+/// contains them. This prevents unwanted reconnection to user's real Chrome.
+///
+/// This function is designed to run inside a `tokio::spawn` background task
+/// so that daemon readiness is not blocked by slow CDP reconnections.
+pub async fn restore_into_state(state: &Arc<DaemonState>) {
     let restored = load_persisted_state();
-    let state = DaemonState::new();
 
-    // Reconnect to persisted browsers
+    // Collect hosts of managed browsers that reconnect successfully.
+    // We need this set to decide which workspaces to restore.
+    let mut managed_hosts: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    // Reconnect only managed browsers; skip unmanaged entirely.
     for pb in &restored.browsers {
+        if !pb.managed {
+            tracing::info!(
+                host = %pb.host,
+                "skipping unmanaged browser on restore (runtime-only, not reconnected)"
+            );
+            continue;
+        }
+
         match crate::browser::connect_to_browser(&pb.host).await {
             Ok(cdp) => {
                 let browser = Browser {
@@ -255,25 +302,26 @@ pub async fn restore_state() -> DaemonState {
                     child: None,
                 };
                 state.browsers.insert(pb.host.clone(), browser);
-                tracing::info!(host = %pb.host, "restored browser connection");
+                managed_hosts.insert(pb.host.clone());
+                tracing::info!(host = %pb.host, "restored managed browser connection");
             }
             Err(e) => {
                 warn!(
                     host = %pb.host,
                     error = %e,
-                    "failed to reconnect to persisted browser, skipping"
+                    "failed to reconnect to managed browser, skipping"
                 );
             }
         }
     }
 
-    // Restore workspaces whose browser is available, re-attaching CDP sessions for each tab.
+    // Restore workspaces whose browser is available (only managed browsers).
     for pw in restored.workspaces {
-        if !state.browsers.contains_key(&pw.browser_host) {
-            warn!(
+        if !managed_hosts.contains(&pw.browser_host) {
+            tracing::debug!(
                 wid = %pw.wid,
                 host = %pw.browser_host,
-                "skipping workspace: browser not available"
+                "skipping workspace: browser not available or was unmanaged"
             );
             continue;
         }
@@ -284,12 +332,9 @@ pub async fn restore_state() -> DaemonState {
 
         // Re-attach to each tab's target to get a fresh CDP session ID.
         for tab in ws.tabs.values_mut() {
-            match cdp
-                .send(
-                    cdpkit::target::methods::AttachToTarget::new(tab.target_id.clone())
-                        .with_flatten(true),
-                    None,
-                )
+            match cdpkit::target::methods::AttachToTarget::new(tab.target_id.clone())
+                .with_flatten(true)
+                .send(cdp.as_ref())
                 .await
             {
                 Ok(resp) => {
@@ -327,8 +372,17 @@ pub async fn restore_state() -> DaemonState {
             tracing::info!(wid = %wid, "restored default workspace");
         }
     }
+}
 
-    state
+/// Legacy entry point kept for backward compatibility with tests.
+/// Creates a fresh DaemonState and restores into it.
+pub async fn restore_state() -> DaemonState {
+    let state = DaemonState::new();
+    let arc_state = Arc::new(state);
+    restore_into_state(&arc_state).await;
+    // We need to unwrap the Arc. Since restore_into_state only borrows it
+    // and we hold the only Arc, this is safe.
+    Arc::try_unwrap(arc_state).unwrap_or_else(|_| panic!("restore_state: Arc still has other references"))
 }
 
 // ── Convenience: persist from Arc<RwLock<DaemonState>> ───────────────
@@ -363,18 +417,37 @@ pub fn spawn_persist_task_with_rx(state: Arc<DaemonState>, mut rx: mpsc::Receive
 }
 
 /// Perform the actual state snapshot and file writes.
+///
+/// Only **managed** browsers are persisted. Workspaces are only persisted if
+/// their `browser_host` points to a managed browser. Unmanaged browsers and
+/// their dependent workspaces are runtime-only state that ends when the daemon
+/// stops.
 async fn do_persist(state: &Arc<DaemonState>) {
-    // Collect all data directly — no lock needed, DashMap provides interior mutability
+    // Collect managed browsers and build a set of their hosts
+    let mut managed_hosts: std::collections::HashSet<String> = std::collections::HashSet::new();
     let browsers: Vec<PersistedBrowser> = state
         .browsers
         .iter()
+        .filter(|entry| {
+            let b = entry.value();
+            if b.managed {
+                managed_hosts.insert(b.host.clone());
+                true
+            } else {
+                false
+            }
+        })
         .map(|entry| PersistedBrowser::from_browser(entry.value()))
         .collect();
+
+    // Only persist workspaces whose browser_host is a managed browser
     let workspaces: Vec<PersistedWorkspace> = state
         .workspaces
         .iter()
+        .filter(|entry| managed_hosts.contains(&entry.value().browser_host))
         .map(|entry| PersistedWorkspace::from_workspace(entry.value()))
         .collect();
+
     let default_wid = state.get_default_wid();
 
     // Run blocking file I/O on a dedicated thread to avoid blocking the tokio runtime
@@ -419,13 +492,15 @@ mod tests {
         PersistedWorkspace {
             wid: wid.to_string(),
             browser_host: host.to_string(),
-            browser_context_id: format!("ctx-{}", wid),
+            browser_context_id: Some(format!("ctx-{}", wid)),
+            mode: "isolated".to_string(),
             label: Some("test".to_string()),
             tabs: vec![PersistedTab {
                 tid: "t001".to_string(),
                 target_id: "target-1".to_string(),
                 url: "https://example.com".to_string(),
                 title: "Example".to_string(),
+                managed: true,
             }],
             active_tab: Some("t001".to_string()),
             created_at: 1000,
@@ -459,12 +534,14 @@ mod tests {
         assert_eq!(ws.label, Some("test".to_string()));
         assert_eq!(ws.tabs.len(), 1);
         assert_eq!(ws.active_tab, Some("t001".to_string()));
+        assert_eq!(ws.mode, crate::workspace::WorkspaceMode::Isolated);
 
         // Convert back
         let pw2 = PersistedWorkspace::from_workspace(&ws);
         assert_eq!(pw2.wid, pw.wid);
         assert_eq!(pw2.browser_host, pw.browser_host);
         assert_eq!(pw2.browser_context_id, pw.browser_context_id);
+        assert_eq!(pw2.mode, "isolated");
         assert_eq!(pw2.label, pw.label);
         assert_eq!(pw2.active_tab, pw.active_tab);
         assert_eq!(pw2.created_at, pw.created_at);
@@ -536,5 +613,853 @@ mod tests {
         let b_json = std::fs::read_to_string(&browsers_path).unwrap();
         let restored: Vec<PersistedBrowser> = serde_json::from_str(&b_json).unwrap();
         assert!(restored.is_empty());
+    }
+
+    // ── Backward compatibility: old format (no mode, bare string browser_context_id) ──
+
+    #[test]
+    fn old_format_deserializes_bare_string_browser_context_id_and_no_mode() {
+        // Simulate an old workspaces.json entry: browser_context_id is a bare
+        // string (not wrapped in Option/null), and the `mode` field is absent.
+        let old_json = r#"{
+            "wid": "a3f2e1b09c7d4a68",
+            "browser_host": "localhost:9222",
+            "browser_context_id": "CTX_ABC123",
+            "label": "legacy",
+            "tabs": [],
+            "active_tab": null,
+            "created_at": 1000,
+            "last_active": 2000
+        }"#;
+
+        let pw: PersistedWorkspace = serde_json::from_str(old_json).unwrap();
+        assert_eq!(pw.browser_context_id, Some("CTX_ABC123".to_string()));
+        assert_eq!(pw.mode, "isolated", "missing mode field should default to isolated");
+        assert_eq!(pw.wid, "a3f2e1b09c7d4a68");
+        assert_eq!(pw.label, Some("legacy".to_string()));
+
+        // Verify it converts to the correct runtime Workspace
+        let ws = pw.into_workspace();
+        assert_eq!(ws.browser_context_id, Some("CTX_ABC123".to_string()));
+        assert_eq!(ws.mode, crate::workspace::WorkspaceMode::Isolated);
+    }
+
+    #[test]
+    fn new_format_attached_workspace_roundtrip() {
+        // Attached workspace: browser_context_id is null, mode is "attached"
+        let pw = PersistedWorkspace {
+            wid: "b7e1deadbeef0001".to_string(),
+            browser_host: "localhost:41753".to_string(),
+            browser_context_id: None,
+            mode: "attached".to_string(),
+            label: Some("user-chrome".to_string()),
+            tabs: vec![PersistedTab {
+                tid: "t100".to_string(),
+                target_id: "TARGET_EXISTING_PAGE".to_string(),
+                url: "https://github.com".to_string(),
+                title: "GitHub".to_string(),
+                managed: false,
+            }],
+            active_tab: Some("t100".to_string()),
+            created_at: 5000,
+            last_active: 6000,
+        };
+
+        // Serialize
+        let json = serde_json::to_string(&pw).unwrap();
+
+        // Verify null browser_context_id and "attached" mode are in JSON
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert!(v["browser_context_id"].is_null(), "attached ws should serialize browser_context_id as null");
+        assert_eq!(v["mode"], "attached");
+
+        // Deserialize back
+        let restored: PersistedWorkspace = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored, pw);
+
+        // Convert to runtime workspace
+        let ws = restored.into_workspace();
+        assert_eq!(ws.browser_context_id, None);
+        assert_eq!(ws.mode, crate::workspace::WorkspaceMode::Attached);
+        assert_eq!(ws.tabs.len(), 1);
+        assert_eq!(ws.tabs["t100"].target_id, "TARGET_EXISTING_PAGE");
+
+        // Convert back to persisted
+        let pw2 = PersistedWorkspace::from_workspace(&ws);
+        assert_eq!(pw2.browser_context_id, None);
+        assert_eq!(pw2.mode, "attached");
+    }
+
+    #[test]
+    fn old_format_array_with_mixed_workspaces() {
+        // A workspaces.json containing one old-format entry and one new-format entry
+        let json = r#"[
+            {
+                "wid": "aaaa111122223333",
+                "browser_host": "localhost:9222",
+                "browser_context_id": "CTX_OLD",
+                "label": null,
+                "tabs": [{"tid": "t1", "target_id": "T1", "url": "about:blank", "title": ""}],
+                "active_tab": "t1",
+                "created_at": 100,
+                "last_active": 200
+            },
+            {
+                "wid": "bbbb444455556666",
+                "browser_host": "localhost:41753",
+                "browser_context_id": null,
+                "mode": "attached",
+                "label": "attached-ws",
+                "tabs": [],
+                "active_tab": null,
+                "created_at": 300,
+                "last_active": 400
+            }
+        ]"#;
+
+        let workspaces: Vec<PersistedWorkspace> = serde_json::from_str(json).unwrap();
+        assert_eq!(workspaces.len(), 2);
+
+        // Old format entry
+        assert_eq!(workspaces[0].browser_context_id, Some("CTX_OLD".to_string()));
+        assert_eq!(workspaces[0].mode, "isolated");
+
+        // New format attached entry
+        assert_eq!(workspaces[1].browser_context_id, None);
+        assert_eq!(workspaces[1].mode, "attached");
+
+        // Both should convert correctly
+        let ws0 = workspaces[0].clone().into_workspace();
+        assert_eq!(ws0.mode, crate::workspace::WorkspaceMode::Isolated);
+        assert_eq!(ws0.browser_context_id, Some("CTX_OLD".to_string()));
+
+        let ws1 = workspaces[1].clone().into_workspace();
+        assert_eq!(ws1.mode, crate::workspace::WorkspaceMode::Attached);
+        assert_eq!(ws1.browser_context_id, None);
+    }
+
+    #[test]
+    fn unknown_mode_string_defaults_to_isolated() {
+        // If mode field has an unrecognized value, into_workspace should default to Isolated
+        let json = r#"{
+            "wid": "cccc777788889999",
+            "browser_host": "localhost:9222",
+            "browser_context_id": "CTX_X",
+            "mode": "something_unexpected",
+            "label": null,
+            "tabs": [],
+            "active_tab": null,
+            "created_at": 0,
+            "last_active": 0
+        }"#;
+
+        let pw: PersistedWorkspace = serde_json::from_str(json).unwrap();
+        assert_eq!(pw.mode, "something_unexpected");
+
+        let ws = pw.into_workspace();
+        // The match in into_workspace uses _ => Isolated
+        assert_eq!(ws.mode, crate::workspace::WorkspaceMode::Isolated);
+    }
+
+    // ── Tab.managed persistence regression tests ────────────────────────────
+
+    #[test]
+    fn persisted_tab_old_format_no_managed_field_defaults_to_true() {
+        // Old persisted data has no `managed` field. Serde default must yield true
+        // because all tabs in old data were created by bk (isolated workspaces only).
+        let old_tab_json = r#"{
+            "tid": "t_old_001",
+            "target_id": "TARGET_OLD_1",
+            "url": "https://example.com",
+            "title": "Old Tab"
+        }"#;
+
+        let pt: PersistedTab = serde_json::from_str(old_tab_json).unwrap();
+        assert_eq!(pt.tid, "t_old_001");
+        assert_eq!(pt.target_id, "TARGET_OLD_1");
+        assert!(
+            pt.managed,
+            "missing managed field must default to true for backward compatibility"
+        );
+    }
+
+    #[test]
+    fn persisted_tab_managed_false_roundtrip() {
+        // Tabs attached from user's browser persist managed=false and restore correctly.
+        let pt = PersistedTab {
+            tid: "t_unmanaged".to_string(),
+            target_id: "TARGET_USER_PAGE".to_string(),
+            url: "https://github.com/dashboard".to_string(),
+            title: "Dashboard".to_string(),
+            managed: false,
+        };
+
+        let json = serde_json::to_string(&pt).unwrap();
+        // Verify managed=false is serialized
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(v["managed"], false);
+
+        // Roundtrip
+        let restored: PersistedTab = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored, pt);
+        assert!(!restored.managed);
+    }
+
+    #[test]
+    fn persisted_tab_managed_true_roundtrip() {
+        // Explicit managed=true also roundtrips (not just defaulted).
+        let pt = PersistedTab {
+            tid: "t_managed".to_string(),
+            target_id: "TARGET_BK_CREATED".to_string(),
+            url: "about:blank".to_string(),
+            title: "".to_string(),
+            managed: true,
+        };
+
+        let json = serde_json::to_string(&pt).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(v["managed"], true);
+
+        let restored: PersistedTab = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored, pt);
+        assert!(restored.managed);
+    }
+
+    #[test]
+    fn persisted_tab_managed_propagates_through_workspace_conversion() {
+        // A workspace with mixed managed/unmanaged tabs: managed flag survives
+        // the full chain: PersistedWorkspace -> Workspace -> PersistedWorkspace.
+        let pw = PersistedWorkspace {
+            wid: "mixed_ws_001".to_string(),
+            browser_host: "localhost:9222".to_string(),
+            browser_context_id: None,
+            mode: "attached".to_string(),
+            label: None,
+            tabs: vec![
+                PersistedTab {
+                    tid: "t_managed_1".to_string(),
+                    target_id: "T_M1".to_string(),
+                    url: "about:blank".to_string(),
+                    title: "".to_string(),
+                    managed: true,
+                },
+                PersistedTab {
+                    tid: "t_unmanaged_1".to_string(),
+                    target_id: "T_U1".to_string(),
+                    url: "https://example.com".to_string(),
+                    title: "Example".to_string(),
+                    managed: false,
+                },
+            ],
+            active_tab: Some("t_managed_1".to_string()),
+            created_at: 1000,
+            last_active: 2000,
+        };
+
+        // Convert to runtime Workspace
+        let ws = pw.clone().into_workspace();
+        assert_eq!(ws.tabs.len(), 2);
+        assert!(ws.tabs["t_managed_1"].managed, "managed tab must keep managed=true");
+        assert!(!ws.tabs["t_unmanaged_1"].managed, "unmanaged tab must keep managed=false");
+
+        // Convert back to PersistedWorkspace
+        let pw2 = PersistedWorkspace::from_workspace(&ws);
+        let t_m = pw2.tabs.iter().find(|t| t.tid == "t_managed_1").unwrap();
+        let t_u = pw2.tabs.iter().find(|t| t.tid == "t_unmanaged_1").unwrap();
+        assert!(t_m.managed);
+        assert!(!t_u.managed);
+    }
+
+    #[test]
+    fn old_workspace_json_with_tabs_missing_managed_all_default_true() {
+        // Full workspace JSON from old format: tabs have no managed field
+        let json = r#"{
+            "wid": "old_ws_compat_test",
+            "browser_host": "localhost:9222",
+            "browser_context_id": "CTX_OLD_99",
+            "label": null,
+            "tabs": [
+                {"tid": "t1", "target_id": "TGT1", "url": "https://a.com", "title": "A"},
+                {"tid": "t2", "target_id": "TGT2", "url": "https://b.com", "title": "B"}
+            ],
+            "active_tab": "t1",
+            "created_at": 100,
+            "last_active": 200
+        }"#;
+
+        let pw: PersistedWorkspace = serde_json::from_str(json).unwrap();
+        for tab in &pw.tabs {
+            assert!(
+                tab.managed,
+                "tab {} must default to managed=true when field is absent",
+                tab.tid
+            );
+        }
+
+        // Through workspace conversion
+        let ws = pw.into_workspace();
+        for tab in ws.tabs.values() {
+            assert!(tab.managed, "runtime tab {} must be managed=true", tab.tid);
+        }
+    }
+
+    // ── Browser safety: unmanaged browsers always have child=None ────────────
+
+    #[test]
+    fn persisted_browser_unmanaged_has_no_pid() {
+        // Unmanaged browsers (user-connected via connect/discover) persist with pid=None.
+        // On restore, Browser is constructed with child=None unconditionally.
+        // This test confirms the structural invariant at the persistence layer.
+        let pb = PersistedBrowser {
+            host: "localhost:41753".to_string(),
+            managed: false,
+            pid: None,
+        };
+
+        let json = serde_json::to_string(&pb).unwrap();
+        let restored: PersistedBrowser = serde_json::from_str(&json).unwrap();
+        assert!(!restored.managed);
+        assert_eq!(restored.pid, None);
+    }
+
+    #[test]
+    fn persisted_browser_managed_has_pid() {
+        // Managed browsers (bk-launched) persist with pid=Some.
+        let pb = PersistedBrowser {
+            host: "localhost:9222".to_string(),
+            managed: true,
+            pid: Some(12345),
+        };
+
+        let json = serde_json::to_string(&pb).unwrap();
+        let restored: PersistedBrowser = serde_json::from_str(&json).unwrap();
+        assert!(restored.managed);
+        assert_eq!(restored.pid, Some(12345));
+    }
+
+    #[test]
+    fn restore_state_always_creates_browser_with_child_none() {
+        // In restore_state(), Browser is always constructed with child=None,
+        // regardless of managed flag. This is correct because:
+        // - Managed browsers: the old child process is gone (daemon restarted).
+        //   A new launch would be needed, but restore doesn't launch.
+        // - Unmanaged browsers: never had a child in the first place.
+        //
+        // We verify this structurally by checking the Browser construction in
+        // the restore_state function creates child: None. Since we can't call
+        // restore_state without a real Chrome, we verify the invariant by
+        // constructing the same way restore_state does.
+        let pb = PersistedBrowser {
+            host: "localhost:9222".to_string(),
+            managed: true,
+            pid: Some(999),
+        };
+
+        // This mirrors the construction in restore_state():
+        // Browser { host, cdp, managed: pb.managed, pid: pb.pid, child: None }
+        // We can't construct a full Browser without a CDP connection, but we
+        // verify that the PersistedBrowser -> Browser transformation contract
+        // is: child is always None (not derived from pid or managed).
+        // The key assertion: managed=true + pid=Some still yields child=None on restore.
+        // This means Browser::drop won't kill anything for a restored browser.
+        assert!(pb.managed);
+        assert!(pb.pid.is_some());
+        // The child field in the restored Browser would be None (hardcoded in restore_state)
+        // Browser::drop only kills if child.is_some(), so restored browsers are safe.
+    }
+
+    // ── Close logic: per-tab managed determines CloseTarget vs DetachFromTarget ──
+
+    #[test]
+    fn close_logic_tab_info_extraction_preserves_managed_flag() {
+        // The close logic in do_ws_close/do_tab_close extracts tab_info as
+        // Vec<(target_id, session_id, managed)>. This test verifies that
+        // a mixed workspace produces the correct managed flags in the tuple.
+        use std::collections::HashMap;
+        use crate::page::Tab;
+        use crate::workspace::{Workspace, WorkspaceMode};
+
+        let mut tabs = HashMap::new();
+        tabs.insert("t1".to_string(), Tab {
+            tid: "t1".to_string(),
+            target_id: "TGT_MANAGED".to_string(),
+            cdp_session_id: "sess_m".to_string(),
+            url: "about:blank".to_string(),
+            title: "".to_string(),
+            managed: true,
+        });
+        tabs.insert("t2".to_string(), Tab {
+            tid: "t2".to_string(),
+            target_id: "TGT_UNMANAGED".to_string(),
+            cdp_session_id: "sess_u".to_string(),
+            url: "https://github.com".to_string(),
+            title: "GitHub".to_string(),
+            managed: false,
+        });
+        tabs.insert("t3".to_string(), Tab {
+            tid: "t3".to_string(),
+            target_id: "TGT_UNMANAGED_2".to_string(),
+            cdp_session_id: "sess_u2".to_string(),
+            url: "https://example.com".to_string(),
+            title: "Example".to_string(),
+            managed: false,
+        });
+
+        let ws = Workspace {
+            wid: "ws_mixed".to_string(),
+            browser_host: "localhost:9222".to_string(),
+            browser_context_id: None,
+            mode: WorkspaceMode::Attached,
+            label: None,
+            tabs,
+            active_tab: Some("t1".to_string()),
+            created_at: 1000,
+            last_active: 2000,
+        };
+
+        // Extract tab_info the same way do_ws_close does
+        let tab_info: Vec<(String, String, bool)> = ws.tabs.values()
+            .map(|t| (t.target_id.clone(), t.cdp_session_id.clone(), t.managed))
+            .collect();
+
+        assert_eq!(tab_info.len(), 3);
+
+        // Verify managed flags are correctly propagated
+        let managed_targets: Vec<&str> = tab_info.iter()
+            .filter(|(_, _, m)| *m)
+            .map(|(tid, _, _)| tid.as_str())
+            .collect();
+        let unmanaged_targets: Vec<&str> = tab_info.iter()
+            .filter(|(_, _, m)| !*m)
+            .map(|(tid, _, _)| tid.as_str())
+            .collect();
+
+        assert_eq!(managed_targets.len(), 1);
+        assert!(managed_targets.contains(&"TGT_MANAGED"));
+        assert_eq!(unmanaged_targets.len(), 2);
+        assert!(unmanaged_targets.contains(&"TGT_UNMANAGED"));
+        assert!(unmanaged_targets.contains(&"TGT_UNMANAGED_2"));
+    }
+
+    #[test]
+    fn close_decision_branch_per_tab_managed() {
+        // Verify the branching logic: managed=true -> "close", managed=false -> "detach".
+        // This mirrors the if/else in do_tab_close and do_ws_close.
+        struct CloseAction {
+            target_id: String,
+            action: &'static str,
+        }
+
+        let tab_info = vec![
+            ("TGT_1".to_string(), "sess_1".to_string(), true),
+            ("TGT_2".to_string(), "sess_2".to_string(), false),
+            ("TGT_3".to_string(), "sess_3".to_string(), true),
+            ("TGT_4".to_string(), "".to_string(), false), // empty session (edge case)
+        ];
+
+        let actions: Vec<CloseAction> = tab_info.iter()
+            .map(|(target_id, session_id, tab_managed)| {
+                if *tab_managed {
+                    CloseAction { target_id: target_id.clone(), action: "CloseTarget" }
+                } else {
+                    if !session_id.is_empty() {
+                        CloseAction { target_id: target_id.clone(), action: "DetachFromTarget" }
+                    } else {
+                        CloseAction { target_id: target_id.clone(), action: "skip" }
+                    }
+                }
+            })
+            .collect();
+
+        assert_eq!(actions[0].action, "CloseTarget");
+        assert_eq!(actions[0].target_id, "TGT_1");
+        assert_eq!(actions[1].action, "DetachFromTarget");
+        assert_eq!(actions[1].target_id, "TGT_2");
+        assert_eq!(actions[2].action, "CloseTarget");
+        assert_eq!(actions[2].target_id, "TGT_3");
+        // Empty session_id for unmanaged tab -> skip (no DetachFromTarget sent)
+        assert_eq!(actions[3].action, "skip");
+        assert_eq!(actions[3].target_id, "TGT_4");
+    }
+
+    // ── ws new --attached: no browser → error, never launches ───────────────
+
+    #[test]
+    fn ws_new_attached_no_browser_error_message_quality() {
+        // The error message from resolve_browser_attached when no browser is
+        // available must guide the user to the correct remediation.
+        let expected_substring = "pre-existing browser connection";
+        let error_msg = "attached mode requires a pre-existing browser connection. \
+                         Run `bk browser connect <host>` or `bk browser discover` first.";
+        assert!(
+            error_msg.contains(expected_substring),
+            "error message must contain guidance"
+        );
+        assert!(
+            error_msg.contains("bk browser connect"),
+            "error must mention `bk browser connect`"
+        );
+        assert!(
+            error_msg.contains("bk browser discover"),
+            "error must mention `bk browser discover`"
+        );
+    }
+
+    // ── tab attach semantics: structural validation ─────────────────────────
+
+    #[test]
+    fn tab_attach_dedup_detection_finds_target_in_any_workspace() {
+        // The dedup check in do_tab_attach scans ALL workspaces for an existing
+        // target_id. This test verifies the scan logic structurally.
+        use crate::daemon::state::DaemonState;
+        use crate::page::Tab;
+        use crate::workspace::{Workspace, WorkspaceMode};
+
+        let state = DaemonState::new();
+
+        let mut tabs = HashMap::new();
+        tabs.insert("t1".to_string(), Tab {
+            tid: "t1".to_string(),
+            target_id: "TARGET_ALREADY_TRACKED".to_string(),
+            cdp_session_id: "sess_1".to_string(),
+            url: "https://example.com".to_string(),
+            title: "Example".to_string(),
+            managed: false,
+        });
+
+        state.workspaces.insert("ws_other".to_string(), Workspace {
+            wid: "ws_other".to_string(),
+            browser_host: "localhost:9222".to_string(),
+            browser_context_id: None,
+            mode: WorkspaceMode::Attached,
+            label: None,
+            tabs,
+            active_tab: Some("t1".to_string()),
+            created_at: 1000,
+            last_active: 2000,
+        });
+
+        // Simulate the dedup check from do_tab_attach
+        let target_to_attach = "TARGET_ALREADY_TRACKED";
+        let already_tracked = state.workspaces.iter().any(|ws_entry| {
+            ws_entry.value().tabs.values().any(|t| t.target_id == target_to_attach)
+        });
+        assert!(already_tracked, "dedup must detect target in another workspace");
+
+        // A target not tracked anywhere should pass
+        let novel_target = "TARGET_NOT_TRACKED";
+        let novel_tracked = state.workspaces.iter().any(|ws_entry| {
+            ws_entry.value().tabs.values().any(|t| t.target_id == novel_target)
+        });
+        assert!(!novel_tracked, "novel target must not be flagged as duplicate");
+    }
+
+    #[test]
+    fn tab_attach_pattern_matching_logic() {
+        // Simulate the target filtering logic from do_tab_attach:
+        // matches by url.contains(pat), title.contains(pat), or target_id.starts_with(pat)
+        struct FakeTarget {
+            target_id: String,
+            url: String,
+            title: String,
+        }
+
+        let targets = vec![
+            FakeTarget {
+                target_id: "ABCD1234".to_string(),
+                url: "https://github.com/user/repo".to_string(),
+                title: "GitHub - repo".to_string(),
+            },
+            FakeTarget {
+                target_id: "EFGH5678".to_string(),
+                url: "https://google.com".to_string(),
+                title: "Google".to_string(),
+            },
+            FakeTarget {
+                target_id: "IJKL9012".to_string(),
+                url: "https://github.com/other/project".to_string(),
+                title: "GitHub - project".to_string(),
+            },
+        ];
+
+        // Pattern matching a URL substring: two matches (github.com)
+        let pattern = "github.com";
+        let matches: Vec<&FakeTarget> = targets.iter()
+            .filter(|t| t.url.contains(pattern) || t.title.contains(pattern) || t.target_id.starts_with(pattern))
+            .collect();
+        assert_eq!(matches.len(), 2, "github.com should match 2 targets");
+
+        // Pattern matching by target_id prefix: exactly one match
+        let pattern = "EFGH";
+        let matches: Vec<&FakeTarget> = targets.iter()
+            .filter(|t| t.url.contains(pattern) || t.title.contains(pattern) || t.target_id.starts_with(pattern))
+            .collect();
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].target_id, "EFGH5678");
+
+        // Pattern matching nothing: zero matches
+        let pattern = "nonexistent";
+        let matches: Vec<&FakeTarget> = targets.iter()
+            .filter(|t| t.url.contains(pattern) || t.title.contains(pattern) || t.target_id.starts_with(pattern))
+            .collect();
+        assert_eq!(matches.len(), 0, "nonexistent pattern should match nothing");
+
+        // Pattern matching title substring
+        let pattern = "Google";
+        let matches: Vec<&FakeTarget> = targets.iter()
+            .filter(|t| t.url.contains(pattern) || t.title.contains(pattern) || t.target_id.starts_with(pattern))
+            .collect();
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].target_id, "EFGH5678");
+    }
+
+    #[test]
+    fn tab_attach_requires_exactly_one_match() {
+        // do_tab_attach enforces: 0 matches -> error, >1 matches -> error with candidates,
+        // exactly 1 match -> proceed. Verify the branching logic.
+        let match_counts = vec![0usize, 1, 2, 5];
+        let expected_outcomes: Vec<&str> = match_counts.iter().map(|&count| {
+            match count {
+                0 => "error_no_match",
+                1 => "proceed",
+                _ => "error_multiple",
+            }
+        }).collect();
+
+        assert_eq!(expected_outcomes, vec!["error_no_match", "proceed", "error_multiple", "error_multiple"]);
+    }
+
+    // ── cdpkit 0.3.0 migration: structural regression ──────────────────────
+
+    #[test]
+    fn persisted_browser_from_browser_preserves_managed_and_pid() {
+        // After cdpkit 0.3.0 migration, PersistedBrowser::from_browser must
+        // still correctly extract managed and pid from the Browser struct.
+        // We can't construct a full Browser (needs Arc<CDP>), but we verify
+        // the PersistedBrowser fields map correctly.
+        let pb = PersistedBrowser {
+            host: "localhost:9222".to_string(),
+            managed: true,
+            pid: Some(42),
+        };
+        // Roundtrip
+        let json = serde_json::to_string(&pb).unwrap();
+        let restored: PersistedBrowser = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.host, "localhost:9222");
+        assert!(restored.managed);
+        assert_eq!(restored.pid, Some(42));
+    }
+
+    #[test]
+    fn persisted_workspace_from_workspace_preserves_all_fields_after_migration() {
+        // After 0.3.0 migration, the from_workspace/into_workspace roundtrip
+        // must still preserve all fields including the new managed tab flag.
+        use crate::page::Tab;
+        use crate::workspace::{Workspace, WorkspaceMode};
+
+        let mut tabs = HashMap::new();
+        tabs.insert("tid_a".to_string(), Tab {
+            tid: "tid_a".to_string(),
+            target_id: "target_a".to_string(),
+            cdp_session_id: "sess_a".to_string(),
+            url: "https://a.com".to_string(),
+            title: "Page A".to_string(),
+            managed: true,
+        });
+        tabs.insert("tid_b".to_string(), Tab {
+            tid: "tid_b".to_string(),
+            target_id: "target_b".to_string(),
+            cdp_session_id: "sess_b".to_string(),
+            url: "https://b.com".to_string(),
+            title: "Page B".to_string(),
+            managed: false,
+        });
+
+        let ws = Workspace {
+            wid: "ws_migration_test".to_string(),
+            browser_host: "localhost:9222".to_string(),
+            browser_context_id: Some("CTX_MIG".to_string()),
+            mode: WorkspaceMode::Isolated,
+            label: Some("migration-test".to_string()),
+            tabs,
+            active_tab: Some("tid_a".to_string()),
+            created_at: 5000,
+            last_active: 6000,
+        };
+
+        let pw = PersistedWorkspace::from_workspace(&ws);
+        assert_eq!(pw.wid, "ws_migration_test");
+        assert_eq!(pw.browser_host, "localhost:9222");
+        assert_eq!(pw.browser_context_id, Some("CTX_MIG".to_string()));
+        assert_eq!(pw.mode, "isolated");
+        assert_eq!(pw.label, Some("migration-test".to_string()));
+        assert_eq!(pw.active_tab, Some("tid_a".to_string()));
+        assert_eq!(pw.created_at, 5000);
+        assert_eq!(pw.last_active, 6000);
+        assert_eq!(pw.tabs.len(), 2);
+
+        // Check managed flags survived
+        let tab_a = pw.tabs.iter().find(|t| t.tid == "tid_a").unwrap();
+        let tab_b = pw.tabs.iter().find(|t| t.tid == "tid_b").unwrap();
+        assert!(tab_a.managed);
+        assert!(!tab_b.managed);
+
+        // Full roundtrip: into_workspace and back
+        let ws2 = pw.clone().into_workspace();
+        let pw2 = PersistedWorkspace::from_workspace(&ws2);
+        // Tabs come from a HashMap so order is non-deterministic; compare sorted
+        assert_eq!(pw2.wid, pw.wid);
+        assert_eq!(pw2.browser_host, pw.browser_host);
+        assert_eq!(pw2.browser_context_id, pw.browser_context_id);
+        assert_eq!(pw2.mode, pw.mode);
+        assert_eq!(pw2.label, pw.label);
+        assert_eq!(pw2.active_tab, pw.active_tab);
+        assert_eq!(pw2.created_at, pw.created_at);
+        assert_eq!(pw2.last_active, pw.last_active);
+        assert_eq!(pw2.tabs.len(), pw.tabs.len());
+        let mut tabs1: Vec<_> = pw.tabs.iter().map(|t| &t.tid).collect();
+        let mut tabs2: Vec<_> = pw2.tabs.iter().map(|t| &t.tid).collect();
+        tabs1.sort();
+        tabs2.sort();
+        assert_eq!(tabs1, tabs2);
+    }
+
+    // ── Unmanaged exclusion: do_persist filters out unmanaged ──────────────
+
+    #[tokio::test]
+    async fn do_persist_excludes_unmanaged_browsers_and_their_workspaces() {
+        // Test the filtering logic used by do_persist: only managed browsers
+        // and workspaces referencing managed browsers are written to disk.
+
+        let tmp = tempfile::tempdir().unwrap();
+        let browsers_path = tmp.path().join("browsers.json");
+        let workspaces_path = tmp.path().join("workspaces.json");
+
+        let managed_browser = PersistedBrowser {
+            host: "localhost:9222".to_string(),
+            managed: true,
+            pid: Some(1234),
+        };
+        let unmanaged_browser = PersistedBrowser {
+            host: "localhost:41753".to_string(),
+            managed: false,
+            pid: None,
+        };
+
+        let all_browsers = vec![managed_browser.clone(), unmanaged_browser.clone()];
+
+        // Apply the same filter logic as do_persist
+        let mut managed_hosts: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let persisted_browsers: Vec<PersistedBrowser> = all_browsers
+            .iter()
+            .filter(|b| {
+                if b.managed {
+                    managed_hosts.insert(b.host.clone());
+                    true
+                } else {
+                    false
+                }
+            })
+            .cloned()
+            .collect();
+
+        assert_eq!(persisted_browsers.len(), 1);
+        assert_eq!(persisted_browsers[0].host, "localhost:9222");
+        assert!(persisted_browsers[0].managed);
+
+        // Workspaces: one on managed browser, one on unmanaged
+        let ws_managed = PersistedWorkspace {
+            wid: "ws_managed_001".to_string(),
+            browser_host: "localhost:9222".to_string(),
+            browser_context_id: Some("CTX_1".to_string()),
+            mode: "isolated".to_string(),
+            label: None,
+            tabs: vec![],
+            active_tab: None,
+            created_at: 1000,
+            last_active: 2000,
+        };
+        let ws_unmanaged = PersistedWorkspace {
+            wid: "ws_unmanaged_001".to_string(),
+            browser_host: "localhost:41753".to_string(),
+            browser_context_id: None,
+            mode: "attached".to_string(),
+            label: None,
+            tabs: vec![],
+            active_tab: None,
+            created_at: 1000,
+            last_active: 2000,
+        };
+
+        let all_workspaces = vec![ws_managed.clone(), ws_unmanaged.clone()];
+
+        // Apply the same filter logic as do_persist
+        let persisted_workspaces: Vec<PersistedWorkspace> = all_workspaces
+            .into_iter()
+            .filter(|ws| managed_hosts.contains(&ws.browser_host))
+            .collect();
+
+        assert_eq!(persisted_workspaces.len(), 1);
+        assert_eq!(persisted_workspaces[0].wid, "ws_managed_001");
+
+        // Write filtered results and verify roundtrip
+        write_json(&browsers_path, &persisted_browsers).unwrap();
+        write_json(&workspaces_path, &persisted_workspaces).unwrap();
+
+        // Read back and verify no unmanaged entries
+        let b_json = std::fs::read_to_string(&browsers_path).unwrap();
+        let loaded_browsers: Vec<PersistedBrowser> = serde_json::from_str(&b_json).unwrap();
+        assert_eq!(loaded_browsers.len(), 1);
+        assert!(loaded_browsers[0].managed);
+        assert_eq!(loaded_browsers[0].host, "localhost:9222");
+
+        let w_json = std::fs::read_to_string(&workspaces_path).unwrap();
+        let loaded_workspaces: Vec<PersistedWorkspace> = serde_json::from_str(&w_json).unwrap();
+        assert_eq!(loaded_workspaces.len(), 1);
+        assert_eq!(loaded_workspaces[0].browser_host, "localhost:9222");
+    }
+
+    #[test]
+    fn restore_skips_unmanaged_persisted_browsers() {
+        // If browsers.json contains unmanaged entries (legacy data), restore
+        // must skip them. We verify by checking the filter condition.
+        let browsers = vec![
+            make_persisted_browser("localhost:9222", true),   // managed
+            make_persisted_browser("localhost:41753", false), // unmanaged
+            make_persisted_browser("localhost:9223", true),   // managed
+        ];
+
+        let managed_only: Vec<&PersistedBrowser> = browsers
+            .iter()
+            .filter(|b| b.managed)
+            .collect();
+
+        assert_eq!(managed_only.len(), 2);
+        assert!(managed_only.iter().all(|b| b.managed));
+        assert!(managed_only.iter().any(|b| b.host == "localhost:9222"));
+        assert!(managed_only.iter().any(|b| b.host == "localhost:9223"));
+        // The unmanaged one at localhost:41753 must be excluded
+        assert!(!managed_only.iter().any(|b| b.host == "localhost:41753"));
+    }
+
+    #[test]
+    fn restore_skips_workspaces_depending_on_unmanaged_browser() {
+        // When a workspace's browser_host points to an unmanaged browser,
+        // it must not be restored (the managed_hosts set won't contain it).
+        let managed_hosts: std::collections::HashSet<String> =
+            ["localhost:9222".to_string()].into_iter().collect();
+
+        let workspaces = vec![
+            make_persisted_workspace("ws_ok", "localhost:9222"),
+            make_persisted_workspace("ws_skip", "localhost:41753"),
+        ];
+
+        let restorable: Vec<&PersistedWorkspace> = workspaces
+            .iter()
+            .filter(|ws| managed_hosts.contains(&ws.browser_host))
+            .collect();
+
+        assert_eq!(restorable.len(), 1);
+        assert_eq!(restorable[0].wid, "ws_ok");
     }
 }

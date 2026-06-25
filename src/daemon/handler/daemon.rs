@@ -58,8 +58,9 @@ pub async fn handle_daemon_stop(state: &Arc<DaemonState>, ctx: &HandlerContext) 
 
     struct WsCloseInfo {
         wid: String,
-        browser_context_id: String,
-        target_ids: Vec<String>,
+        browser_context_id: Option<String>,
+        mode: crate::workspace::WorkspaceMode,
+        tab_info: Vec<(String, String, bool)>, // (target_id, session_id, managed)
         cdp: Option<Arc<cdpkit::CDP>>,
     }
 
@@ -69,11 +70,14 @@ pub async fn handle_daemon_stop(state: &Arc<DaemonState>, ctx: &HandlerContext) 
         .map(|ws_entry| {
             let ws = ws_entry.value();
             let cdp = state.browsers.get(&ws.browser_host).map(|b| Arc::clone(&b.cdp));
-            let target_ids: Vec<String> = ws.tabs.values().map(|t| t.target_id.clone()).collect();
+            let tab_info: Vec<(String, String, bool)> = ws.tabs.values()
+                .map(|t| (t.target_id.clone(), t.cdp_session_id.clone(), t.managed))
+                .collect();
             WsCloseInfo {
                 wid: ws.wid.clone(),
                 browser_context_id: ws.browser_context_id.clone(),
-                target_ids,
+                mode: ws.mode,
+                tab_info,
                 cdp,
             }
         })
@@ -82,21 +86,36 @@ pub async fn handle_daemon_stop(state: &Arc<DaemonState>, ctx: &HandlerContext) 
     let ws_count = ws_info.len();
     for info in &ws_info {
         if let Some(cdp) = &info.cdp {
-            for target_id in &info.target_ids {
-                let _ = cdp
-                    .send(cdpkit::target::methods::CloseTarget::new(target_id.clone()), None)
-                    .await;
+            // Close/detach tabs based on per-tab managed flag
+            for (target_id, session_id, tab_managed) in &info.tab_info {
+                if *tab_managed {
+                    let _ = cdpkit::target::methods::CloseTarget::new(target_id.clone())
+                        .send(cdp.as_ref())
+                        .await;
+                } else {
+                    // User's tab — only detach (or skip; sessions die with browser disconnect anyway)
+                    if !session_id.is_empty() {
+                        let _ = cdpkit::target::methods::DetachFromTarget::new()
+                            .with_session_id(session_id.clone())
+                            .send(cdp.as_ref())
+                            .await;
+                    }
+                }
             }
-            let _ = cdp
-                .send(
-                    cdpkit::target::methods::DisposeBrowserContext::new(info.browser_context_id.clone()),
-                    None,
-                )
-                .await;
+            // Dispose BrowserContext only for isolated workspaces
+            if info.mode == crate::workspace::WorkspaceMode::Isolated {
+                if let Some(ctx_id) = &info.browser_context_id {
+                    let _ = cdpkit::target::methods::DisposeBrowserContext::new(ctx_id.clone())
+                        .send(cdp.as_ref())
+                        .await;
+                }
+            }
         }
         info!(wid = %info.wid, "workspace closed during shutdown");
     }
 
+    // Shutdown proceeds. Browser::drop will kill managed (bk-launched) browsers.
+    // Unmanaged browsers (user-connected) have child=None, so drop is harmless.
     let _ = ctx.shutdown.send(true);
 
     Response::ok(json!({

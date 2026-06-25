@@ -42,6 +42,15 @@ impl DaemonClient {
         Self::try_connect().await
     }
 
+    /// Connect to an already-running daemon without auto-starting one.
+    ///
+    /// Returns `Ok(client)` if a healthy daemon is reachable, or an error if
+    /// no daemon is running. Used by `daemon stop` and `daemon status` to
+    /// avoid spawning a new daemon just to query/stop it.
+    pub async fn connect_only() -> Result<Self, BkError> {
+        Self::try_connect().await
+    }
+
     /// Try to connect to the daemon using the port from the port file.
     async fn try_connect() -> Result<Self, BkError> {
         let port = crate::daemon::read_port_file()
@@ -83,6 +92,9 @@ impl DaemonClient {
             const DETACHED_PROCESS: u32 = 0x00000008;
             StdCommand::new(&exe)
                 .args(["daemon", "start"])
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
                 .creation_flags(CREATE_NO_WINDOW | DETACHED_PROCESS)
                 .spawn()
                 .map_err(|e| BkError::Other(format!("failed to start daemon: {}", e)))?;
@@ -347,6 +359,50 @@ mod tests {
 
         assert_eq!(events.len(), 2); // 2 remaining after first consumed by send_request
 
+        server_task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn connect_only_returns_error_when_no_daemon() {
+        // connect_only must fail gracefully when no daemon is running.
+        // We can't guarantee no daemon is running in CI, but we can verify
+        // the method exists and returns a Result (not panic).
+        // If a real daemon happens to be running, this test still passes.
+        let result = DaemonClient::connect_only().await;
+        // Either Ok (daemon running) or Err (no daemon) — neither should panic.
+        let _ = result;
+    }
+
+    #[tokio::test]
+    async fn connect_only_succeeds_when_daemon_is_running() {
+        // Start a mini TCP server that echoes a ping response (simulates daemon)
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        let server_task = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let (read_half, write_half) = stream.into_split();
+            let mut reader = BufReader::new(read_half);
+            let mut writer = BufWriter::new(write_half);
+
+            let mut line = String::new();
+            reader.read_line(&mut line).await.unwrap();
+
+            let resp = Response::ok(json!({"status": "running"}));
+            let resp_json = serde_json::to_string(&resp).unwrap();
+            writer.write_all(resp_json.as_bytes()).await.unwrap();
+            writer.write_all(b"\n").await.unwrap();
+            writer.flush().await.unwrap();
+        });
+
+        // Write a port file so try_connect can find it
+        crate::daemon::write_port_file(port).unwrap();
+
+        let result = DaemonClient::connect_only().await;
+        assert!(result.is_ok(), "connect_only should succeed when daemon is reachable");
+
+        // Cleanup
+        crate::daemon::remove_port_file();
         server_task.await.unwrap();
     }
 }

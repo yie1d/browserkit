@@ -5,6 +5,8 @@ use std::sync::Arc;
 use serde_json::json;
 use tracing::info;
 
+use cdpkit::Sender;
+
 use crate::daemon::protocol::{Request, Response};
 use crate::daemon::state::DaemonState;
 use crate::error::BkError;
@@ -27,7 +29,8 @@ async fn do_cdp_send(req: &Request, state: &Arc<DaemonState>) -> Result<Response
     let method = req.params.get("method").and_then(|v| v.as_str())
         .ok_or_else(|| BkError::InvalidRequest("cdp.send requires 'method' param".into()))?;
     let params = req.params.get("params").cloned().unwrap_or_else(|| json!({}));
-    let result = ctx.cdp.send_raw(method, params, Some(&ctx.cdp_session_id)).await?;
+    let session = ctx.cdp.session(&ctx.cdp_session_id);
+    let result = session.send_raw(method, params).await?;
     touch_workspace(state, &ctx.wid);
     info!(wid = %ctx.wid, method = %method, "raw CDP command sent");
     Ok(Response::ok(json!({ "wid": ctx.wid, "method": method, "result": result })))
