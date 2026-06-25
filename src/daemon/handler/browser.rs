@@ -142,6 +142,12 @@ async fn do_browser_disconnect(
     // browsers means child=None, so Browser::drop won't kill anything.
     // Browser.managed=true (bk-launched) means child=Some and drop will kill —
     // which is correct since we're explicitly disconnecting.
+    //
+    // Cancel auto-attach task for this host (if any)
+    if let Some((_, token)) = state.auto_attach_tasks.remove(&host) {
+        token.cancel();
+    }
+
     state.browsers.remove(&host);
     state.request_persist();
     info!(host = %host, "browser disconnected");

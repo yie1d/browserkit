@@ -6,6 +6,7 @@ use std::time::Duration;
 use cdpkit::CDP;
 
 use crate::error::BkError;
+use crate::page::exception_message;
 
 /// Default timeout for page load operations (goto, reload, back, forward, nav.wait).
 pub const PAGE_LOAD_TIMEOUT: Duration = Duration::from_secs(30);
@@ -125,7 +126,7 @@ pub async fn get_url(cdp: &Arc<CDP>, session_id: &str) -> Result<String, BkError
         .await?;
 
     if let Some(details) = &resp.exception_details {
-        return Err(BkError::JsError(details.text.clone()));
+        return Err(BkError::JsError(exception_message(details)));
     }
 
     resp.result
@@ -145,7 +146,7 @@ pub async fn get_title(cdp: &Arc<CDP>, session_id: &str) -> Result<String, BkErr
         .await?;
 
     if let Some(details) = &resp.exception_details {
-        return Err(BkError::JsError(details.text.clone()));
+        return Err(BkError::JsError(exception_message(details)));
     }
 
     resp.result

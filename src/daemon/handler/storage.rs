@@ -9,6 +9,7 @@ use cdpkit::Sender;
 use crate::daemon::protocol::{Request, Response};
 use crate::daemon::state::DaemonState;
 use crate::error::BkError;
+use crate::page::exception_message;
 use super::common::{handler, resolve_context, touch_workspace};
 
 #[derive(Debug, serde::Serialize)]
@@ -92,13 +93,14 @@ async fn do_storage_local_get(req: &Request, state: &Arc<DaemonState>) -> Result
     let ctx = resolve_context(req, state, "storage.local.get")?;
     let key = req.params.get("key").and_then(|v| v.as_str())
         .ok_or_else(|| BkError::InvalidRequest("storage.local.get requires 'key' param".into()))?;
+    // serde_json::to_string produces a quoted JS string literal — use directly
     let json_key = serde_json::to_string(key)
         .map_err(|e| BkError::Other(format!("failed to serialize key: {}", e)))?;
-    let js = format!("window.localStorage.getItem(JSON.parse({}))", json_key);
+    let js = format!("window.localStorage.getItem({})", json_key);
     let session = ctx.cdp.session(&ctx.cdp_session_id);
     let resp = cdpkit::runtime::methods::Evaluate::new(&js).with_return_by_value(true).send(&session).await?;
     if let Some(details) = &resp.exception_details {
-        return Err(BkError::Other(format!("JS exception: {}", details.text)));
+        return Err(BkError::Other(format!("JS exception: {}", exception_message(details))));
     }
     let value = resp.result.value.unwrap_or(serde_json::Value::Null);
     touch_workspace(state, &ctx.wid);
@@ -113,15 +115,16 @@ async fn do_storage_local_set(req: &Request, state: &Arc<DaemonState>) -> Result
         .ok_or_else(|| BkError::InvalidRequest("storage.local.set requires 'key' param".into()))?;
     let value = req.params.get("value").and_then(|v| v.as_str())
         .ok_or_else(|| BkError::InvalidRequest("storage.local.set requires 'value' param".into()))?;
+    // serde_json::to_string produces quoted JS string literals — use directly
     let json_key = serde_json::to_string(key)
         .map_err(|e| BkError::Other(format!("failed to serialize key: {}", e)))?;
     let json_value = serde_json::to_string(value)
         .map_err(|e| BkError::Other(format!("failed to serialize value: {}", e)))?;
-    let js = format!("window.localStorage.setItem(JSON.parse({}), JSON.parse({}))", json_key, json_value);
+    let js = format!("window.localStorage.setItem({}, {})", json_key, json_value);
     let session = ctx.cdp.session(&ctx.cdp_session_id);
     let resp = cdpkit::runtime::methods::Evaluate::new(&js).with_return_by_value(true).send(&session).await?;
     if let Some(details) = &resp.exception_details {
-        return Err(BkError::Other(format!("JS exception: {}", details.text)));
+        return Err(BkError::Other(format!("JS exception: {}", exception_message(details))));
     }
     touch_workspace(state, &ctx.wid);
     Ok(Response::ok(json!({ "key": key, "value": value, "status": "set" })))
@@ -140,7 +143,7 @@ async fn do_storage_export(req: &Request, state: &Arc<DaemonState>) -> Result<Re
     .send(&session)
     .await?;
     let local_storage = if let Some(details) = &ls_resp.exception_details {
-        tracing::warn!("localStorage export failed: {}", details.text);
+        tracing::warn!("localStorage export failed: {}", exception_message(details));
         json!({})
     } else {
         match ls_resp.result.value {
@@ -170,22 +173,75 @@ async fn do_storage_import(req: &Request, state: &Arc<DaemonState>) -> Result<Re
 
     if let Some(local_storage) = import_state.get("localStorage") {
         if let Some(obj) = local_storage.as_object() {
+            // Serialize the object to a JSON string, then embed that string as a
+            // JS string literal via serde_json::to_string (which adds quotes and escapes).
+            // In JS we need one JSON.parse to turn that string back into an object.
             let json_str = serde_json::to_string(obj)
                 .map_err(|e| BkError::Other(format!("failed to serialize localStorage: {}", e)))?;
-            let json_escaped = serde_json::to_string(&json_str)
-                .map_err(|e| BkError::Other(format!("failed to double-serialize localStorage: {}", e)))?;
+            let json_literal = serde_json::to_string(&json_str)
+                .map_err(|e| BkError::Other(format!("failed to escape localStorage string: {}", e)))?;
             let js = format!(
-                "(() => {{ window.localStorage.clear(); const d = JSON.parse(JSON.parse({})); for (const [k, v] of Object.entries(d)) {{ window.localStorage.setItem(k, v); }} }})()",
-                json_escaped
+                "(() => {{ window.localStorage.clear(); const d = JSON.parse({}); for (const [k, v] of Object.entries(d)) {{ window.localStorage.setItem(k, v); }} }})()",
+                json_literal
             );
             let session = ctx.cdp.session(&ctx.cdp_session_id);
             let resp = cdpkit::runtime::methods::Evaluate::new(&js).with_return_by_value(true).send(&session).await?;
             if let Some(details) = &resp.exception_details {
-                return Err(BkError::Other(format!("localStorage import failed: {}", details.text)));
+                return Err(BkError::Other(format!("localStorage import failed: {}", exception_message(details))));
             }
         }
     }
 
     touch_workspace(state, &ctx.wid);
     Ok(Response::ok(json!({ "status": "imported" })))
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn local_get_js_no_json_parse() {
+        let key = "my_key";
+        let json_key = serde_json::to_string(key).unwrap();
+        let js = format!("window.localStorage.getItem({})", json_key);
+        assert!(!js.contains("JSON.parse"), "should not use JSON.parse: {}", js);
+        assert!(js.contains(r#"window.localStorage.getItem("my_key")"#), "got: {}", js);
+    }
+
+    #[test]
+    fn local_set_js_no_json_parse() {
+        let key = "session_id";
+        let value = "abc-123";
+        let json_key = serde_json::to_string(key).unwrap();
+        let json_value = serde_json::to_string(value).unwrap();
+        let js = format!("window.localStorage.setItem({}, {})", json_key, json_value);
+        assert!(!js.contains("JSON.parse"), "should not use JSON.parse: {}", js);
+        assert!(js.contains(r#"setItem("session_id", "abc-123")"#), "got: {}", js);
+    }
+
+    #[test]
+    fn local_set_js_escapes_special_chars() {
+        let key = "key with \"quotes\"";
+        let value = "line1\nline2";
+        let json_key = serde_json::to_string(key).unwrap();
+        let json_value = serde_json::to_string(value).unwrap();
+        let js = format!("window.localStorage.setItem({}, {})", json_key, json_value);
+        assert!(!js.contains("JSON.parse"));
+        assert!(js.contains(r#"key with \"quotes\""#), "got: {}", js);
+        assert!(js.contains(r"line1\nline2"), "got: {}", js);
+    }
+
+    #[test]
+    fn import_js_uses_single_json_parse() {
+        use serde_json::json;
+        let obj = json!({"token": "abc", "user": "test"});
+        let json_str = serde_json::to_string(obj.as_object().unwrap()).unwrap();
+        let json_literal = serde_json::to_string(&json_str).unwrap();
+        let js = format!(
+            "(() => {{ window.localStorage.clear(); const d = JSON.parse({}); for (const [k, v] of Object.entries(d)) {{ window.localStorage.setItem(k, v); }} }})()",
+            json_literal
+        );
+        // Should have exactly one JSON.parse — to decode the serialized object
+        let parse_count = js.matches("JSON.parse(").count();
+        assert_eq!(parse_count, 1, "should have exactly one JSON.parse, got {}: {}", parse_count, js);
+    }
 }

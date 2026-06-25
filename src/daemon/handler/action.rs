@@ -75,10 +75,10 @@ async fn do_act_select(req: &Request, state: &Arc<DaemonState>) -> Result<Respon
         .ok_or_else(|| BkError::InvalidRequest("act.select requires 'value' param".into()))?;
 
     let elements = crate::page::state::get_page_state(&ctx.cdp, &ctx.cdp_session_id).await?;
-    crate::page::interaction::select_option(&ctx.cdp, &ctx.cdp_session_id, &elements, index, value).await?;
+    let result = crate::page::interaction::select_option(&ctx.cdp, &ctx.cdp_session_id, &elements, index, value).await?;
     touch_workspace(state, &ctx.wid);
     info!(wid = %ctx.wid, tid = %ctx.tid, index = index, value = %value, "selected option");
-    Ok(Response::ok(json!({ "wid": ctx.wid, "tid": ctx.tid, "status": "selected", "value": value })))
+    Ok(Response::ok(json!({ "wid": ctx.wid, "tid": ctx.tid, "status": "selected", "value": value, "detail": result })))
 }
 
 handler!(handle_act_hover, do_act_hover(req, state));
@@ -109,4 +109,19 @@ async fn do_act_focus(req: &Request, state: &Arc<DaemonState>) -> Result<Respons
     touch_workspace(state, &ctx.wid);
     info!(wid = %ctx.wid, tid = %ctx.tid, index = index, "focused");
     Ok(Response::ok(json!({ "wid": ctx.wid, "tid": ctx.tid, "status": "focused" })))
+}
+
+handler!(handle_act_dropdown_options, do_act_dropdown_options(req, state));
+
+async fn do_act_dropdown_options(req: &Request, state: &Arc<DaemonState>) -> Result<Response, BkError> {
+    let ctx = resolve_context(req, state, "act.dropdown_options")?;
+
+    let index = req.params.get("index").and_then(|v| v.as_u64()).map(|v| v as usize)
+        .ok_or_else(|| BkError::InvalidRequest("act.dropdown_options requires 'index' param".into()))?;
+
+    let elements = crate::page::state::get_page_state(&ctx.cdp, &ctx.cdp_session_id).await?;
+    let result = crate::page::interaction::dropdown_options(&ctx.cdp, &ctx.cdp_session_id, &elements, index).await?;
+    touch_workspace(state, &ctx.wid);
+    info!(wid = %ctx.wid, tid = %ctx.tid, index = index, "dropdown_options");
+    Ok(Response::ok(result))
 }

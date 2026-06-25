@@ -5,6 +5,7 @@ use std::sync::Arc;
 use cdpkit::CDP;
 
 use crate::error::BkError;
+use crate::page::exception_message;
 
 /// Capture a viewport screenshot (PNG, base64-encoded).
 ///
@@ -65,11 +66,11 @@ pub async fn capture_element(
     let session = cdp.session(session_id);
 
     // 1. Find the element via Runtime.evaluate and get its objectId
-    // Use serde_json::to_string for safe JS string escaping, then JSON.parse in JS
+    // serde_json::to_string produces a quoted JS string literal — embed directly
     let json_selector = serde_json::to_string(selector)
         .map_err(|e| BkError::Other(format!("failed to serialize selector: {}", e)))?;
     let js = format!(
-        r#"document.querySelector(JSON.parse({}))"#,
+        r#"document.querySelector({})"#,
         json_selector
     );
     let eval_resp = cdpkit::runtime::methods::Evaluate::new(&js)
@@ -79,7 +80,7 @@ pub async fn capture_element(
     if let Some(details) = &eval_resp.exception_details {
         return Err(BkError::Other(format!(
             "failed to query selector '{}': {}",
-            selector, details.text
+            selector, exception_message(details)
         )));
     }
 
@@ -184,11 +185,11 @@ pub async fn get_html(
     let js = match selector {
         None => "document.documentElement.outerHTML".to_string(),
         Some(sel) => {
-            // Use serde_json::to_string for safe JS string escaping, then JSON.parse in JS
+            // serde_json::to_string produces a quoted JS string literal — embed directly
             let json_sel = serde_json::to_string(sel)
                 .map_err(|e| BkError::Other(format!("failed to serialize selector: {}", e)))?;
             format!(
-                r#"(() => {{ const sel = JSON.parse({}); const el = document.querySelector(sel); if (!el) throw new Error('element not found for selector: ' + sel); return el.outerHTML; }})()"#,
+                r#"(() => {{ const sel = {}; const el = document.querySelector(sel); if (!el) throw new Error('element not found for selector: ' + sel); return el.outerHTML; }})()"#,
                 json_sel
             )
         }
@@ -200,7 +201,7 @@ pub async fn get_html(
         .await?;
 
     if let Some(details) = &resp.exception_details {
-        return Err(BkError::Other(details.text.clone()));
+        return Err(BkError::Other(exception_message(details)));
     }
 
     // With return_by_value, the result.value contains the string directly
@@ -208,5 +209,49 @@ pub async fn get_html(
         Some(serde_json::Value::String(html)) => Ok(html),
         Some(other) => Ok(other.to_string()),
         None => Err(BkError::Other("no value returned from evaluate".into())),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn capture_element_js_no_json_parse() {
+        let selector = "#my-element .child";
+        let json_selector = serde_json::to_string(selector).unwrap();
+        let js = format!("document.querySelector({})", json_selector);
+        assert!(!js.contains("JSON.parse"), "should not use JSON.parse: {}", js);
+        assert!(js.contains("querySelector(\"#my-element .child\")"), "got: {}", js);
+    }
+
+    #[test]
+    fn capture_element_js_escapes_quotes_in_selector() {
+        let selector = r#"[data-name="foo"]"#;
+        let json_selector = serde_json::to_string(selector).unwrap();
+        let js = format!(r#"document.querySelector({})"#, json_selector);
+        assert!(!js.contains("JSON.parse"));
+        assert!(js.contains(r#"[data-name=\"foo\"]"#), "should escape: {}", js);
+    }
+
+    #[test]
+    fn get_html_js_no_json_parse() {
+        let sel = "div.content > p";
+        let json_sel = serde_json::to_string(sel).unwrap();
+        let js = format!(
+            r#"(() => {{ const sel = {}; const el = document.querySelector(sel); if (!el) throw new Error('element not found for selector: ' + sel); return el.outerHTML; }})()"#,
+            json_sel
+        );
+        assert!(!js.contains("JSON.parse"), "should not use JSON.parse: {}", js);
+        assert!(js.contains(r#"const sel = "div.content > p""#), "got: {}", js);
+    }
+
+    #[test]
+    fn get_html_js_non_ascii_selector() {
+        let sel = ".container [data-city=\"\u{4e0a}\u{6d77}\"]";
+        let json_sel = serde_json::to_string(sel).unwrap();
+        let js = format!(
+            r#"(() => {{ const sel = {}; const el = document.querySelector(sel); if (!el) throw new Error('element not found for selector: ' + sel); return el.outerHTML; }})()"#,
+            json_sel
+        );
+        assert!(!js.contains("JSON.parse"), "should not use JSON.parse: {}", js);
     }
 }

@@ -114,6 +114,13 @@ pub async fn handle_daemon_stop(state: &Arc<DaemonState>, ctx: &HandlerContext) 
         info!(wid = %info.wid, "workspace closed during shutdown");
     }
 
+    // Cancel all auto-attach background tasks before shutdown to prevent
+    // them from modifying state between here and process::exit.
+    for entry in state.auto_attach_tasks.iter() {
+        entry.value().cancel();
+    }
+    state.auto_attach_tasks.clear();
+
     // Shutdown proceeds. Browser::drop will kill managed (bk-launched) browsers.
     // Unmanaged browsers (user-connected) have child=None, so drop is harmless.
     let _ = ctx.shutdown.send(true);

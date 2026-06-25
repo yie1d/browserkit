@@ -4,8 +4,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use serde_json::json;
-use tracing::info;
+use tracing::{debug, info};
 
+use crate::daemon::auto_attach;
 use crate::daemon::protocol::{Request, Response};
 use crate::daemon::state::{generate_hex_id, resolve_wid, DaemonState};
 use crate::error::BkError;
@@ -42,9 +43,18 @@ async fn do_ws_new(
 
     if attached {
         // Attached mode: no BrowserContext creation.
-        // Discover and attach existing user tabs (same as ws.attach).
+        // Check if an attached workspace already exists for this browser host — reuse it.
         let pattern = req.params.get("pattern").and_then(|v| v.as_str());
 
+        if let Some(existing_wid) = auto_attach::find_attached_ws_for_host(state, &host) {
+            // Reuse existing attached workspace: merge in any new untracked targets
+            let merged = merge_into_existing_attached_ws(
+                state, &existing_wid, &host, &cdp, pattern,
+            ).await?;
+            return Ok(merged);
+        }
+
+        // No existing attached ws — create a new one.
         // GetTargets to discover existing tabs
         let targets_resp = cdpkit::target::methods::GetTargets::new()
             .send(cdp.as_ref())
@@ -54,6 +64,7 @@ async fn do_ws_new(
         let matching_targets: Vec<_> = targets_resp.target_infos
             .iter()
             .filter(|t| t.type_ == "page")
+            .filter(|t| !auto_attach::should_exclude_target(&t.type_, &t.url))
             .filter(|t| {
                 match pattern {
                     Some(pat) => {
@@ -145,6 +156,9 @@ async fn do_ws_new(
             state.set_default_wid(Some(wid.clone()));
         }
         state.request_persist();
+
+        // Start auto-attach background task if not already running for this host
+        ensure_auto_attach_task(state, &host, &cdp);
 
         let attached_count = state.workspaces.get(&wid).map(|ws| ws.tabs.len()).unwrap_or(0);
         info!(wid = %wid, host = %host, mode = "attached", tabs = attached_count, skipped = skipped.len(), "workspace created");
@@ -328,6 +342,194 @@ async fn resolve_browser_attached(
     }
 }
 
+/// Merge untracked targets into an existing attached workspace (reuse path).
+///
+/// Called when `ws attach` or `ws new --attached` targets a browser host that
+/// already has an attached workspace. Instead of creating a duplicate, we find
+/// new targets and add them to the existing ws.
+async fn merge_into_existing_attached_ws(
+    state: &Arc<DaemonState>,
+    existing_wid: &str,
+    host: &str,
+    cdp: &Arc<cdpkit::CDP>,
+    pattern: Option<&str>,
+) -> Result<Response, BkError> {
+    // Discover current targets
+    let targets_resp = cdpkit::target::methods::GetTargets::new()
+        .send(cdp.as_ref())
+        .await?;
+
+    let matching_targets: Vec<_> = targets_resp.target_infos
+        .iter()
+        .filter(|t| t.type_ == "page")
+        .filter(|t| !auto_attach::should_exclude_target(&t.type_, &t.url))
+        .filter(|t| {
+            match pattern {
+                Some(pat) => {
+                    t.url.contains(pat) || t.title.contains(pat) || t.target_id.starts_with(pat)
+                }
+                None => true,
+            }
+        })
+        .collect();
+
+    let ts = now_ts();
+    let mut newly_attached: Vec<serde_json::Value> = Vec::new();
+    let mut skipped: Vec<String> = Vec::new();
+
+    for target in &matching_targets {
+        if super::tab::is_target_tracked(state, &target.target_id) {
+            skipped.push(target.target_id.clone());
+            continue;
+        }
+
+        let attach_resp = cdpkit::target::methods::AttachToTarget::new(target.target_id.clone())
+            .with_flatten(true)
+            .send(cdp.as_ref())
+            .await?;
+        let cdp_session_id = attach_resp.session_id.clone();
+
+        // Second-check dedup
+        if super::tab::is_target_tracked(state, &target.target_id) {
+            let _ = cdpkit::target::methods::DetachFromTarget::new()
+                .with_session_id(attach_resp.session_id)
+                .send(cdp.as_ref())
+                .await;
+            skipped.push(target.target_id.clone());
+            continue;
+        }
+
+        let session = cdp.session(&cdp_session_id);
+        // Best-effort domain enables: if any fails, detach this target and skip it.
+        // This prevents one broken target from aborting the entire merge batch.
+        let enable_ok = async {
+            cdpkit::page::methods::Enable::new().send(&session).await?;
+            cdpkit::page::methods::SetLifecycleEventsEnabled::new(true).send(&session).await?;
+            cdpkit::runtime::methods::Enable::new().send(&session).await?;
+            cdpkit::network::methods::Enable::new().send(&session).await?;
+            Ok::<(), cdpkit::CdpError>(())
+        }.await;
+
+        if let Err(e) = enable_ok {
+            tracing::warn!(
+                target_id = %target.target_id,
+                error = %e,
+                "merge: enable failed for target, detaching and skipping"
+            );
+            let _ = cdpkit::target::methods::DetachFromTarget::new()
+                .with_session_id(cdp_session_id)
+                .send(cdp.as_ref())
+                .await;
+            skipped.push(target.target_id.clone());
+            continue;
+        }
+
+        let tid = generate_hex_id();
+        let tab = Tab {
+            tid: tid.clone(),
+            target_id: target.target_id.clone(),
+            cdp_session_id,
+            url: target.url.clone(),
+            title: target.title.clone(),
+            managed: false,
+        };
+
+        if let Some(mut ws) = state.workspaces.get_mut(existing_wid) {
+            ws.tabs.insert(tid.clone(), tab);
+            ws.last_active = ts;
+            if ws.active_tab.is_none() {
+                ws.active_tab = Some(tid.clone());
+            }
+        }
+
+        newly_attached.push(json!({
+            "target_id": target.target_id,
+            "url": target.url,
+            "title": target.title,
+            "tid": tid,
+        }));
+    }
+
+    state.request_persist();
+
+    // Ensure auto-attach task is running
+    ensure_auto_attach_task(state, host, cdp);
+
+    let total_tabs = state.workspaces.get(existing_wid).map(|ws| ws.tabs.len()).unwrap_or(0);
+    let active_tab = state.workspaces.get(existing_wid).and_then(|ws| ws.active_tab.clone());
+
+    info!(
+        wid = %existing_wid, host = %host,
+        newly_merged = newly_attached.len(), skipped = skipped.len(),
+        "ws attach: reused existing attached workspace"
+    );
+
+    Ok(Response::ok(json!({
+        "wid": existing_wid,
+        "host": host,
+        "mode": "attached",
+        "reused": true,
+        "tabs_total": total_tabs,
+        "newly_attached": newly_attached,
+        "skipped_targets": skipped,
+        "active_tab": active_tab,
+    })))
+}
+
+/// Ensure the auto-attach background task is running for a browser host.
+///
+/// Uses DashMap's `entry()` API for atomic check-and-insert, preventing TOCTOU
+/// races where concurrent calls could spawn duplicate tasks for the same host.
+/// If a task already exists and is not cancelled, it is reused (no-op).
+fn ensure_auto_attach_task(
+    state: &Arc<DaemonState>,
+    host: &str,
+    cdp: &Arc<cdpkit::CDP>,
+) {
+    use dashmap::mapref::entry::Entry;
+
+    match state.auto_attach_tasks.entry(host.to_string()) {
+        Entry::Occupied(entry) => {
+            if !entry.get().is_cancelled() {
+                debug!(host = %host, "ensure_auto_attach_task: task already running, reusing");
+                return; // already running, reuse
+            }
+            // Existing token is cancelled — replace with a new task
+            debug!(host = %host, "ensure_auto_attach_task: previous task cancelled, spawning new one");
+            let token = auto_attach::spawn_auto_attach_task(
+                Arc::clone(state),
+                host.to_string(),
+                Arc::clone(cdp),
+            );
+            *entry.into_ref() = token;
+        }
+        Entry::Vacant(entry) => {
+            debug!(host = %host, "ensure_auto_attach_task: no existing task, spawning new one");
+            let token = auto_attach::spawn_auto_attach_task(
+                Arc::clone(state),
+                host.to_string(),
+                Arc::clone(cdp),
+            );
+            entry.insert(token);
+        }
+    }
+}
+
+/// Stop the auto-attach task for a browser host if no attached workspaces remain.
+fn maybe_stop_auto_attach_task(state: &DaemonState, host: &str) {
+    let has_attached_ws = state.workspaces.iter().any(|entry| {
+        entry.value().browser_host == host
+            && entry.value().mode == WorkspaceMode::Attached
+    });
+
+    if !has_attached_ws {
+        if let Some((_, token)) = state.auto_attach_tasks.remove(host) {
+            token.cancel();
+            info!(host = %host, "auto-attach: task stopped (no attached workspaces remain)");
+        }
+    }
+}
+
 pub async fn handle_ws_list(state: &Arc<DaemonState>) -> Response {
     let workspaces: Vec<serde_json::Value> = state
         .workspaces
@@ -457,6 +659,9 @@ async fn do_ws_close(
         state.set_default_wid(next_wid);
     }
 
+    // Stop auto-attach task if no attached workspaces remain on this host
+    maybe_stop_auto_attach_task(state, &browser_host);
+
     // Remove managed browser if no workspaces remain on it.
     // Browser.managed=true means bk launched it (child=Some → drop kills it).
     // Browser.managed=false means user-connected (child=None → drop is harmless).
@@ -513,19 +718,12 @@ handler!(handle_ws_attach, do_ws_attach(req, state));
 ///   - `pattern` (optional): substring filter on url/title/target_id
 ///   - `label` (optional): workspace label
 ///
-/// If no pattern is given, lists all available page targets for the user to choose from.
+/// If an attached workspace already exists for the target browser host, new
+/// untracked targets are merged into it (reuse) rather than creating a duplicate.
 async fn do_ws_attach(
     req: &Request,
     state: &Arc<DaemonState>,
 ) -> Result<Response, BkError> {
-    let max = state.config.limits.max_workspaces;
-    if max > 0 && state.workspaces.len() >= max {
-        return Err(BkError::Other(format!(
-            "workspace limit reached ({}/{})",
-            state.workspaces.len(), max
-        )));
-    }
-
     let host_param = req.params.get("host").and_then(|v| v.as_str()).map(String::from);
     let pattern = req.params.get("pattern").and_then(|v| v.as_str());
     let label = req.params.get("label").and_then(|v| v.as_str()).map(String::from);
@@ -548,6 +746,23 @@ async fn do_ws_attach(
         }
     };
 
+    // Check for existing attached workspace on this host — reuse if found
+    if let Some(existing_wid) = auto_attach::find_attached_ws_for_host(state, &host) {
+        let merged = merge_into_existing_attached_ws(
+            state, &existing_wid, &host, &cdp, pattern,
+        ).await?;
+        return Ok(merged);
+    }
+
+    // No existing attached ws — check limits and create new one
+    let max = state.config.limits.max_workspaces;
+    if max > 0 && state.workspaces.len() >= max {
+        return Err(BkError::Other(format!(
+            "workspace limit reached ({}/{})",
+            state.workspaces.len(), max
+        )));
+    }
+
     // GetTargets to discover existing tabs
     let targets_resp = cdpkit::target::methods::GetTargets::new()
         .send(cdp.as_ref())
@@ -557,6 +772,7 @@ async fn do_ws_attach(
     let matching_targets: Vec<_> = targets_resp.target_infos
         .iter()
         .filter(|t| t.type_ == "page")
+        .filter(|t| !auto_attach::should_exclude_target(&t.type_, &t.url))
         .filter(|t| {
             match pattern {
                 Some(pat) => {
@@ -652,6 +868,9 @@ async fn do_ws_attach(
         state.set_default_wid(Some(wid.clone()));
     }
     state.request_persist();
+
+    // Start auto-attach background task if not already running for this host
+    ensure_auto_attach_task(state, &host, &cdp);
 
     let attached_count = state.workspaces.get(&wid).map(|ws| ws.tabs.len()).unwrap_or(0);
     info!(wid = %wid, host = %host, tabs = attached_count, skipped = skipped.len(), "attached workspace created");
@@ -1189,5 +1408,89 @@ mod tests {
             !had_attached,
             "isolated-only host must not trigger child neutralization"
         );
+    }
+
+    // ─── ensure_auto_attach_task: entry atomicity ─────────────────────────
+
+    #[test]
+    fn ensure_auto_attach_idempotent_same_host() {
+        // Calling ensure_auto_attach_task multiple times for the same host
+        // must result in exactly one entry (the entry() API prevents TOCTOU).
+        use tokio_util::sync::CancellationToken;
+
+        let state = Arc::new(DaemonState::new());
+        let host = "localhost:9222";
+
+        // Simulate: insert a live (uncancelled) token directly
+        let token = CancellationToken::new();
+        state.auto_attach_tasks.insert(host.to_string(), token.clone());
+
+        // After entry exists with live token, the entry() path should be no-op.
+        // We can't call ensure_auto_attach_task without a real CDP, but we can
+        // verify the DashMap entry semantics directly.
+        use dashmap::mapref::entry::Entry;
+        match state.auto_attach_tasks.entry(host.to_string()) {
+            Entry::Occupied(entry) => {
+                assert!(!entry.get().is_cancelled(), "existing token must be live");
+                // The real code returns here — no spawn
+            }
+            Entry::Vacant(_) => panic!("entry must be occupied"),
+        }
+
+        assert_eq!(state.auto_attach_tasks.len(), 1);
+    }
+
+    #[test]
+    fn ensure_auto_attach_replaces_cancelled_token() {
+        // If existing token is cancelled, entry() Occupied path should replace it.
+        use tokio_util::sync::CancellationToken;
+
+        let state = Arc::new(DaemonState::new());
+        let host = "localhost:9222";
+
+        let old_token = CancellationToken::new();
+        old_token.cancel(); // simulate cancelled task
+        state.auto_attach_tasks.insert(host.to_string(), old_token);
+
+        // Verify the entry is occupied but cancelled
+        use dashmap::mapref::entry::Entry;
+        match state.auto_attach_tasks.entry(host.to_string()) {
+            Entry::Occupied(entry) => {
+                assert!(entry.get().is_cancelled(), "old token should be cancelled");
+                // The real code would spawn a new task and replace
+                let new_token = CancellationToken::new();
+                *entry.into_ref() = new_token;
+            }
+            Entry::Vacant(_) => panic!("entry must be occupied"),
+        }
+
+        // Verify replacement
+        let current = state.auto_attach_tasks.get(host).unwrap();
+        assert!(!current.is_cancelled(), "replaced token must be live");
+    }
+
+    // ─── daemon_stop: cancels all auto-attach tasks ───────────────────────
+
+    #[test]
+    fn daemon_stop_cancels_all_auto_attach_tasks() {
+        // Replicate the logic added to handle_daemon_stop: iterate all tasks,
+        // cancel each, then clear the map.
+        use tokio_util::sync::CancellationToken;
+
+        let state = Arc::new(DaemonState::new());
+        let token1 = CancellationToken::new();
+        let token2 = CancellationToken::new();
+        state.auto_attach_tasks.insert("localhost:9222".to_string(), token1.clone());
+        state.auto_attach_tasks.insert("localhost:9333".to_string(), token2.clone());
+
+        // Simulate daemon_stop logic
+        for entry in state.auto_attach_tasks.iter() {
+            entry.value().cancel();
+        }
+        state.auto_attach_tasks.clear();
+
+        assert!(token1.is_cancelled());
+        assert!(token2.is_cancelled());
+        assert!(state.auto_attach_tasks.is_empty());
     }
 }

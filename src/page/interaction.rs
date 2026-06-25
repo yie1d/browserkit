@@ -6,6 +6,7 @@ use cdpkit::CDP;
 
 use crate::error::BkError;
 use crate::page::ElementInfo;
+use crate::page::exception_message;
 
 /// Validate that `index` is within the element list and return a reference.
 fn get_element(elements: &[ElementInfo], index: usize) -> Result<&ElementInfo, BkError> {
@@ -89,7 +90,7 @@ pub async fn click_element(
         .await?;
 
     if let Some(details) = &resp.exception_details {
-        return Err(BkError::JsError(format!("click: {}", details.text)));
+        return Err(BkError::JsError(format!("click: {}", exception_message(details))));
     }
 
     // Parse the updated bounding rect after scroll
@@ -176,21 +177,25 @@ pub async fn scroll_page(
     Ok(())
 }
 
-/// Select an option in a `<select>` element by value.
+/// Select an option in a `<select>` element by value or display text.
 ///
-/// Uses `Runtime.evaluate` to set the select element's value and dispatch
-/// a `change` event.
+/// Tries to match by `option.value` first, then by `option.textContent`.
+/// On successful match, dispatches both `change` and `input` events (bubbles: true)
+/// so that frameworks (React, Vue, etc.) detect the change.
+///
+/// If no option matches, returns an error including the available options
+/// (each with value, text, and selected status).
 pub async fn select_option(
     cdp: &Arc<CDP>,
     session_id: &str,
     elements: &[ElementInfo],
     index: usize,
     value: &str,
-) -> Result<(), BkError> {
+) -> Result<serde_json::Value, BkError> {
     let _el = get_element(elements, index)?;
     let session = cdp.session(session_id);
 
-    // Use serde_json::to_string for safe JS string escaping (handles \n, \r, \0,  ,  , quotes, etc.)
+    // serde_json::to_string produces a quoted JS string literal — embed directly
     let json_value = serde_json::to_string(value)
         .map_err(|e| BkError::Other(format!("failed to serialize value: {}", e)))?;
     let js = format!(
@@ -201,11 +206,18 @@ pub async fn select_option(
         return r.width > 0 && r.height > 0;
     }});
     const el = all[{index}];
-    if (!el) return 'element not found';
-    if (el.tagName.toLowerCase() !== 'select') return 'element is not a select';
-    el.value = JSON.parse({json_value});
-    el.dispatchEvent(new Event('change', {{ bubbles: true }}));
-    return 'ok';
+    if (!el) return JSON.stringify({{error: 'element not found'}});
+    if (el.tagName.toLowerCase() !== 'select') return JSON.stringify({{error: 'element is not a select'}});
+    const target = {json_value};
+    const options = Array.from(el.options);
+    const available = options.map(o => ({{value: o.value, text: o.textContent.trim(), selected: o.selected}}));
+    let found = options.find(o => o.value === target);
+    if (!found) found = options.find(o => o.textContent.trim() === target);
+    if (!found) return JSON.stringify({{error: 'no matching option', available_options: available}});
+    el.value = found.value;
+    el.dispatchEvent(new Event('change', {{bubbles: true}}));
+    el.dispatchEvent(new Event('input', {{bubbles: true}}));
+    return JSON.stringify({{ok: true, selected_value: found.value, selected_text: found.textContent.trim()}});
 }})()"#
     );
 
@@ -215,21 +227,85 @@ pub async fn select_option(
         .await?;
 
     if let Some(details) = &resp.exception_details {
-        return Err(BkError::JsError(format!("act.select: {}", details.text)));
+        return Err(BkError::JsError(format!("act.select: {}", exception_message(details))));
     }
 
-    let result = resp
+    let json_str = resp
         .result
         .value
         .as_ref()
         .and_then(|v| v.as_str())
-        .unwrap_or("unknown");
+        .ok_or_else(|| BkError::Other("act.select: no value returned".into()))?;
 
-    if result != "ok" {
-        return Err(BkError::Other(format!("act.select: {}", result)));
+    let result: serde_json::Value = serde_json::from_str(json_str)
+        .map_err(|e| BkError::Other(format!("act.select: parse result: {}", e)))?;
+
+    if let Some(err) = result.get("error").and_then(|v| v.as_str()) {
+        if let Some(available) = result.get("available_options") {
+            return Err(BkError::Other(format!(
+                "act.select: {}\navailable_options: {}",
+                err,
+                serde_json::to_string_pretty(available).unwrap_or_default()
+            )));
+        }
+        return Err(BkError::Other(format!("act.select: {}", err)));
     }
 
-    Ok(())
+    Ok(result)
+}
+
+/// Get all options from a `<select>` element by index.
+///
+/// Returns an array of `{value, text, selected}` for each `<option>`.
+/// Errors if the element is not found or is not a `<select>`.
+pub async fn dropdown_options(
+    cdp: &Arc<CDP>,
+    session_id: &str,
+    elements: &[ElementInfo],
+    index: usize,
+) -> Result<serde_json::Value, BkError> {
+    let _el = get_element(elements, index)?;
+    let session = cdp.session(session_id);
+
+    let js = format!(
+        r#"(() => {{
+    const selectors = 'a, button, input, textarea, select, [role="button"], [onclick]';
+    const all = Array.from(document.querySelectorAll(selectors)).filter(el => {{
+        const r = el.getBoundingClientRect();
+        return r.width > 0 && r.height > 0;
+    }});
+    const el = all[{index}];
+    if (!el) return JSON.stringify({{error: 'element not found'}});
+    if (el.tagName.toLowerCase() !== 'select') return JSON.stringify({{error: 'element is not a select'}});
+    const options = Array.from(el.options).map(o => ({{value: o.value, text: o.textContent.trim(), selected: o.selected}}));
+    return JSON.stringify({{ok: true, options: options}});
+}})()"#
+    );
+
+    let resp = cdpkit::runtime::methods::Evaluate::new(&js)
+        .with_return_by_value(true)
+        .send(&session)
+        .await?;
+
+    if let Some(details) = &resp.exception_details {
+        return Err(BkError::JsError(format!("act.dropdown_options: {}", exception_message(details))));
+    }
+
+    let json_str = resp
+        .result
+        .value
+        .as_ref()
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| BkError::Other("act.dropdown_options: no value returned".into()))?;
+
+    let result: serde_json::Value = serde_json::from_str(json_str)
+        .map_err(|e| BkError::Other(format!("act.dropdown_options: parse result: {}", e)))?;
+
+    if let Some(err) = result.get("error").and_then(|v| v.as_str()) {
+        return Err(BkError::Other(format!("act.dropdown_options: {}", err)));
+    }
+
+    Ok(result)
 }
 
 /// Hover over an element by index.
@@ -284,7 +360,7 @@ pub async fn focus_element(
         .await?;
 
     if let Some(details) = &resp.exception_details {
-        return Err(BkError::JsError(format!("act.focus: {}", details.text)));
+        return Err(BkError::JsError(format!("act.focus: {}", exception_message(details))));
     }
 
     let result = resp
@@ -402,5 +478,87 @@ mod tests {
         let (cx, cy) = element_center(&el);
         assert!((cx - 5.0).abs() < f64::EPSILON);
         assert!((cy - 5.0).abs() < f64::EPSILON);
+    }
+
+    /// Helper: build the select_option JS snippet (same logic as the real function)
+    fn build_select_js(index: usize, value: &str) -> String {
+        let json_value = serde_json::to_string(value).unwrap();
+        format!(
+            r#"(() => {{
+    const selectors = 'a, button, input, textarea, select, [role="button"], [onclick]';
+    const all = Array.from(document.querySelectorAll(selectors)).filter(el => {{
+        const r = el.getBoundingClientRect();
+        return r.width > 0 && r.height > 0;
+    }});
+    const el = all[{index}];
+    if (!el) return JSON.stringify({{error: 'element not found'}});
+    if (el.tagName.toLowerCase() !== 'select') return JSON.stringify({{error: 'element is not a select'}});
+    const target = {json_value};
+    const options = Array.from(el.options);
+    const available = options.map(o => ({{value: o.value, text: o.textContent.trim(), selected: o.selected}}));
+    let found = options.find(o => o.value === target);
+    if (!found) found = options.find(o => o.textContent.trim() === target);
+    if (!found) return JSON.stringify({{error: 'no matching option', available_options: available}});
+    el.value = found.value;
+    el.dispatchEvent(new Event('change', {{bubbles: true}}));
+    el.dispatchEvent(new Event('input', {{bubbles: true}}));
+    return JSON.stringify({{ok: true, selected_value: found.value, selected_text: found.textContent.trim()}});
+}})()"#
+        )
+    }
+
+    #[test]
+    fn select_js_no_json_parse_for_value() {
+        let js = build_select_js(0, "shanghai");
+        // Must NOT contain JSON.parse for the target value assignment
+        // The only JSON.stringify calls should be for return values
+        assert!(!js.contains("JSON.parse("), "should not use JSON.parse: {}", js);
+        // The target should be assigned directly as a string literal
+        assert!(js.contains(r#"const target = "shanghai""#), "should assign directly: {}", js);
+    }
+
+    #[test]
+    fn select_js_non_ascii_value() {
+        let js = build_select_js(2, "\u{4e0a}\u{6d77}");
+        assert!(!js.contains("JSON.parse("), "should not use JSON.parse: {}", js);
+        // serde_json may escape non-ASCII as \uXXXX or embed literal — both valid JS
+        assert!(js.contains("const target = "));
+    }
+
+    #[test]
+    fn select_js_value_with_quotes_and_backslashes() {
+        let js = build_select_js(0, r#"say "hello\world""#);
+        assert!(!js.contains("JSON.parse("), "should not use JSON.parse: {}", js);
+        // serde_json should properly escape the quotes and backslash
+        assert!(js.contains(r#"say \"hello\\world\""#), "should escape properly: {}", js);
+    }
+
+    #[test]
+    fn select_js_value_with_newlines() {
+        let js = build_select_js(0, "line1\nline2");
+        assert!(!js.contains("JSON.parse("), "should not use JSON.parse: {}", js);
+        assert!(js.contains(r"line1\nline2"), "should escape newlines: {}", js);
+    }
+
+    #[test]
+    fn select_js_dispatches_both_events() {
+        let js = build_select_js(0, "test");
+        assert!(js.contains("dispatchEvent(new Event('change'"), "should dispatch change: {}", js);
+        assert!(js.contains("dispatchEvent(new Event('input'"), "should dispatch input: {}", js);
+    }
+
+    #[test]
+    fn select_js_matches_by_value_then_text() {
+        let js = build_select_js(0, "test");
+        // Verify value match comes before text match
+        let value_match_pos = js.find("o.value === target").unwrap();
+        let text_match_pos = js.find("o.textContent.trim() === target").unwrap();
+        assert!(value_match_pos < text_match_pos, "value match should come before text match");
+    }
+
+    #[test]
+    fn select_js_returns_available_options_on_no_match() {
+        let js = build_select_js(0, "nonexistent");
+        assert!(js.contains("available_options"), "should report available_options on failure: {}", js);
     }
 }

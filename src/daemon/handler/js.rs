@@ -7,6 +7,7 @@ use serde_json::json;
 use crate::daemon::protocol::{Request, Response};
 use crate::daemon::state::DaemonState;
 use crate::error::BkError;
+use crate::page::exception_message;
 use super::common::{handler, resolve_context, touch_workspace};
 
 handler!(handle_eval, do_eval(req, state));
@@ -35,7 +36,7 @@ async fn do_eval(req: &Request, state: &Arc<DaemonState>) -> Result<Response, Bk
     let resp = eval.send(&session).await?;
 
     if let Some(details) = &resp.exception_details {
-        return Err(BkError::JsError(details.text.clone()));
+        return Err(BkError::JsError(exception_message(details)));
     }
 
     let result = resp.result.value.unwrap_or(serde_json::Value::Null);

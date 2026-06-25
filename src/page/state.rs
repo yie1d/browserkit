@@ -5,7 +5,7 @@ use std::sync::Arc;
 use cdpkit::CDP;
 
 use crate::error::BkError;
-use crate::page::{ElementInfo, SearchMatch};
+use crate::page::{exception_message, ElementInfo, SearchMatch};
 
 /// JavaScript snippet injected via `Runtime.evaluate` to discover all
 /// interactive elements on the page.
@@ -54,7 +54,7 @@ pub async fn get_page_state(
     if let Some(details) = &resp.exception_details {
         return Err(BkError::Other(format!(
             "page.state JS error: {}",
-            details.text
+            exception_message(details)
         )));
     }
 
@@ -74,17 +74,16 @@ pub async fn get_page_state(
 
 /// Build the JS snippet for searching text in the page body.
 ///
-/// Uses `serde_json::to_string` for safe embedding of the query inside JS,
-/// then `JSON.parse` on the JS side to recover the original string.
-/// This handles all special characters including \u2028, \u2029, quotes, etc.
+/// Uses `serde_json::to_string` for safe embedding of the query inside JS.
+/// The result is already a valid JS string literal (with quotes), so it can be
+/// assigned directly without JSON.parse.
 fn build_search_js(query: &str) -> String {
-    // serde_json::to_string produces a valid JSON string literal (with surrounding quotes)
-    // that is safe to embed directly in JS and parse with JSON.parse.
+    // serde_json::to_string produces a valid JS string literal (with surrounding quotes)
     let json_query = serde_json::to_string(query).unwrap_or_else(|_| "\"\"".to_string());
 
     format!(
         r#"(() => {{
-    const query = JSON.parse({json_query});
+    const query = {json_query};
     const body = document.body.innerText;
     const results = [];
     let idx = body.indexOf(query);
@@ -125,7 +124,7 @@ pub async fn search_page(
     if let Some(details) = &resp.exception_details {
         return Err(BkError::Other(format!(
             "page.search JS error: {}",
-            details.text
+            exception_message(details)
         )));
     }
 
@@ -272,5 +271,32 @@ mod tests {
         assert!(js.contains("hello world"));
         assert!(js.contains("document.body.innerText"));
         assert!(js.contains("indexOf"));
+    }
+
+    #[test]
+    fn build_search_js_no_json_parse() {
+        // After the fix, build_search_js should NOT wrap in JSON.parse
+        let js = build_search_js("test");
+        assert!(!js.contains("JSON.parse"), "should not use JSON.parse for query assignment: {}", js);
+        // The query should be assigned directly as a JS string literal
+        assert!(js.contains(r#"const query = "test""#), "should assign literal directly: {}", js);
+    }
+
+    #[test]
+    fn build_search_js_non_ascii() {
+        let js = build_search_js("上海");
+        assert!(!js.contains("JSON.parse"), "should not use JSON.parse: {}", js);
+        // Non-ASCII may be escaped or literal depending on serde_json, but must be valid JS
+        // and must not contain JSON.parse
+        assert!(js.contains("const query = "));
+    }
+
+    #[test]
+    fn build_search_js_special_chars_produces_valid_js_literal() {
+        // Strings with special JS chars should be properly escaped
+        let js = build_search_js("line1\nline2\ttab\"quote");
+        assert!(!js.contains("JSON.parse"));
+        // Check escaped form: \n, \t, \" inside the generated JS
+        assert!(js.contains(r#"line1\nline2\ttab\"quote"#), "should escape properly: {}", js);
     }
 }

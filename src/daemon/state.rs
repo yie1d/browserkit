@@ -7,6 +7,7 @@ use cdpkit::CDP;
 use dashmap::DashMap;
 use parking_lot::Mutex;
 use tokio::sync::Mutex as AsyncMutex;
+use tokio_util::sync::CancellationToken;
 
 use crate::config::Config;
 use crate::daemon::persist::PersistTx;
@@ -52,6 +53,11 @@ pub struct DaemonState {
     /// is running (e.g. in tests). Prevents `try_send` from returning
     /// `Err(Disconnected)` and silently dropping persist signals.
     pub(crate) _persist_rx_guard: Option<tokio::sync::mpsc::Receiver<()>>,
+    /// Cancellation tokens for auto-attach background tasks, keyed by browser host.
+    /// When an attached workspace is created, a background task is spawned that
+    /// tracks target lifecycle events. The token allows stopping the task when
+    /// the browser disconnects or the last attached workspace is closed.
+    pub auto_attach_tasks: DashMap<String, CancellationToken>,
 }
 
 impl DaemonState {
@@ -77,6 +83,7 @@ impl DaemonState {
             browser_launch_lock: Arc::new(AsyncMutex::new(())),
             persist_tx,
             _persist_rx_guard: Some(persist_rx),
+            auto_attach_tasks: DashMap::new(),
         }
     }
 
