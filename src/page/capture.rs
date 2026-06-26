@@ -5,7 +5,7 @@ use std::sync::Arc;
 use cdpkit::CDP;
 
 use crate::error::BkError;
-use crate::page::exception_message;
+use crate::page::{exception_message, INTERACTIVE_SELECTOR};
 
 /// Capture a viewport screenshot (PNG, base64-encoded).
 ///
@@ -236,16 +236,25 @@ pub async fn get_html(
 ///
 /// Overlays a fixed-position `<div class="_bk_label">` on each interactive element
 /// showing its index number. The labels are styled to be highly visible in screenshots.
+/// Uses the same selector and visibility filter as element discovery for consistent indexing.
 pub async fn inject_labels(cdp: &Arc<CDP>, session_id: &str) -> Result<(), BkError> {
     let session = cdp.session(session_id);
 
-    let js = r#"(() => {
-    const selectors = 'a, button, input, textarea, select, [role="button"], [onclick]';
+    let js = const_format::concatcp!(
+        r#"(() => {
+    const selectors = '"#, INTERACTIVE_SELECTOR, r#"';
     const elements = document.querySelectorAll(selectors);
     let index = 0;
     for (const el of elements) {
         const rect = el.getBoundingClientRect();
-        if (rect.width === 0 || rect.height === 0) continue;
+        const style = window.getComputedStyle(el);
+        if (
+            style.display === 'none' ||
+            style.visibility === 'hidden' ||
+            parseFloat(style.opacity) < 0.01 ||
+            rect.width === 0 ||
+            rect.height === 0
+        ) continue;
         const label = document.createElement('div');
         label.className = '_bk_label';
         label.textContent = String(index);
@@ -256,7 +265,8 @@ pub async fn inject_labels(cdp: &Arc<CDP>, session_id: &str) -> Result<(), BkErr
         index++;
     }
     return index;
-})()"#;
+})()"#
+    );
 
     let resp = cdpkit::runtime::methods::Evaluate::new(js)
         .with_return_by_value(true)
@@ -337,14 +347,23 @@ mod tests {
 
     // ── inject_labels / remove_labels JS content tests ───────────────
 
-    /// The inject_labels JS snippet (same as used in the async function).
-    const INJECT_LABELS_JS: &str = r#"(() => {
-    const selectors = 'a, button, input, textarea, select, [role="button"], [onclick]';
+    /// The inject_labels JS uses const_format::concatcp! in the real code;
+    /// here we replicate the same construction for test assertions.
+    const INJECT_LABELS_JS: &str = const_format::concatcp!(
+        r#"(() => {
+    const selectors = '"#, super::INTERACTIVE_SELECTOR, r#"';
     const elements = document.querySelectorAll(selectors);
     let index = 0;
     for (const el of elements) {
         const rect = el.getBoundingClientRect();
-        if (rect.width === 0 || rect.height === 0) continue;
+        const style = window.getComputedStyle(el);
+        if (
+            style.display === 'none' ||
+            style.visibility === 'hidden' ||
+            parseFloat(style.opacity) < 0.01 ||
+            rect.width === 0 ||
+            rect.height === 0
+        ) continue;
         const label = document.createElement('div');
         label.className = '_bk_label';
         label.textContent = String(index);
@@ -355,7 +374,8 @@ mod tests {
         index++;
     }
     return index;
-})()"#;
+})()"#
+    );
 
     /// The remove_labels JS snippet.
     const REMOVE_LABELS_JS: &str = r#"(() => {
@@ -390,15 +410,18 @@ mod tests {
     }
 
     #[test]
-    fn inject_labels_js_filters_zero_size_elements() {
-        assert!(INJECT_LABELS_JS.contains("rect.width === 0 || rect.height === 0"), "should skip invisible elements");
+    fn inject_labels_js_filters_invisible_elements() {
+        assert!(INJECT_LABELS_JS.contains("style.display === 'none'"), "should skip display:none elements");
+        assert!(INJECT_LABELS_JS.contains("style.visibility === 'hidden'"), "should skip visibility:hidden elements");
+        assert!(INJECT_LABELS_JS.contains("parseFloat(style.opacity) < 0.01"), "should skip near-zero opacity elements");
+        assert!(INJECT_LABELS_JS.contains("rect.width === 0"), "should skip zero-width elements");
+        assert!(INJECT_LABELS_JS.contains("rect.height === 0"), "should skip zero-height elements");
     }
 
     #[test]
     fn inject_labels_js_uses_same_selectors_as_discover() {
         // Must match the element discovery selectors to keep indices consistent
-        let expected_selectors = r#"'a, button, input, textarea, select, [role="button"], [onclick]'"#;
-        assert!(INJECT_LABELS_JS.contains(expected_selectors), "should use same selectors as element discovery");
+        assert!(INJECT_LABELS_JS.contains(super::INTERACTIVE_SELECTOR), "should use shared INTERACTIVE_SELECTOR");
     }
 
     #[test]

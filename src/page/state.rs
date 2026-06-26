@@ -5,25 +5,34 @@ use std::sync::Arc;
 use cdpkit::CDP;
 
 use crate::error::BkError;
-use crate::page::{exception_message, ElementInfo, FullPageState, SearchMatch};
+use crate::page::{exception_message, ElementInfo, FullPageState, SearchMatch, INTERACTIVE_SELECTOR};
 
 /// Maximum characters to include in `page_text` before truncation.
 pub const PAGE_TEXT_MAX_CHARS: usize = 2000;
 
-/// JavaScript snippet injected via `Runtime.evaluate` to discover all
-/// interactive elements on the page.
+/// Build the DISCOVER_ELEMENTS_JS at compile time using the shared selector.
 ///
-/// Queries: a, button, input, textarea, select, [role="button"], [onclick]
-/// Filters out elements with width=0 or height=0 (invisible).
+/// Discovers all interactive elements on the page with enhanced visibility filtering:
+/// - Skips elements with zero width/height
+/// - Skips elements with display:none, visibility:hidden, or opacity < 0.01
+/// - Reports `element_type = "contenteditable"` for contenteditable elements
 /// Returns a JSON-encoded array of element info objects.
-const DISCOVER_ELEMENTS_JS: &str = r#"(() => {
-    const selectors = 'a, button, input, textarea, select, [role="button"], [onclick]';
+const DISCOVER_ELEMENTS_JS: &str = const_format::concatcp!(
+    r#"(() => {
+    const selectors = '"#, INTERACTIVE_SELECTOR, r#"';
     const elements = document.querySelectorAll(selectors);
     const result = [];
     let index = 0;
     for (const el of elements) {
         const rect = el.getBoundingClientRect();
-        if (rect.width === 0 || rect.height === 0) continue;
+        const style = window.getComputedStyle(el);
+        if (
+            style.display === 'none' ||
+            style.visibility === 'hidden' ||
+            parseFloat(style.opacity) < 0.01 ||
+            rect.width === 0 ||
+            rect.height === 0
+        ) continue;
         const tag = el.tagName.toLowerCase();
         const entry = {
             index: index++,
@@ -39,6 +48,8 @@ const DISCOVER_ELEMENTS_JS: &str = r#"(() => {
         if (tag === 'input' || tag === 'select' || tag === 'textarea') {
             const t = (el.type || '').toLowerCase();
             if (t) entry.type = t;
+        } else if (el.isContentEditable) {
+            entry.type = 'contenteditable';
         }
         if (el.id) entry.id = el.id;
         const ariaLabel = el.getAttribute('aria-label');
@@ -46,21 +57,32 @@ const DISCOVER_ELEMENTS_JS: &str = r#"(() => {
         result.push(entry);
     }
     return JSON.stringify(result);
-})()"#;
+})()"#
+);
 
 /// JS that returns the visible interactive elements array *without* returnByValue,
 /// so we get an objectId for the array and can describe each element's backendNodeId.
-const DISCOVER_ELEMENTS_REFS_JS: &str = r#"(() => {
-    const selectors = 'a, button, input, textarea, select, [role="button"], [onclick]';
+/// Uses the same selector and visibility filter as DISCOVER_ELEMENTS_JS.
+const DISCOVER_ELEMENTS_REFS_JS: &str = const_format::concatcp!(
+    r#"(() => {
+    const selectors = '"#, INTERACTIVE_SELECTOR, r#"';
     const elements = document.querySelectorAll(selectors);
     const result = [];
     for (const el of elements) {
         const rect = el.getBoundingClientRect();
-        if (rect.width === 0 || rect.height === 0) continue;
+        const style = window.getComputedStyle(el);
+        if (
+            style.display === 'none' ||
+            style.visibility === 'hidden' ||
+            parseFloat(style.opacity) < 0.01 ||
+            rect.width === 0 ||
+            rect.height === 0
+        ) continue;
         result.push(el);
     }
     return result;
-})()"#;
+})()"#
+);
 
 /// Retrieve all interactive elements on the current page, with backendNodeId refs.
 ///
@@ -152,14 +174,23 @@ pub async fn get_page_elements_only(
 ///
 /// Combines element discovery, visible text extraction, and viewport/scroll info
 /// into a single `Runtime.evaluate` round-trip for efficiency.
-const FULL_PAGE_STATE_JS: &str = r#"(() => {
-    const selectors = 'a, button, input, textarea, select, [role="button"], [onclick]';
+/// Uses the same selector and visibility filter as DISCOVER_ELEMENTS_JS.
+const FULL_PAGE_STATE_JS: &str = const_format::concatcp!(
+    r#"(() => {
+    const selectors = '"#, INTERACTIVE_SELECTOR, r#"';
     const allEls = document.querySelectorAll(selectors);
     const elements = [];
     let index = 0;
     for (const el of allEls) {
         const rect = el.getBoundingClientRect();
-        if (rect.width === 0 || rect.height === 0) continue;
+        const style = window.getComputedStyle(el);
+        if (
+            style.display === 'none' ||
+            style.visibility === 'hidden' ||
+            parseFloat(style.opacity) < 0.01 ||
+            rect.width === 0 ||
+            rect.height === 0
+        ) continue;
         const tag = el.tagName.toLowerCase();
         const entry = {
             index: index++,
@@ -175,6 +206,8 @@ const FULL_PAGE_STATE_JS: &str = r#"(() => {
         if (tag === 'input' || tag === 'select' || tag === 'textarea') {
             const t = (el.type || '').toLowerCase();
             if (t) entry.type = t;
+        } else if (el.isContentEditable) {
+            entry.type = 'contenteditable';
         }
         if (el.id) entry.id = el.id;
         const ariaLabel = el.getAttribute('aria-label');
@@ -210,7 +243,8 @@ const FULL_PAGE_STATE_JS: &str = r#"(() => {
             pixels_below: pixels_below,
         },
     });
-})()"#;
+})()"#
+);
 
 /// Retrieve the full page state: interactive elements + visible text + viewport info.
 ///
@@ -1048,6 +1082,12 @@ mod tests {
     }
 
     #[test]
+    fn discover_js_includes_contenteditable_type() {
+        assert!(DISCOVER_ELEMENTS_JS.contains("el.isContentEditable"), "should detect contenteditable");
+        assert!(DISCOVER_ELEMENTS_JS.contains("entry.type = 'contenteditable'"), "should set type to contenteditable");
+    }
+
+    #[test]
     fn discover_js_includes_id_extraction() {
         assert!(DISCOVER_ELEMENTS_JS.contains("entry.id = el.id"), "should set id");
     }
@@ -1063,6 +1103,22 @@ mod tests {
         assert!(FULL_PAGE_STATE_JS.contains("entry.type = t"), "full state JS should set type");
         assert!(FULL_PAGE_STATE_JS.contains("entry.id = el.id"), "full state JS should set id");
         assert!(FULL_PAGE_STATE_JS.contains("entry.aria_label = ariaLabel"), "full state JS should set aria_label");
+        assert!(FULL_PAGE_STATE_JS.contains("el.isContentEditable"), "full state JS should detect contenteditable");
+    }
+
+    #[test]
+    fn discover_js_uses_shared_interactive_selector() {
+        assert!(DISCOVER_ELEMENTS_JS.contains(super::INTERACTIVE_SELECTOR), "should use shared INTERACTIVE_SELECTOR");
+        assert!(FULL_PAGE_STATE_JS.contains(super::INTERACTIVE_SELECTOR), "full state JS should use shared INTERACTIVE_SELECTOR");
+        assert!(DISCOVER_ELEMENTS_REFS_JS.contains(super::INTERACTIVE_SELECTOR), "refs JS should use shared INTERACTIVE_SELECTOR");
+    }
+
+    #[test]
+    fn discover_js_enhanced_visibility_filter() {
+        assert!(DISCOVER_ELEMENTS_JS.contains("style.display === 'none'"), "should filter display:none");
+        assert!(DISCOVER_ELEMENTS_JS.contains("style.visibility === 'hidden'"), "should filter visibility:hidden");
+        assert!(DISCOVER_ELEMENTS_JS.contains("parseFloat(style.opacity) < 0.01"), "should filter near-zero opacity");
+        assert!(DISCOVER_ELEMENTS_JS.contains("window.getComputedStyle(el)"), "should compute style");
     }
 
     // ── build_advanced_search_js tests ───────────────────────────────
