@@ -399,57 +399,6 @@ On restart, the daemon reconnects to persisted managed browsers and re-attaches 
 
 Writes are atomic (tmp + rename) and debounced (500ms quiet window) to avoid blocking request handlers.
 
-## Project Structure
-
-```
-src/
-├── main.rs                # CLI entry point (clap)
-├── lib.rs                 # library root
-├── client.rs              # TCP client + daemon auto-start
-├── config.rs              # ~/.bk/config.toml loading
-├── error.rs               # unified BkError type
-├── browser/
-│   ├── mod.rs             # CDP connection helpers
-│   ├── finder.rs          # Chrome executable discovery
-│   ├── launcher.rs        # Chrome process management
-│   └── discover.rs        # DevToolsActivePort auto-discovery
-├── daemon/
-│   ├── mod.rs             # daemon lifecycle (start/stop/port file)
-│   ├── state.rs           # DaemonState (Arc + DashMap)
-│   ├── server.rs          # TCP server + workspace cleanup
-│   ├── persist.rs         # async debounced state persistence
-│   ├── protocol.rs        # newline-delimited JSON protocol
-│   ├── auto_attach.rs     # auto-attach target tracking
-│   ├── console.rs         # console log subscription
-│   ├── dialog.rs          # dialog event subscription
-│   └── handler/           # one file per command group
-│       ├── mod.rs         # dispatcher
-│       ├── workspace.rs   # ws new/attach/list/close/use/default
-│       ├── tab.rs         # tab new/attach/list/switch/close
-│       ├── nav.rs         # goto/back/forward/reload
-│       ├── page.rs        # info/find/search/html/url/title/options
-│       ├── action.rs      # click/type/fill/select/scroll/hover/drag/focus/upload/keys
-│       ├── js.rs          # eval
-│       ├── storage.rs     # cookies/local/export/import
-│       ├── browser.rs     # connect/discover/list/disconnect
-│       ├── network.rs     # monitor/har/block/unblock
-│       ├── debug.rs       # cdp/events
-│       ├── dialog.rs      # dialog list/accept/dismiss/policy
-│       ├── daemon.rs      # start/stop/status
-│       └── common.rs      # shared handler utilities
-├── page/
-│   ├── mod.rs             # page module root
-│   ├── navigation.rs      # goto, reload, back, forward, wait
-│   ├── interaction.rs     # click, type, scroll, hover, focus, select, drag
-│   ├── capture.rs         # screenshot, PDF, HTML
-│   ├── state.rs           # page element extraction
-│   ├── find_elements.rs   # CSS selector queries
-│   ├── element_ref.rs     # backendNodeId resolution
-│   └── wait.rs            # wait conditions + networkidle
-└── workspace/
-    └── mod.rs             # Workspace + Tab types
-```
-
 ## Acknowledgements
 
 - [cdpkit-rs](https://github.com/yie1d/cdpkit-rs) — the typed Rust CDP client that powers all Chrome communication in browserkit
