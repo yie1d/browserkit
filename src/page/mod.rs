@@ -7,6 +7,10 @@ pub mod navigation;
 pub mod state;
 pub mod wait;
 
+use std::collections::VecDeque;
+use std::sync::Arc;
+
+use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 
 /// Extract the best available error message from a CDP ExceptionDetails.
@@ -20,6 +24,17 @@ pub fn exception_message(details: &cdpkit::runtime::types::ExceptionDetails) -> 
         .and_then(|e| e.description.as_deref())
         .unwrap_or(&details.text)
         .to_string()
+}
+
+/// Maximum number of console entries to buffer per tab.
+pub const CONSOLE_LOG_MAX: usize = 200;
+
+/// A single console log entry.
+#[derive(Debug, Clone)]
+pub struct ConsoleEntry {
+    pub level: String,
+    pub text: String,
+    pub timestamp: f64,
 }
 
 /// A tab within a workspace, mapped to a CDP Target.
@@ -45,6 +60,16 @@ pub struct Tab {
     /// Short human-friendly alias for CLI addressing (`t1`, `t2`, ...).
     /// Workspace-scoped, monotonically increasing, never reused after close.
     pub alias: String,
+    /// Console log buffer (runtime state, not persisted).
+    /// Ring buffer of the most recent CONSOLE_LOG_MAX entries.
+    pub console_log: Arc<Mutex<VecDeque<ConsoleEntry>>>,
+}
+
+impl Tab {
+    /// Create a new console log buffer (used when constructing new tabs).
+    pub fn new_console_log() -> Arc<Mutex<VecDeque<ConsoleEntry>>> {
+        Arc::new(Mutex::new(VecDeque::new()))
+    }
 }
 
 /// A text search match found on the page.

@@ -92,7 +92,7 @@ async fn do_tab_new(
         ws.next_alias()
     };
 
-    let tab = Tab { tid: tid.clone(), target_id, cdp_session_id: cdp_session_id.clone(), url: url.to_string(), title: String::new(), managed: true, alias: alias.clone() };
+    let tab = Tab { tid: tid.clone(), target_id, cdp_session_id: cdp_session_id.clone(), url: url.to_string(), title: String::new(), managed: true, alias: alias.clone(), console_log: Tab::new_console_log() };
 
     if let Some(mut ws) = state.workspaces.get_mut(&wid) {
         ws.tabs.insert(tid.clone(), tab);
@@ -102,6 +102,15 @@ async fn do_tab_new(
 
     // Start dialog subscription for this tab's session
     spawn_dialog_subscription(
+        Arc::clone(state),
+        Arc::clone(&cdp),
+        cdp_session_id.clone(),
+        wid.clone(),
+        tid.clone(),
+    );
+
+    // Start console log subscription
+    crate::daemon::console::spawn_console_subscription(
         Arc::clone(state),
         Arc::clone(&cdp),
         cdp_session_id,
@@ -404,6 +413,7 @@ async fn do_tab_attach(
         title: target_title.clone(),
         managed: false, // user's existing tab
         alias: alias.clone(),
+        console_log: Tab::new_console_log(),
     };
 
     if let Some(mut ws) = state.workspaces.get_mut(&wid) {
@@ -414,6 +424,15 @@ async fn do_tab_attach(
 
     // Start dialog subscription for this tab's session
     spawn_dialog_subscription(
+        Arc::clone(state),
+        Arc::clone(&cdp),
+        cdp_session_id.clone(),
+        wid.clone(),
+        tid.clone(),
+    );
+
+    // Start console log subscription
+    crate::daemon::console::spawn_console_subscription(
         Arc::clone(state),
         Arc::clone(&cdp),
         cdp_session_id,
@@ -465,6 +484,7 @@ mod tests {
             title: "Example".to_string(),
             managed: false,
             alias: "t1".to_string(),
+            console_log: Tab::new_console_log(),
         };
         let mut tabs = HashMap::new();
         tabs.insert(tid.clone(), tab);
@@ -517,6 +537,7 @@ mod tests {
             title: String::new(),
             managed: true,
             alias: "t1".to_string(),
+            console_log: Tab::new_console_log(),
         };
         if let Some(mut ws) = state.workspaces.get_mut(&wid) {
             ws.tabs.insert(tid.clone(), tab);
@@ -600,6 +621,7 @@ mod tests {
             title: "Close Me".to_string(),
             managed: true,
             alias: "t1".to_string(),
+            console_log: Tab::new_console_log(),
         };
         let tab_remain = Tab {
             tid: tid_remaining.clone(),
@@ -609,6 +631,7 @@ mod tests {
             title: "Stay".to_string(),
             managed: true,
             alias: "t2".to_string(),
+            console_log: Tab::new_console_log(),
         };
 
         let mut tabs = HashMap::new();
@@ -691,6 +714,7 @@ mod tests {
             title: "A".to_string(),
             managed: true,
             alias: "t1".to_string(),
+            console_log: Tab::new_console_log(),
         };
         let tab_b = Tab {
             tid: tid_b.clone(),
@@ -700,6 +724,7 @@ mod tests {
             title: "B".to_string(),
             managed: true,
             alias: "t2".to_string(),
+            console_log: Tab::new_console_log(),
         };
 
         let mut tabs = HashMap::new();

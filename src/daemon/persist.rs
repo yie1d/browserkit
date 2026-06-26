@@ -218,6 +218,7 @@ impl PersistedWorkspace {
                 title: pt.title,
                 managed: pt.managed,
                 alias,
+                console_log: Tab::new_console_log(),
             };
             tabs.insert(pt.tid, tab);
         }
@@ -1464,6 +1465,7 @@ mod tests {
             title: "".to_string(),
             managed: true,
             alias: "t1".to_string(),
+            console_log: Tab::new_console_log(),
         });
         tabs.insert("t2".to_string(), Tab {
             tid: "t2".to_string(),
@@ -1473,6 +1475,7 @@ mod tests {
             title: "GitHub".to_string(),
             managed: false,
             alias: "t2".to_string(),
+            console_log: Tab::new_console_log(),
         });
         tabs.insert("t3".to_string(), Tab {
             tid: "t3".to_string(),
@@ -1482,6 +1485,7 @@ mod tests {
             title: "Example".to_string(),
             managed: false,
             alias: "t3".to_string(),
+            console_log: Tab::new_console_log(),
         });
 
         let ws = Workspace {
@@ -1606,6 +1610,7 @@ mod tests {
             title: "Example".to_string(),
             managed: false,
             alias: "t1".to_string(),
+            console_log: Tab::new_console_log(),
         });
 
         state.workspaces.insert("ws_other".to_string(), Workspace {
@@ -1748,6 +1753,7 @@ mod tests {
             title: "Page A".to_string(),
             managed: true,
             alias: "t1".to_string(),
+            console_log: Tab::new_console_log(),
         });
         tabs.insert("tid_b".to_string(), Tab {
             tid: "tid_b".to_string(),
@@ -1757,6 +1763,7 @@ mod tests {
             title: "Page B".to_string(),
             managed: false,
             alias: "t2".to_string(),
+            console_log: Tab::new_console_log(),
         });
 
         let ws = Workspace {
@@ -2061,6 +2068,7 @@ mod tests {
             title: "One".to_string(),
             managed: true,
             alias: "t7".to_string(),
+            console_log: Tab::new_console_log(),
         });
 
         let ws = Workspace {

@@ -1,5 +1,6 @@
-// Interaction handlers: click, type, scroll, select, hover, focus
+// Interaction handlers: click, type, scroll, select, hover, focus, drag
 
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use futures::StreamExt;
@@ -21,6 +22,12 @@ async fn do_click(req: &Request, state: &Arc<DaemonState>) -> Result<Response, B
     let target = parse_element_target(&req.params);
     let x = req.params.get("x").and_then(|v| v.as_f64());
     let y = req.params.get("y").and_then(|v| v.as_f64());
+
+    // Snapshot current tab list before click (for new_tab detection)
+    let tabs_before: std::collections::HashSet<String> = state.workspaces
+        .get(&ctx.wid)
+        .map(|ws| ws.tabs.keys().cloned().collect())
+        .unwrap_or_default();
 
     // Determine the click future based on target type
     let click_fut = match (target, x, y) {
@@ -90,8 +97,14 @@ async fn do_click(req: &Request, state: &Arc<DaemonState>) -> Result<Response, B
 
     match result {
         ClickOutcome::Normal => {
+            // P1-1: After click, briefly check if a new tab was created
+            let new_tab = detect_new_tab(state, &ctx.wid, &tabs_before).await;
             info!(wid = %ctx.wid, tid = %ctx.tid, "click completed");
-            Ok(Response::ok(json!({ "wid": ctx.wid, "tid": ctx.tid, "status": "clicked" })))
+            let mut resp_data = json!({ "wid": ctx.wid, "tid": ctx.tid, "status": "clicked" });
+            if let Some(nt) = new_tab {
+                resp_data["new_tab"] = json!(nt);
+            }
+            Ok(Response::ok(resp_data))
         }
         ClickOutcome::BlockedByDialog { dialog_type, message } => {
             info!(wid = %ctx.wid, tid = %ctx.tid, dialog_type = %dialog_type, "click blocked by dialog");
@@ -119,6 +132,34 @@ enum ClickOutcome {
     },
 }
 
+/// After a click, wait briefly and check if a new tab was created.
+///
+/// Compares the workspace's current tab list against `tabs_before` snapshot.
+/// Returns info about the newest tab if one was added.
+async fn detect_new_tab(
+    state: &Arc<DaemonState>,
+    wid: &str,
+    tabs_before: &HashSet<String>,
+) -> Option<serde_json::Value> {
+    // Brief delay to let auto-attach process new target events
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+    let ws = state.workspaces.get(wid)?;
+    let new_tabs: Vec<_> = ws.tabs.values()
+        .filter(|t| !tabs_before.contains(&t.tid))
+        .collect();
+
+    if let Some(tab) = new_tabs.last() {
+        Some(json!({
+            "tid": tab.tid,
+            "alias": tab.alias,
+            "url": tab.url,
+        }))
+    } else {
+        None
+    }
+}
+
 handler!(handle_type, do_type(req, state));
 
 async fn do_type(req: &Request, state: &Arc<DaemonState>) -> Result<Response, BkError> {
@@ -131,9 +172,63 @@ async fn do_type(req: &Request, state: &Arc<DaemonState>) -> Result<Response, Bk
     let clear = req.params.get("clear").and_then(|v| v.as_bool()).unwrap_or(false);
 
     crate::page::interaction::type_text_by_target(&ctx.cdp, &ctx.cdp_session_id, &target, text, clear).await?;
+
+    // Only check autocomplete/combobox when explicitly requested (opt-in to avoid extra CDP round-trip)
+    let autocomplete_flag = req.params.get("autocomplete").and_then(|v| v.as_bool()).unwrap_or(false);
+    let autocomplete_wait = if autocomplete_flag {
+        check_autocomplete(&ctx.cdp, &ctx.cdp_session_id, &target).await
+    } else {
+        false
+    };
+
     touch_workspace(state, &ctx.wid);
     info!(wid = %ctx.wid, tid = %ctx.tid, clear = clear, "typed text");
-    Ok(Response::ok(json!({ "wid": ctx.wid, "tid": ctx.tid, "status": "typed", "clear": clear })))
+    let mut resp_data = json!({ "wid": ctx.wid, "tid": ctx.tid, "status": "typed", "clear": clear });
+    if autocomplete_wait {
+        resp_data["autocomplete_wait"] = json!(true);
+    }
+    Ok(Response::ok(resp_data))
+}
+
+/// Check if the target element is a combobox/autocomplete field.
+/// If so, wait 400ms for the dropdown to appear.
+async fn check_autocomplete(
+    cdp: &std::sync::Arc<cdpkit::CDP>,
+    session_id: &str,
+    target: &ElementTarget,
+) -> bool {
+    use crate::page::element_ref::resolve_element;
+
+    let resolved = match resolve_element(cdp, session_id, target).await {
+        Ok(r) => r,
+        Err(_) => return false,
+    };
+
+    let session = cdp.session(session_id);
+    let js = r#"function() {
+        return this.getAttribute('role') === 'combobox' || this.getAttribute('aria-autocomplete') != null;
+    }"#;
+
+    let resp = match cdpkit::runtime::methods::CallFunctionOn::new(js)
+        .with_object_id(resolved.object_id)
+        .with_return_by_value(true)
+        .send(&session)
+        .await
+    {
+        Ok(r) => r,
+        Err(_) => return false,
+    };
+
+    let is_autocomplete = resp.result.value
+        .as_ref()
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
+    if is_autocomplete {
+        tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+    }
+
+    is_autocomplete
 }
 
 handler!(handle_scroll, do_scroll(req, state));
@@ -297,6 +392,47 @@ async fn do_act_upload(req: &Request, state: &Arc<DaemonState>) -> Result<Respon
 
     touch_workspace(state, &ctx.wid);
     Ok(Response::ok(json!({ "wid": ctx.wid, "tid": ctx.tid, "status": "uploaded", "files": files })))
+}
+
+handler!(handle_act_drag, do_act_drag(req, state));
+
+async fn do_act_drag(req: &Request, state: &Arc<DaemonState>) -> Result<Response, BkError> {
+    let ctx = resolve_context(req, state, "act.drag")?;
+
+    // Parse source target
+    let from_ref = req.params.get("from_ref").and_then(|v| v.as_i64());
+    let from_index = req.params.get("from_index").and_then(|v| v.as_u64()).map(|v| v as usize);
+    let from_selector = req.params.get("from_selector").and_then(|v| v.as_str());
+
+    // Parse destination target
+    let to_ref = req.params.get("to_ref").and_then(|v| v.as_i64());
+    let to_index = req.params.get("to_index").and_then(|v| v.as_u64()).map(|v| v as usize);
+    let to_selector = req.params.get("to_selector").and_then(|v| v.as_str());
+
+    let from_target = if let Some(r) = from_ref {
+        ElementTarget::Ref(r)
+    } else if let Some(i) = from_index {
+        ElementTarget::Index(i)
+    } else if let Some(sel) = from_selector {
+        ElementTarget::Selector(sel.to_string())
+    } else {
+        return Err(BkError::InvalidRequest("act.drag requires from_ref, from_index, or from_selector".into()));
+    };
+
+    let to_target = if let Some(r) = to_ref {
+        ElementTarget::Ref(r)
+    } else if let Some(i) = to_index {
+        ElementTarget::Index(i)
+    } else if let Some(sel) = to_selector {
+        ElementTarget::Selector(sel.to_string())
+    } else {
+        return Err(BkError::InvalidRequest("act.drag requires to_ref, to_index, or to_selector".into()));
+    };
+
+    crate::page::interaction::drag_by_target(&ctx.cdp, &ctx.cdp_session_id, &from_target, &to_target).await?;
+    touch_workspace(state, &ctx.wid);
+    info!(wid = %ctx.wid, tid = %ctx.tid, "drag completed");
+    Ok(Response::ok(json!({ "wid": ctx.wid, "tid": ctx.tid, "status": "dragged" })))
 }
 
 #[cfg(test)]

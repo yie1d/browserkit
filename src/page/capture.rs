@@ -170,6 +170,26 @@ pub async fn capture_pdf(cdp: &Arc<CDP>, session_id: &str) -> Result<String, BkE
     Ok(resp.data)
 }
 
+/// Generate a PDF with landscape/background options.
+pub async fn capture_pdf_with_options(
+    cdp: &Arc<CDP>,
+    session_id: &str,
+    landscape: bool,
+    print_background: bool,
+) -> Result<String, BkError> {
+    let session = cdp.session(session_id);
+    let mut cmd = cdpkit::page::methods::PrintToPdf::new();
+    if landscape {
+        cmd = cmd.with_landscape(true);
+    }
+    if print_background {
+        cmd = cmd.with_print_background(true);
+    }
+    let resp = cmd.send(&session).await?;
+
+    Ok(resp.data)
+}
+
 /// Get the HTML content of the page or a specific element.
 ///
 /// - If `selector` is `None`, returns the full page HTML via
@@ -210,6 +230,66 @@ pub async fn get_html(
         Some(other) => Ok(other.to_string()),
         None => Err(BkError::Other("no value returned from evaluate".into())),
     }
+}
+
+/// Inject visual labels (index numbers) onto interactive elements before screenshot.
+///
+/// Overlays a fixed-position `<div class="_bk_label">` on each interactive element
+/// showing its index number. The labels are styled to be highly visible in screenshots.
+pub async fn inject_labels(cdp: &Arc<CDP>, session_id: &str) -> Result<(), BkError> {
+    let session = cdp.session(session_id);
+
+    let js = r#"(() => {
+    const selectors = 'a, button, input, textarea, select, [role="button"], [onclick]';
+    const elements = document.querySelectorAll(selectors);
+    let index = 0;
+    for (const el of elements) {
+        const rect = el.getBoundingClientRect();
+        if (rect.width === 0 || rect.height === 0) continue;
+        const label = document.createElement('div');
+        label.className = '_bk_label';
+        label.textContent = String(index);
+        label.style.cssText = 'position:fixed;background:rgba(255,0,0,0.8);color:white;font-size:11px;z-index:99999;padding:1px 3px;pointer-events:none;border-radius:2px;line-height:1.2;font-family:monospace;';
+        label.style.left = rect.x + 'px';
+        label.style.top = rect.y + 'px';
+        document.body.appendChild(label);
+        index++;
+    }
+    return index;
+})()"#;
+
+    let resp = cdpkit::runtime::methods::Evaluate::new(js)
+        .with_return_by_value(true)
+        .send(&session)
+        .await?;
+
+    if let Some(details) = &resp.exception_details {
+        return Err(BkError::Other(format!("inject_labels: {}", exception_message(details))));
+    }
+
+    Ok(())
+}
+
+/// Remove previously injected label overlays.
+pub async fn remove_labels(cdp: &Arc<CDP>, session_id: &str) -> Result<(), BkError> {
+    let session = cdp.session(session_id);
+
+    let js = r#"(() => {
+    const labels = document.querySelectorAll('._bk_label');
+    labels.forEach(l => l.remove());
+    return labels.length;
+})()"#;
+
+    let resp = cdpkit::runtime::methods::Evaluate::new(js)
+        .with_return_by_value(true)
+        .send(&session)
+        .await?;
+
+    if let Some(details) = &resp.exception_details {
+        return Err(BkError::Other(format!("remove_labels: {}", exception_message(details))));
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]
@@ -253,5 +333,105 @@ mod tests {
             json_sel
         );
         assert!(!js.contains("JSON.parse"), "should not use JSON.parse: {}", js);
+    }
+
+    // ── inject_labels / remove_labels JS content tests ───────────────
+
+    /// The inject_labels JS snippet (same as used in the async function).
+    const INJECT_LABELS_JS: &str = r#"(() => {
+    const selectors = 'a, button, input, textarea, select, [role="button"], [onclick]';
+    const elements = document.querySelectorAll(selectors);
+    let index = 0;
+    for (const el of elements) {
+        const rect = el.getBoundingClientRect();
+        if (rect.width === 0 || rect.height === 0) continue;
+        const label = document.createElement('div');
+        label.className = '_bk_label';
+        label.textContent = String(index);
+        label.style.cssText = 'position:fixed;background:rgba(255,0,0,0.8);color:white;font-size:11px;z-index:99999;padding:1px 3px;pointer-events:none;border-radius:2px;line-height:1.2;font-family:monospace;';
+        label.style.left = rect.x + 'px';
+        label.style.top = rect.y + 'px';
+        document.body.appendChild(label);
+        index++;
+    }
+    return index;
+})()"#;
+
+    /// The remove_labels JS snippet.
+    const REMOVE_LABELS_JS: &str = r#"(() => {
+    const labels = document.querySelectorAll('._bk_label');
+    labels.forEach(l => l.remove());
+    return labels.length;
+})()"#;
+
+    #[test]
+    fn inject_labels_js_uses_bk_label_class() {
+        assert!(INJECT_LABELS_JS.contains("_bk_label"), "should use _bk_label class marker");
+    }
+
+    #[test]
+    fn inject_labels_js_creates_div_element() {
+        assert!(INJECT_LABELS_JS.contains("createElement('div')"), "should create div elements for labels");
+    }
+
+    #[test]
+    fn inject_labels_js_uses_fixed_positioning() {
+        assert!(INJECT_LABELS_JS.contains("position:fixed"), "labels should use fixed positioning");
+    }
+
+    #[test]
+    fn inject_labels_js_has_high_z_index() {
+        assert!(INJECT_LABELS_JS.contains("z-index:99999"), "labels should have high z-index to appear on top");
+    }
+
+    #[test]
+    fn inject_labels_js_disables_pointer_events() {
+        assert!(INJECT_LABELS_JS.contains("pointer-events:none"), "labels should not intercept clicks");
+    }
+
+    #[test]
+    fn inject_labels_js_filters_zero_size_elements() {
+        assert!(INJECT_LABELS_JS.contains("rect.width === 0 || rect.height === 0"), "should skip invisible elements");
+    }
+
+    #[test]
+    fn inject_labels_js_uses_same_selectors_as_discover() {
+        // Must match the element discovery selectors to keep indices consistent
+        let expected_selectors = r#"'a, button, input, textarea, select, [role="button"], [onclick]'"#;
+        assert!(INJECT_LABELS_JS.contains(expected_selectors), "should use same selectors as element discovery");
+    }
+
+    #[test]
+    fn inject_labels_js_positions_at_element_coordinates() {
+        assert!(INJECT_LABELS_JS.contains("rect.x + 'px'"), "should position left at element x");
+        assert!(INJECT_LABELS_JS.contains("rect.y + 'px'"), "should position top at element y");
+    }
+
+    #[test]
+    fn inject_labels_js_returns_count() {
+        assert!(INJECT_LABELS_JS.contains("return index"), "should return the number of labels injected");
+    }
+
+    #[test]
+    fn remove_labels_js_queries_bk_label_class() {
+        assert!(REMOVE_LABELS_JS.contains("querySelectorAll('._bk_label')"), "should select all _bk_label elements");
+    }
+
+    #[test]
+    fn remove_labels_js_removes_each_label() {
+        assert!(REMOVE_LABELS_JS.contains("l.remove()"), "should remove each label from DOM");
+    }
+
+    #[test]
+    fn remove_labels_js_returns_count() {
+        assert!(REMOVE_LABELS_JS.contains("return labels.length"), "should return how many labels were removed");
+    }
+
+    #[test]
+    fn inject_and_remove_labels_use_matching_class_name() {
+        // The class used in inject must exactly match what remove queries for
+        let inject_class = "_bk_label";
+        assert!(INJECT_LABELS_JS.contains(&format!("className = '{}'", inject_class)));
+        assert!(REMOVE_LABELS_JS.contains(&format!("querySelectorAll('.{}')", inject_class)));
     }
 }

@@ -11,6 +11,7 @@ use futures::StreamExt;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
+use crate::daemon::console::spawn_console_subscription;
 use crate::daemon::dialog::spawn_dialog_subscription;
 use crate::daemon::state::{generate_hex_id, DaemonState};
 use crate::page::Tab;
@@ -101,6 +102,7 @@ pub fn handle_target_attached(
         title: title.to_string(),
         managed: false, // auto-discovered user tab
         alias: String::new(), // placeholder, assigned below in lock scope
+        console_log: Tab::new_console_log(),
     };
 
     if let Some(mut ws) = state.workspaces.get_mut(&wid) {
@@ -288,8 +290,15 @@ pub fn spawn_auto_attach_task(
                         &target_info.title,
                     );
                     if let Some((ref wid, ref tid)) = added {
-                        // Start dialog subscription for this auto-attached tab
+                        // Start dialog + console subscription for this auto-attached tab
                         spawn_dialog_subscription(
+                            Arc::clone(&state),
+                            Arc::clone(&cdp),
+                            session_id.clone(),
+                            wid.clone(),
+                            tid.clone(),
+                        );
+                        spawn_console_subscription(
                             Arc::clone(&state),
                             Arc::clone(&cdp),
                             session_id.clone(),
@@ -420,8 +429,15 @@ pub fn spawn_auto_attach_task(
                         &target_info.title,
                     );
                     if let Some((ref wid, ref tid)) = added {
-                        // Start dialog subscription for this auto-attached tab
+                        // Start dialog + console subscription for this auto-attached tab
                         spawn_dialog_subscription(
+                            Arc::clone(&state),
+                            Arc::clone(&cdp),
+                            session_id.clone(),
+                            wid.clone(),
+                            tid.clone(),
+                        );
+                        spawn_console_subscription(
                             Arc::clone(&state),
                             Arc::clone(&cdp),
                             session_id.clone(),
@@ -498,6 +514,7 @@ mod tests {
             title: "Example".to_string(),
             managed: false,
             alias: "t1".to_string(),
+            console_log: Tab::new_console_log(),
         };
         let mut tabs = HashMap::new();
         tabs.insert(tid.to_string(), tab);
@@ -748,6 +765,7 @@ mod tests {
             title: "A".to_string(),
             managed: false,
             alias: "t1".to_string(),
+            console_log: Tab::new_console_log(),
         };
         let tab2 = Tab {
             tid: "tid2".to_string(),
@@ -757,6 +775,7 @@ mod tests {
             title: "B".to_string(),
             managed: false,
             alias: "t2".to_string(),
+            console_log: Tab::new_console_log(),
         };
         ws.tabs.insert("tid1".to_string(), tab1);
         ws.tabs.insert("tid2".to_string(), tab2);

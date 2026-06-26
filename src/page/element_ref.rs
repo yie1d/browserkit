@@ -21,6 +21,8 @@ pub enum ElementTarget {
     Ref(i64),
     /// Positional index into the interactive element list (legacy).
     Index(usize),
+    /// CSS selector string.
+    Selector(String),
 }
 
 /// A resolved element handle that can be used for interaction.
@@ -55,6 +57,7 @@ pub async fn resolve_element(
             resolve_by_ref(cdp, session_id, *backend_node_id).await
         }
         ElementTarget::Index(index) => resolve_by_index(cdp, session_id, *index).await,
+        ElementTarget::Selector(selector) => resolve_by_selector(cdp, session_id, selector).await,
     }
 }
 
@@ -182,6 +185,83 @@ async fn resolve_by_index_js(
     {
         Ok(desc) => desc.node.backend_node_id,
         Err(_) => 0, // fallback, shouldn't happen in practice
+    };
+
+    Ok(ResolvedElement {
+        center,
+        object_id,
+        backend_node_id,
+    })
+}
+
+/// Resolve element by CSS selector.
+///
+/// Uses Runtime.evaluate with querySelector to find the element, scroll it into view,
+/// get its bounding rect for center coordinates, and describe it to get the backendNodeId.
+async fn resolve_by_selector(
+    cdp: &Arc<CDP>,
+    session_id: &str,
+    selector: &str,
+) -> Result<ResolvedElement, BkError> {
+    let session = cdp.session(session_id);
+
+    // Safe JS string literal for selector
+    let selector_js = serde_json::to_string(selector)
+        .map_err(|e| BkError::Other(format!("selector serialize: {}", e)))?;
+
+    let js = format!(
+        r#"(() => {{
+    const el = document.querySelector({selector_js});
+    if (!el) return null;
+    el.scrollIntoView({{block: 'center', inline: 'center'}});
+    return el;
+}})()"#
+    );
+
+    let resp = cdpkit::runtime::methods::Evaluate::new(&js)
+        .send(&session)
+        .await?;
+
+    if let Some(details) = &resp.exception_details {
+        return Err(BkError::JsError(format!(
+            "resolve selector: {}",
+            crate::page::exception_message(details)
+        )));
+    }
+
+    let object_id = resp.result.object_id.ok_or_else(|| {
+        BkError::Other(format!("no element found for selector: {}", selector))
+    })?;
+
+    // Get bounding rect via callFunctionOn
+    let rect_resp = cdpkit::runtime::methods::CallFunctionOn::new(
+        "function() { const r = this.getBoundingClientRect(); return JSON.stringify({x: r.x, y: r.y, width: r.width, height: r.height}); }",
+    )
+    .with_object_id(object_id.clone())
+    .with_return_by_value(true)
+    .send(&session)
+    .await?;
+
+    let center = if let Some(val) = rect_resp.result.value.as_ref().and_then(|v| v.as_str()) {
+        let rect: serde_json::Value = serde_json::from_str(val)
+            .map_err(|e| BkError::Other(format!("parse rect: {}", e)))?;
+        let x = rect["x"].as_f64().unwrap_or(0.0);
+        let y = rect["y"].as_f64().unwrap_or(0.0);
+        let w = rect["width"].as_f64().unwrap_or(0.0);
+        let h = rect["height"].as_f64().unwrap_or(0.0);
+        (x + w / 2.0, y + h / 2.0)
+    } else {
+        return Err(BkError::Other("could not get element bounds for selector".to_string()));
+    };
+
+    // Get backendNodeId via describeNode
+    let backend_node_id = match cdpkit::dom::methods::DescribeNode::new()
+        .with_object_id(object_id.clone())
+        .send(&session)
+        .await
+    {
+        Ok(desc) => desc.node.backend_node_id,
+        Err(_) => 0,
     };
 
     Ok(ResolvedElement {

@@ -151,6 +151,7 @@ mod tests {
             title: "A".to_string(),
             managed: true,
             alias: "t1".to_string(),
+            console_log: Tab::new_console_log(),
         });
         tabs.insert("efgh5678efgh5678".to_string(), Tab {
             tid: "efgh5678efgh5678".to_string(),
@@ -160,6 +161,7 @@ mod tests {
             title: "B".to_string(),
             managed: true,
             alias: "t2".to_string(),
+            console_log: Tab::new_console_log(),
         });
         tabs.insert("efgh9999efgh9999".to_string(), Tab {
             tid: "efgh9999efgh9999".to_string(),
@@ -169,6 +171,7 @@ mod tests {
             title: "C".to_string(),
             managed: true,
             alias: "t3".to_string(),
+            console_log: Tab::new_console_log(),
         });
         Workspace {
             wid: "ws_test".to_string(),

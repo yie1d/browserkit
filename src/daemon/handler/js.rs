@@ -36,7 +36,10 @@ async fn do_eval(req: &Request, state: &Arc<DaemonState>) -> Result<Response, Bk
     let resp = eval.send(&session).await?;
 
     if let Some(details) = &resp.exception_details {
-        return Err(BkError::JsError(exception_message(details)));
+        let err_msg = exception_message(details);
+        // P1-3: Include the first 100 chars of the script for debugging context
+        let script_preview: String = expr.chars().take(100).collect();
+        return Err(BkError::JsError(format!("{}\nscript: \"{}\"", err_msg, script_preview)));
     }
 
     let result = resp.result.value.unwrap_or(serde_json::Value::Null);

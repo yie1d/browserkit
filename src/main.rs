@@ -135,6 +135,9 @@ pub enum Command {
         /// Clear existing content before typing
         #[arg(long)]
         clear: bool,
+        /// Wait for autocomplete/combobox dropdown after typing
+        #[arg(long)]
+        autocomplete: bool,
         /// Text to type
         text: String,
     },
@@ -192,6 +195,29 @@ pub enum Command {
         /// Element ref (backendNodeId) — stable across DOM changes
         #[arg(short = 'r', long = "ref")]
         element_ref: Option<i64>,
+    },
+    /// Drag from one element to another
+    #[command(group(ArgGroup::new("from_target").required(true).args(["from_ref", "from_index", "from_selector"])))]
+    #[command(group(ArgGroup::new("to_target").required(true).args(["to_ref", "to_index", "to_selector"])))]
+    Drag {
+        /// Source element ref (backendNodeId)
+        #[arg(long)]
+        from_ref: Option<i64>,
+        /// Source element index
+        #[arg(long)]
+        from_index: Option<usize>,
+        /// Source element CSS selector
+        #[arg(long)]
+        from_selector: Option<String>,
+        /// Destination element ref (backendNodeId)
+        #[arg(long)]
+        to_ref: Option<i64>,
+        /// Destination element index
+        #[arg(long)]
+        to_index: Option<usize>,
+        /// Destination element CSS selector
+        #[arg(long)]
+        to_selector: Option<String>,
     },
     /// Focus element
     #[command(group(ArgGroup::new("target").required(true).args(["index", "element_ref"])))]
@@ -258,6 +284,9 @@ pub enum Command {
         /// CSS selector for element screenshot
         #[arg(short, long)]
         selector: Option<String>,
+        /// Overlay index labels on interactive elements before capture
+        #[arg(long)]
+        labels: bool,
     },
     /// Generate PDF (supports one-shot with URL)
     Pdf {
@@ -449,6 +478,15 @@ pub enum NavAction {
 
 #[derive(Subcommand)]
 pub enum PageAction {
+    /// Get interactive elements + page text + viewport info (default includes page text)
+    Info {
+        /// Exclude page text from output
+        #[arg(long)]
+        no_text: bool,
+        /// Include viewport screenshot
+        #[arg(long)]
+        screenshot: bool,
+    },
     /// Get interactive elements + page text + viewport info
     State {
         /// Include viewport screenshot
@@ -457,8 +495,20 @@ pub enum PageAction {
     },
     /// Search text in page
     Search {
-        /// Text to search
+        /// Text or pattern to search
         text: String,
+        /// Treat pattern as regex
+        #[arg(long)]
+        regex: bool,
+        /// CSS selector to scope search (default: document.body)
+        #[arg(long)]
+        scope: Option<String>,
+        /// Characters of context around each match (default: 40)
+        #[arg(long)]
+        context: Option<usize>,
+        /// Maximum number of matches to return
+        #[arg(long)]
+        max: Option<usize>,
     },
     /// Wait for conditions on the page
     Wait {
@@ -500,6 +550,27 @@ pub enum PageAction {
         /// Include element inner text (truncated to 200 chars)
         #[arg(long)]
         include_text: bool,
+    },
+    /// Show console log buffer for current tab
+    Console {
+        /// Filter by level: error, warn, info, log, all (default: all)
+        #[arg(long, default_value = "all")]
+        level: String,
+        /// Maximum number of entries to return
+        #[arg(long)]
+        limit: Option<usize>,
+    },
+    /// Generate PDF of current page
+    Pdf {
+        /// Output file path (default: page.pdf)
+        #[arg(short, long)]
+        output: Option<String>,
+        /// Landscape orientation
+        #[arg(long)]
+        landscape: bool,
+        /// Print background graphics
+        #[arg(long)]
+        background: bool,
     },
 }
 
@@ -925,12 +996,20 @@ async fn dispatch(cli: &Cli, client: &mut DaemonClient) -> Result<(), String> {
         Command::Page { action } => {
             let wid = resolve_workspace(&cli.workspace, client).await?;
             match action {
+                PageAction::Info { no_text, screenshot } => {
+                    let resp = send_cmd(client, "page.info", json!({"wid": wid, "no_text": no_text, "screenshot": screenshot})).await?;
+                    print_response(&resp, fmt);
+                }
                 PageAction::State { screenshot } => {
                     let resp = send_cmd(client, "page.state", json!({"wid": wid, "screenshot": screenshot})).await?;
                     print_response(&resp, fmt);
                 }
-                PageAction::Search { text } => {
-                    let resp = send_cmd(client, "page.search", json!({"wid": wid, "text": text})).await?;
+                PageAction::Search { text, regex, scope, context, max } => {
+                    let mut params = json!({"wid": wid, "text": text, "regex": regex});
+                    if let Some(s) = scope { params["scope"] = json!(s); }
+                    if let Some(c) = context { params["context"] = json!(c); }
+                    if let Some(m) = max { params["max"] = json!(m); }
+                    let resp = send_cmd(client, "page.search", params).await?;
                     print_response(&resp, fmt);
                 }
                 PageAction::Wait { time, selector, text, text_gone, url, load_state, r#fn, timeout } => {
@@ -954,6 +1033,18 @@ async fn dispatch(cli: &Cli, client: &mut DaemonClient) -> Result<(), String> {
                     if let Some(m) = max { params["max"] = json!(m); }
                     let resp = send_cmd(client, "page.find_elements", params).await?;
                     print_response(&resp, fmt);
+                }
+                PageAction::Console { level, limit } => {
+                    let mut params = json!({"wid": wid, "level": level});
+                    if let Some(n) = limit { params["limit"] = json!(n); }
+                    let resp = send_cmd(client, "page.console", params).await?;
+                    print_response(&resp, fmt);
+                }
+                PageAction::Pdf { output, landscape, background } => {
+                    let mut params = json!({"wid": wid, "landscape": landscape, "background": background});
+                    if let Some(o) = output { params["output"] = json!(o); }
+                    let resp = send_cmd(client, "page.pdf", params).await?;
+                    handle_binary_response(&resp, fmt, output.as_deref(), "page.pdf");
                 }
             }
         },
@@ -1123,9 +1214,9 @@ async fn dispatch(cli: &Cli, client: &mut DaemonClient) -> Result<(), String> {
             print_response(&resp, fmt);
         }
 
-        Command::Type { index, element_ref, text, clear } => {
+        Command::Type { index, element_ref, text, clear, autocomplete } => {
             let wid = resolve_workspace(&cli.workspace, client).await?;
-            let mut params = json!({"wid": wid, "text": text, "clear": clear});
+            let mut params = json!({"wid": wid, "text": text, "clear": clear, "autocomplete": autocomplete});
             if let Some(r) = element_ref { params["ref"] = json!(r); }
             else if let Some(i) = index { params["index"] = json!(i); }
             let resp = send_cmd(client, "act.type", params).await?;
@@ -1162,6 +1253,7 @@ async fn dispatch(cli: &Cli, client: &mut DaemonClient) -> Result<(), String> {
                 match field.target {
                     browserkit::page::element_ref::ElementTarget::Ref(r) => { entry["ref"] = json!(r); }
                     browserkit::page::element_ref::ElementTarget::Index(i) => { entry["index"] = json!(i); }
+                    browserkit::page::element_ref::ElementTarget::Selector(s) => { entry["selector"] = json!(s); }
                 }
                 fields.push(entry);
             }
@@ -1185,6 +1277,19 @@ async fn dispatch(cli: &Cli, client: &mut DaemonClient) -> Result<(), String> {
             if let Some(r) = element_ref { params["ref"] = json!(r); }
             else if let Some(i) = index { params["index"] = json!(i); }
             let resp = send_cmd(client, "act.hover", params).await?;
+            print_response(&resp, fmt);
+        }
+
+        Command::Drag { from_ref, from_index, from_selector, to_ref, to_index, to_selector } => {
+            let wid = resolve_workspace(&cli.workspace, client).await?;
+            let mut params = json!({"wid": wid});
+            if let Some(r) = from_ref { params["from_ref"] = json!(r); }
+            else if let Some(i) = from_index { params["from_index"] = json!(i); }
+            if let Some(s) = from_selector { params["from_selector"] = json!(s); }
+            if let Some(r) = to_ref { params["to_ref"] = json!(r); }
+            else if let Some(i) = to_index { params["to_index"] = json!(i); }
+            if let Some(s) = to_selector { params["to_selector"] = json!(s); }
+            let resp = send_cmd(client, "act.drag", params).await?;
             print_response(&resp, fmt);
         }
 
@@ -1235,13 +1340,13 @@ async fn dispatch(cli: &Cli, client: &mut DaemonClient) -> Result<(), String> {
             ws_cmd!(cli, client, fmt, "nav.reload", {});
         }
 
-        Command::Shot { url, output, full_page, selector } => {
+        Command::Shot { url, output, full_page, selector, labels } => {
             if let Some(target_url) = url {
                 // One-shot mode: create ws → goto → screenshot → close ws
-                dispatch_oneshot_shot(client, fmt, target_url, output, full_page, selector).await?;
+                dispatch_oneshot_shot(client, fmt, target_url, output, full_page, selector, labels).await?;
             } else {
                 let wid = resolve_workspace(&cli.workspace, client).await?;
-                let mut params = json!({"wid": wid, "full_page": full_page});
+                let mut params = json!({"wid": wid, "full_page": full_page, "labels": labels});
                 if let Some(s) = selector { params["selector"] = json!(s); }
                 if let Some(o) = output { params["output"] = json!(o); }
                 let resp = send_cmd(client, "page.screenshot", params).await?;
@@ -1634,6 +1739,7 @@ async fn dispatch_oneshot_shot(
     output: &Option<String>,
     full_page: &bool,
     selector: &Option<String>,
+    labels: &bool,
 ) -> Result<(), String> {
     let resp = send_cmd(client, "ws.new", json!({})).await?;
     if !resp.ok {
@@ -1648,7 +1754,7 @@ async fn dispatch_oneshot_shot(
 
     let _ = send_cmd(client, "nav.goto", json!({"wid": wid, "url": url})).await?;
 
-    let mut params = json!({"wid": wid, "full_page": full_page});
+    let mut params = json!({"wid": wid, "full_page": full_page, "labels": labels});
     if let Some(s) = selector { params["selector"] = json!(s); }
     if let Some(o) = output { params["output"] = json!(o); }
     let resp = send_cmd(client, "page.screenshot", params).await?;

@@ -1053,6 +1053,50 @@ pub async fn scroll_to_element_by_target(
     Ok(())
 }
 
+/// Drag from one element to another by ElementTarget.
+///
+/// Performs: mousedown(from center) → mousemove(to center) → mouseup(to center).
+pub async fn drag_by_target(
+    cdp: &Arc<CDP>,
+    session_id: &str,
+    from: &ElementTarget,
+    to: &ElementTarget,
+) -> Result<(), BkError> {
+    let from_resolved = resolve_element(cdp, session_id, from).await?;
+    let to_resolved = resolve_element(cdp, session_id, to).await?;
+    let session = cdp.session(session_id);
+
+    let (fx, fy) = from_resolved.center;
+    let (tx, ty) = to_resolved.center;
+
+    // mouseMoved to source
+    cdpkit::input::methods::DispatchMouseEvent::new("mouseMoved", fx, fy)
+        .send(&session)
+        .await?;
+
+    // mousePressed at source
+    cdpkit::input::methods::DispatchMouseEvent::new("mousePressed", fx, fy)
+        .with_button(cdpkit::input::types::MouseButton::Left)
+        .with_click_count(1)
+        .send(&session)
+        .await?;
+
+    // mouseMoved to destination
+    cdpkit::input::methods::DispatchMouseEvent::new("mouseMoved", tx, ty)
+        .with_button(cdpkit::input::types::MouseButton::Left)
+        .send(&session)
+        .await?;
+
+    // mouseReleased at destination
+    cdpkit::input::methods::DispatchMouseEvent::new("mouseReleased", tx, ty)
+        .with_button(cdpkit::input::types::MouseButton::Left)
+        .with_click_count(1)
+        .send(&session)
+        .await?;
+
+    Ok(())
+}
+
 /// Get dropdown options by ElementTarget.
 pub async fn dropdown_options_by_target(
     cdp: &Arc<CDP>,
@@ -1165,6 +1209,7 @@ pub async fn fill_fields_by_target(
         let (index, element_ref) = match &field.target {
             ElementTarget::Ref(r) => (None, Some(*r)),
             ElementTarget::Index(i) => (Some(*i), None),
+            ElementTarget::Selector(_) => (None, None),
         };
         results.push(FillFieldResult { index, element_ref, status, error });
     }
