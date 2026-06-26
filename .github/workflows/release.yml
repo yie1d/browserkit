@@ -13,6 +13,7 @@ jobs:
     name: Build ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
         include:
           - os: windows-latest
@@ -74,4 +75,3 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: ${{ matrix.archive }}
-          generate_release_notes: true
