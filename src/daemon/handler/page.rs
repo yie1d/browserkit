@@ -47,7 +47,7 @@ async fn do_screenshot(req: &Request, state: &Arc<DaemonState>) -> Result<Respon
 
     // If labels requested, inject overlay labels before screenshot and remove after
     if labels {
-        crate::page::capture::inject_labels(&ctx.cdp, &ctx.cdp_session_id).await?;
+        crate::page::capture::inject_labels(&ctx.cdp, &ctx.cdp_session_id, full_page).await?;
     }
 
     let capture_result = if let Some(sel) = selector {
@@ -134,7 +134,7 @@ async fn do_page_state(req: &Request, state: &Arc<DaemonState>) -> Result<Respon
     let ctx = resolve_context(req, state, "page.state")?;
 
     let with_screenshot = req.params.get("screenshot").and_then(|v| v.as_bool()).unwrap_or(false);
-    let full_state = crate::page::state::get_full_page_state(&ctx.cdp, &ctx.cdp_session_id).await?;
+    let full_state = crate::page::state::get_full_page_state(&ctx.cdp, &ctx.cdp_session_id, false).await?;
 
     let screenshot_data = if with_screenshot {
         Some(crate::page::capture::capture_viewport(&ctx.cdp, &ctx.cdp_session_id).await?)
@@ -163,8 +163,14 @@ async fn do_page_info(req: &Request, state: &Arc<DaemonState>) -> Result<Respons
 
     let no_text = req.params.get("no_text").and_then(|v| v.as_bool()).unwrap_or(false);
     let with_screenshot = req.params.get("screenshot").and_then(|v| v.as_bool()).unwrap_or(false);
+    let tree = req.params.get("tree").and_then(|v| v.as_bool()).unwrap_or(false);
+    let ax = req.params.get("ax").and_then(|v| v.as_bool()).unwrap_or(false);
 
-    let full_state = crate::page::state::get_full_page_state(&ctx.cdp, &ctx.cdp_session_id).await?;
+    let mut full_state = crate::page::state::get_full_page_state(&ctx.cdp, &ctx.cdp_session_id, tree).await?;
+
+    if ax {
+        crate::page::state::enrich_with_ax_tree(&ctx.cdp, &ctx.cdp_session_id, &mut full_state.elements).await;
+    }
 
     let screenshot_data = if with_screenshot {
         Some(crate::page::capture::capture_viewport(&ctx.cdp, &ctx.cdp_session_id).await?)

@@ -1,5 +1,6 @@
 // Page state: interactive element discovery
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use cdpkit::CDP;
@@ -16,14 +17,26 @@ pub const PAGE_TEXT_MAX_CHARS: usize = 2000;
 /// - Skips elements with zero width/height
 /// - Skips elements with display:none, visibility:hidden, or opacity < 0.01
 /// - Reports `element_type = "contenteditable"` for contenteditable elements
+/// - Recursively penetrates open shadow roots for Shadow DOM support
 /// Returns a JSON-encoded array of element info objects.
 const DISCOVER_ELEMENTS_JS: &str = const_format::concatcp!(
     r#"(() => {
     const selectors = '"#, INTERACTIVE_SELECTOR, r#"';
-    const elements = document.querySelectorAll(selectors);
+    function collectElements(root, sel, results) {
+        for (const el of root.querySelectorAll(sel)) {
+            results.push(el);
+        }
+        for (const el of root.querySelectorAll('*')) {
+            if (el.shadowRoot) {
+                collectElements(el.shadowRoot, sel, results);
+            }
+        }
+    }
+    const allEls = [];
+    collectElements(document, selectors, allEls);
     const result = [];
     let index = 0;
-    for (const el of elements) {
+    for (const el of allEls) {
         const rect = el.getBoundingClientRect();
         const style = window.getComputedStyle(el);
         if (
@@ -63,12 +76,24 @@ const DISCOVER_ELEMENTS_JS: &str = const_format::concatcp!(
 /// JS that returns the visible interactive elements array *without* returnByValue,
 /// so we get an objectId for the array and can describe each element's backendNodeId.
 /// Uses the same selector and visibility filter as DISCOVER_ELEMENTS_JS.
+/// Recursively penetrates open shadow roots for Shadow DOM support.
 const DISCOVER_ELEMENTS_REFS_JS: &str = const_format::concatcp!(
     r#"(() => {
     const selectors = '"#, INTERACTIVE_SELECTOR, r#"';
-    const elements = document.querySelectorAll(selectors);
+    function collectElements(root, sel, results) {
+        for (const el of root.querySelectorAll(sel)) {
+            results.push(el);
+        }
+        for (const el of root.querySelectorAll('*')) {
+            if (el.shadowRoot) {
+                collectElements(el.shadowRoot, sel, results);
+            }
+        }
+    }
+    const allEls = [];
+    collectElements(document, selectors, allEls);
     const result = [];
-    for (const el of elements) {
+    for (const el of allEls) {
         const rect = el.getBoundingClientRect();
         const style = window.getComputedStyle(el);
         if (
@@ -175,10 +200,22 @@ pub async fn get_page_elements_only(
 /// Combines element discovery, visible text extraction, and viewport/scroll info
 /// into a single `Runtime.evaluate` round-trip for efficiency.
 /// Uses the same selector and visibility filter as DISCOVER_ELEMENTS_JS.
+/// Recursively penetrates open shadow roots for Shadow DOM support.
 const FULL_PAGE_STATE_JS: &str = const_format::concatcp!(
     r#"(() => {
     const selectors = '"#, INTERACTIVE_SELECTOR, r#"';
-    const allEls = document.querySelectorAll(selectors);
+    function collectElements(root, sel, results) {
+        for (const el of root.querySelectorAll(sel)) {
+            results.push(el);
+        }
+        for (const el of root.querySelectorAll('*')) {
+            if (el.shadowRoot) {
+                collectElements(el.shadowRoot, sel, results);
+            }
+        }
+    }
+    const allEls = [];
+    collectElements(document, selectors, allEls);
     const elements = [];
     let index = 0;
     for (const el of allEls) {
@@ -246,16 +283,120 @@ const FULL_PAGE_STATE_JS: &str = const_format::concatcp!(
 })()"#
 );
 
+/// JavaScript snippet for tree mode: same as FULL_PAGE_STATE_JS but also collects
+/// up to 3 meaningful ancestor elements (tag + id/class) for each interactive element.
+const FULL_PAGE_STATE_TREE_JS: &str = const_format::concatcp!(
+    r#"(() => {
+    const selectors = '"#, INTERACTIVE_SELECTOR, r#"';
+    function collectElements(root, sel, results) {
+        for (const el of root.querySelectorAll(sel)) {
+            results.push(el);
+        }
+        for (const el of root.querySelectorAll('*')) {
+            if (el.shadowRoot) {
+                collectElements(el.shadowRoot, sel, results);
+            }
+        }
+    }
+    function getAncestors(el, maxDepth) {
+        const ancestors = [];
+        let current = el.parentElement;
+        let depth = 0;
+        while (current && current !== document.body && depth < maxDepth) {
+            const tag = current.tagName.toLowerCase();
+            const id = current.id ? '#' + current.id : '';
+            const cls = current.className && typeof current.className === 'string'
+                ? '.' + current.className.trim().split(/\s+/)[0]
+                : '';
+            ancestors.unshift(tag + id + cls);
+            current = current.parentElement;
+            depth++;
+        }
+        return ancestors;
+    }
+    const allEls = [];
+    collectElements(document, selectors, allEls);
+    const elements = [];
+    let index = 0;
+    for (const el of allEls) {
+        const rect = el.getBoundingClientRect();
+        const style = window.getComputedStyle(el);
+        if (
+            style.display === 'none' ||
+            style.visibility === 'hidden' ||
+            parseFloat(style.opacity) < 0.01 ||
+            rect.width === 0 ||
+            rect.height === 0
+        ) continue;
+        const tag = el.tagName.toLowerCase();
+        const entry = {
+            index: index++,
+            tag: tag,
+            text: (el.textContent || '').trim().substring(0, 100),
+            x: rect.x,
+            y: rect.y,
+            width: rect.width,
+            height: rect.height,
+            href: el.href || null,
+            placeholder: el.placeholder || null,
+            ancestors: getAncestors(el, 3),
+        };
+        if (tag === 'input' || tag === 'select' || tag === 'textarea') {
+            const t = (el.type || '').toLowerCase();
+            if (t) entry.type = t;
+        } else if (el.isContentEditable) {
+            entry.type = 'contenteditable';
+        }
+        if (el.id) entry.id = el.id;
+        const ariaLabel = el.getAttribute('aria-label');
+        if (ariaLabel) entry.aria_label = ariaLabel;
+        elements.push(entry);
+    }
+    const MAX_TEXT = 2000;
+    const rawText = (document.body && document.body.innerText) || '';
+    const truncated = rawText.length > MAX_TEXT;
+    const text = truncated ? rawText.substring(0, MAX_TEXT) : rawText;
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    const sx = window.scrollX || window.pageXOffset || 0;
+    const sy = window.scrollY || window.pageYOffset || 0;
+    const dw = Math.max(
+        document.documentElement.scrollWidth || 0,
+        document.body ? document.body.scrollWidth : 0
+    );
+    const dh = Math.max(
+        document.documentElement.scrollHeight || 0,
+        document.body ? document.body.scrollHeight : 0
+    );
+    const pixels_above = sy;
+    const pixels_below = Math.max(0, dh - sy - vh);
+    return JSON.stringify({
+        elements: elements,
+        page_text: { text: text, truncated: truncated },
+        page_info: {
+            viewport: { width: vw, height: vh },
+            scroll: { x: sx, y: sy },
+            document: { width: dw, height: dh },
+            pixels_above: pixels_above,
+            pixels_below: pixels_below,
+        },
+    });
+})()"#
+);
+
 /// Retrieve the full page state: interactive elements + visible text + viewport info.
 ///
 /// All metadata is collected in a single `Runtime.evaluate` call for efficiency.
 /// Then a second pass fetches backendNodeIds for stable element references.
+/// When `tree` is true, each element also includes an `ancestors` array for tree display.
 pub async fn get_full_page_state(
     cdp: &Arc<CDP>,
     session_id: &str,
+    tree: bool,
 ) -> Result<FullPageState, BkError> {
     let session = cdp.session(session_id);
-    let resp = cdpkit::runtime::methods::Evaluate::new(FULL_PAGE_STATE_JS)
+    let js = if tree { FULL_PAGE_STATE_TREE_JS } else { FULL_PAGE_STATE_JS };
+    let resp = cdpkit::runtime::methods::Evaluate::new(js)
         .with_return_by_value(true)
         .send(&session)
         .await?;
@@ -348,18 +489,26 @@ async fn get_backend_node_ids(
         return Ok(vec![None; expected_count]);
     }
 
-    // Describe each node to get backendNodeId
-    let mut ids: Vec<Option<i64>> = Vec::with_capacity(expected_count);
-    for (_idx, oid) in &element_entries {
-        match cdpkit::dom::methods::DescribeNode::new()
-            .with_object_id(oid.clone())
-            .send(&session)
-            .await
-        {
-            Ok(desc) => ids.push(Some(desc.node.backend_node_id)),
-            Err(_) => ids.push(None), // individual failure — don't poison with 0
-        }
-    }
+    // Describe each node to get backendNodeId (parallelized)
+    let futures: Vec<_> = element_entries
+        .iter()
+        .map(|(_idx, oid)| {
+            let oid = oid.clone();
+            let session = cdp.session(session_id);
+            async move {
+                match cdpkit::dom::methods::DescribeNode::new()
+                    .with_object_id(oid)
+                    .send(&session)
+                    .await
+                {
+                    Ok(desc) => Some(desc.node.backend_node_id),
+                    Err(_) => None,
+                }
+            }
+        })
+        .collect();
+
+    let ids: Vec<Option<i64>> = futures::future::join_all(futures).await;
 
     Ok(ids)
 }
@@ -549,6 +698,69 @@ fn build_advanced_search_js(
             max = max,
             ctx = ctx,
         )
+    }
+}
+
+
+/// Enrich elements with accessibility information from the full AX tree.
+///
+/// Calls `Accessibility.getFullAXTree` once, builds a lookup by backendDOMNodeId,
+/// and attaches `ax_role` and `ax_name` to each element that has a matching backendNodeId.
+/// Best-effort: if the AX call fails, elements are returned unchanged.
+pub async fn enrich_with_ax_tree(
+    cdp: &Arc<CDP>,
+    session_id: &str,
+    elements: &mut [ElementInfo],
+) {
+    let session = cdp.session(session_id);
+
+    // Enable accessibility domain (required before getFullAXTree)
+    let enable_result = cdpkit::protocol::accessibility::methods::Enable::new()
+        .send(&session)
+        .await;
+    if enable_result.is_err() {
+        return;
+    }
+
+    let ax_resp = cdpkit::protocol::accessibility::methods::GetFullAxTree::new()
+        .send(&session)
+        .await;
+
+    let ax_tree = match ax_resp {
+        Ok(resp) => resp,
+        Err(_) => return, // best-effort
+    };
+
+    // Build lookup: backendDOMNodeId -> (role, name)
+    let mut ax_map: HashMap<i64, (Option<String>, Option<String>)> =
+        HashMap::with_capacity(ax_tree.nodes.len());
+
+    for node in &ax_tree.nodes {
+        if node.ignored {
+            continue;
+        }
+        if let Some(backend_id) = node.backend_dom_node_id {
+            let role = node.role.as_ref().and_then(|v| {
+                v.value.as_ref().and_then(|val| val.as_str().map(|s| s.to_string()))
+            });
+            let name = node.name.as_ref().and_then(|v| {
+                v.value.as_ref().and_then(|val| val.as_str().map(|s| s.to_string()))
+            });
+            // Only store if at least one is non-empty
+            if role.is_some() || name.is_some() {
+                ax_map.insert(backend_id, (role, name));
+            }
+        }
+    }
+
+    // Attach to elements
+    for el in elements.iter_mut() {
+        if let Some(backend_id) = el.backend_node_id {
+            if let Some((role, name)) = ax_map.get(&backend_id) {
+                el.ax_role = role.clone();
+                el.ax_name = name.clone();
+            }
+        }
     }
 }
 
@@ -866,6 +1078,9 @@ mod tests {
             element_type: None,
             id: None,
             aria_label: None,
+            ancestors: None,
+            ax_role: None,
+            ax_name: None,
         };
 
         let json = serde_json::to_string(&el).unwrap();
@@ -888,6 +1103,9 @@ mod tests {
             element_type: None,
             id: None,
             aria_label: None,
+            ancestors: None,
+            ax_role: None,
+            ax_name: None,
         };
 
         let json = serde_json::to_string(&el).unwrap();
@@ -901,8 +1119,8 @@ mod tests {
         // Simulates the merge behavior when phase-2 returns a different count
         // (the actual get_backend_node_ids returns Vec<Option<i64>>)
         let mut elements = vec![
-            ElementInfo { index: 0, tag: "a".into(), text: "".into(), x: 0.0, y: 0.0, width: 10.0, height: 10.0, href: None, placeholder: None, backend_node_id: None, element_type: None, id: None, aria_label: None },
-            ElementInfo { index: 1, tag: "button".into(), text: "".into(), x: 0.0, y: 0.0, width: 10.0, height: 10.0, href: None, placeholder: None, backend_node_id: None, element_type: None, id: None, aria_label: None },
+            ElementInfo { index: 0, tag: "a".into(), text: "".into(), x: 0.0, y: 0.0, width: 10.0, height: 10.0, href: None, placeholder: None, backend_node_id: None, element_type: None, id: None, aria_label: None, ancestors: None, ax_role: None, ax_name: None },
+            ElementInfo { index: 1, tag: "button".into(), text: "".into(), x: 0.0, y: 0.0, width: 10.0, height: 10.0, href: None, placeholder: None, backend_node_id: None, element_type: None, id: None, aria_label: None, ancestors: None, ax_role: None, ax_name: None },
         ];
 
         // Simulate count mismatch: 2 elements but 3 backend ids would be a mismatch.
@@ -924,8 +1142,8 @@ mod tests {
     fn backend_ids_individual_failure_produces_none_not_zero() {
         // Simulates individual DescribeNode failures: should produce None, not Some(0)
         let mut elements = vec![
-            ElementInfo { index: 0, tag: "a".into(), text: "".into(), x: 0.0, y: 0.0, width: 10.0, height: 10.0, href: None, placeholder: None, backend_node_id: None, element_type: None, id: None, aria_label: None },
-            ElementInfo { index: 1, tag: "button".into(), text: "".into(), x: 0.0, y: 0.0, width: 10.0, height: 10.0, href: None, placeholder: None, backend_node_id: None, element_type: None, id: None, aria_label: None },
+            ElementInfo { index: 0, tag: "a".into(), text: "".into(), x: 0.0, y: 0.0, width: 10.0, height: 10.0, href: None, placeholder: None, backend_node_id: None, element_type: None, id: None, aria_label: None, ancestors: None, ax_role: None, ax_name: None },
+            ElementInfo { index: 1, tag: "button".into(), text: "".into(), x: 0.0, y: 0.0, width: 10.0, height: 10.0, href: None, placeholder: None, backend_node_id: None, element_type: None, id: None, aria_label: None, ancestors: None, ax_role: None, ax_name: None },
         ];
 
         // Simulate: first element resolved, second failed (None)
@@ -1042,6 +1260,9 @@ mod tests {
             element_type: Some("file".into()),
             id: Some("avatar-upload".into()),
             aria_label: Some("Upload avatar".into()),
+            ancestors: None,
+            ax_role: None,
+            ax_name: None,
         };
 
         let json = serde_json::to_string(&el).unwrap();
@@ -1066,6 +1287,9 @@ mod tests {
             element_type: None,
             id: None,
             aria_label: None,
+            ancestors: None,
+            ax_role: None,
+            ax_name: None,
         };
 
         let json = serde_json::to_string(&el).unwrap();

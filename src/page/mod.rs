@@ -125,6 +125,18 @@ pub struct ElementInfo {
     /// Element aria-label attribute (non-empty only).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub aria_label: Option<String>,
+    /// Ancestor path for tree display (up to 3 meaningful ancestors: tag+id/class).
+    /// Only populated when tree mode is requested.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ancestors: Option<Vec<String>>,
+    /// Accessibility role from AX tree (e.g. "button", "textbox", "link").
+    /// Only present when --ax flag is used with `bk info`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ax_role: Option<String>,
+    /// Accessible name from AX tree (what screen readers announce).
+    /// Only present when --ax flag is used with `bk info`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ax_name: Option<String>,
 }
 
 /// Viewport, scroll position, and document dimensions.

@@ -505,6 +505,9 @@ mod tests {
             element_type: None,
             id: None,
             aria_label: None,
+            ancestors: None,
+            ax_role: None,
+            ax_name: None,
         }];
         let el = get_element(&elements, 0).unwrap();
         assert_eq!(el.tag, "button");

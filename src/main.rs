@@ -307,7 +307,7 @@ pub enum Command {
 
     // ── Page State ────────────────────────────────────────────
     /// Get page info (elements + text + viewport)
-    #[command(about = "Get page info", long_about = "Get interactive elements, page text, and viewport info for the active tab.\n\nExamples:\n  bk info\n  bk info --no-text\n  bk info --screenshot")]
+    #[command(about = "Get page info", long_about = "Get interactive elements, page text, and viewport info for the active tab.\n\nExamples:\n  bk info\n  bk info --no-text\n  bk info --screenshot\n  bk info --tree\n  bk info --ax")]
     Info {
         /// Exclude page text from output
         #[arg(long)]
@@ -315,6 +315,12 @@ pub enum Command {
         /// Include viewport screenshot
         #[arg(long)]
         screenshot: bool,
+        /// Output elements in tree format (grouped by ancestors)
+        #[arg(long)]
+        tree: bool,
+        /// Include accessibility info (ax_role, ax_name) from the AX tree
+        #[arg(long)]
+        ax: bool,
     },
     /// Find elements by CSS selector
     #[command(about = "Find elements", long_about = "Query DOM for elements matching a CSS selector.\n\nExamples:\n  bk find \"a[href]\" --attributes href,class --include-text\n  bk find \".error\" --max 10\n  bk find \"input[type=text]\"")]
@@ -1200,9 +1206,9 @@ async fn dispatch(cli: &Cli, client: &mut DaemonClient) -> Result<(), String> {
         }
 
         // ── Page State (top-level) ────────────────────────
-        Command::Info { no_text, screenshot } => {
+        Command::Info { no_text, screenshot, tree, ax } => {
             let wid = resolve_workspace(&cli.workspace, client).await?;
-            let resp = send_cmd(client, "page.info", json!({"wid": wid, "no_text": no_text, "screenshot": screenshot})).await?;
+            let resp = send_cmd(client, "page.info", json!({"wid": wid, "no_text": no_text, "screenshot": screenshot, "tree": tree, "ax": ax})).await?;
             print_response(&resp, fmt);
         }
 

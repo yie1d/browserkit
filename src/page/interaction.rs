@@ -1406,6 +1406,9 @@ mod tests {
                 element_type: None,
                 id: None,
                 aria_label: None,
+                ancestors: None,
+                ax_role: None,
+                ax_name: None,
             },
             ElementInfo {
                 index: 1,
@@ -1421,6 +1424,9 @@ mod tests {
                 element_type: None,
                 id: None,
                 aria_label: None,
+                ancestors: None,
+                ax_role: None,
+                ax_name: None,
             },
         ];
 
@@ -1447,6 +1453,9 @@ mod tests {
             element_type: None,
             id: None,
             aria_label: None,
+            ancestors: None,
+            ax_role: None,
+            ax_name: None,
         }];
 
         let err = get_element(&elements, 5).unwrap_err();
@@ -1480,6 +1489,9 @@ mod tests {
             element_type: None,
             id: None,
             aria_label: None,
+            ancestors: None,
+            ax_role: None,
+            ax_name: None,
         };
         let (cx, cy) = element_center(&el);
         assert!((cx - 140.0).abs() < f64::EPSILON);
@@ -1502,6 +1514,9 @@ mod tests {
             element_type: None,
             id: None,
             aria_label: None,
+            ancestors: None,
+            ax_role: None,
+            ax_name: None,
         };
         let (cx, cy) = element_center(&el);
         assert!((cx - 5.0).abs() < f64::EPSILON);

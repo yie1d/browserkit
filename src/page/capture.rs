@@ -234,18 +234,76 @@ pub async fn get_html(
 
 /// Inject visual labels (index numbers) onto interactive elements before screenshot.
 ///
-/// Overlays a fixed-position `<div class="_bk_label">` on each interactive element
+/// Overlays a `<div class="_bk_label">` on each interactive element
 /// showing its index number. The labels are styled to be highly visible in screenshots.
 /// Uses the same selector and visibility filter as element discovery for consistent indexing.
-pub async fn inject_labels(cdp: &Arc<CDP>, session_id: &str) -> Result<(), BkError> {
+/// Recursively penetrates open shadow roots for Shadow DOM support.
+///
+/// When `full_page` is true, uses `position:absolute` with document-relative coordinates
+/// so labels remain correct in full-page captures. Otherwise uses `position:fixed` with
+/// viewport-relative coordinates for viewport screenshots.
+pub async fn inject_labels(cdp: &Arc<CDP>, session_id: &str, full_page: bool) -> Result<(), BkError> {
     let session = cdp.session(session_id);
 
-    let js = const_format::concatcp!(
-        r#"(() => {
+    let js = if full_page {
+        const_format::concatcp!(
+            r#"(() => {
     const selectors = '"#, INTERACTIVE_SELECTOR, r#"';
-    const elements = document.querySelectorAll(selectors);
+    function collectElements(root, sel, results) {
+        for (const el of root.querySelectorAll(sel)) {
+            results.push(el);
+        }
+        for (const el of root.querySelectorAll('*')) {
+            if (el.shadowRoot) {
+                collectElements(el.shadowRoot, sel, results);
+            }
+        }
+    }
+    const allEls = [];
+    collectElements(document, selectors, allEls);
     let index = 0;
-    for (const el of elements) {
+    for (const el of allEls) {
+        const rect = el.getBoundingClientRect();
+        const style = window.getComputedStyle(el);
+        if (
+            style.display === 'none' ||
+            style.visibility === 'hidden' ||
+            parseFloat(style.opacity) < 0.01 ||
+            rect.width === 0 ||
+            rect.height === 0
+        ) continue;
+        const scrollX = window.scrollX || document.documentElement.scrollLeft;
+        const scrollY = window.scrollY || document.documentElement.scrollTop;
+        const label = document.createElement('div');
+        label.className = '_bk_label';
+        label.textContent = String(index);
+        label.style.cssText = 'position:absolute;background:rgba(255,0,0,0.8);color:white;font-size:11px;z-index:99999;padding:1px 3px;pointer-events:none;border-radius:2px;line-height:1.2;font-family:monospace;';
+        label.style.left = (rect.x + scrollX) + 'px';
+        label.style.top = (rect.y + scrollY) + 'px';
+        document.body.appendChild(label);
+        index++;
+    }
+    return index;
+})()"#
+        )
+    } else {
+        const_format::concatcp!(
+            r#"(() => {
+    const selectors = '"#, INTERACTIVE_SELECTOR, r#"';
+    function collectElements(root, sel, results) {
+        for (const el of root.querySelectorAll(sel)) {
+            results.push(el);
+        }
+        for (const el of root.querySelectorAll('*')) {
+            if (el.shadowRoot) {
+                collectElements(el.shadowRoot, sel, results);
+            }
+        }
+    }
+    const allEls = [];
+    collectElements(document, selectors, allEls);
+    let index = 0;
+    for (const el of allEls) {
         const rect = el.getBoundingClientRect();
         const style = window.getComputedStyle(el);
         if (
@@ -266,7 +324,8 @@ pub async fn inject_labels(cdp: &Arc<CDP>, session_id: &str) -> Result<(), BkErr
     }
     return index;
 })()"#
-    );
+        )
+    };
 
     let resp = cdpkit::runtime::methods::Evaluate::new(js)
         .with_return_by_value(true)
@@ -345,16 +404,26 @@ mod tests {
         assert!(!js.contains("JSON.parse"), "should not use JSON.parse: {}", js);
     }
 
-    // ── inject_labels / remove_labels JS content tests ───────────────
+    // ── inject_labels JS content tests ───────────────
 
-    /// The inject_labels JS uses const_format::concatcp! in the real code;
-    /// here we replicate the same construction for test assertions.
-    const INJECT_LABELS_JS: &str = const_format::concatcp!(
+    /// The viewport (non-full-page) inject_labels JS.
+    const INJECT_LABELS_VIEWPORT_JS: &str = const_format::concatcp!(
         r#"(() => {
     const selectors = '"#, super::INTERACTIVE_SELECTOR, r#"';
-    const elements = document.querySelectorAll(selectors);
+    function collectElements(root, sel, results) {
+        for (const el of root.querySelectorAll(sel)) {
+            results.push(el);
+        }
+        for (const el of root.querySelectorAll('*')) {
+            if (el.shadowRoot) {
+                collectElements(el.shadowRoot, sel, results);
+            }
+        }
+    }
+    const allEls = [];
+    collectElements(document, selectors, allEls);
     let index = 0;
-    for (const el of elements) {
+    for (const el of allEls) {
         const rect = el.getBoundingClientRect();
         const style = window.getComputedStyle(el);
         if (
@@ -377,6 +446,48 @@ mod tests {
 })()"#
     );
 
+    /// The full-page inject_labels JS (uses absolute positioning).
+    const INJECT_LABELS_FULLPAGE_JS: &str = const_format::concatcp!(
+        r#"(() => {
+    const selectors = '"#, super::INTERACTIVE_SELECTOR, r#"';
+    function collectElements(root, sel, results) {
+        for (const el of root.querySelectorAll(sel)) {
+            results.push(el);
+        }
+        for (const el of root.querySelectorAll('*')) {
+            if (el.shadowRoot) {
+                collectElements(el.shadowRoot, sel, results);
+            }
+        }
+    }
+    const allEls = [];
+    collectElements(document, selectors, allEls);
+    let index = 0;
+    for (const el of allEls) {
+        const rect = el.getBoundingClientRect();
+        const style = window.getComputedStyle(el);
+        if (
+            style.display === 'none' ||
+            style.visibility === 'hidden' ||
+            parseFloat(style.opacity) < 0.01 ||
+            rect.width === 0 ||
+            rect.height === 0
+        ) continue;
+        const scrollX = window.scrollX || document.documentElement.scrollLeft;
+        const scrollY = window.scrollY || document.documentElement.scrollTop;
+        const label = document.createElement('div');
+        label.className = '_bk_label';
+        label.textContent = String(index);
+        label.style.cssText = 'position:absolute;background:rgba(255,0,0,0.8);color:white;font-size:11px;z-index:99999;padding:1px 3px;pointer-events:none;border-radius:2px;line-height:1.2;font-family:monospace;';
+        label.style.left = (rect.x + scrollX) + 'px';
+        label.style.top = (rect.y + scrollY) + 'px';
+        document.body.appendChild(label);
+        index++;
+    }
+    return index;
+})()"#
+    );
+
     /// The remove_labels JS snippet.
     const REMOVE_LABELS_JS: &str = r#"(() => {
     const labels = document.querySelectorAll('._bk_label');
@@ -385,54 +496,70 @@ mod tests {
 })()"#;
 
     #[test]
-    fn inject_labels_js_uses_bk_label_class() {
-        assert!(INJECT_LABELS_JS.contains("_bk_label"), "should use _bk_label class marker");
+    fn inject_labels_viewport_js_uses_bk_label_class() {
+        assert!(INJECT_LABELS_VIEWPORT_JS.contains("_bk_label"), "should use _bk_label class marker");
     }
 
     #[test]
-    fn inject_labels_js_creates_div_element() {
-        assert!(INJECT_LABELS_JS.contains("createElement('div')"), "should create div elements for labels");
+    fn inject_labels_viewport_js_uses_fixed_positioning() {
+        assert!(INJECT_LABELS_VIEWPORT_JS.contains("position:fixed"), "viewport labels should use fixed positioning");
     }
 
     #[test]
-    fn inject_labels_js_uses_fixed_positioning() {
-        assert!(INJECT_LABELS_JS.contains("position:fixed"), "labels should use fixed positioning");
+    fn inject_labels_fullpage_js_uses_absolute_positioning() {
+        assert!(INJECT_LABELS_FULLPAGE_JS.contains("position:absolute"), "full-page labels should use absolute positioning");
     }
 
     #[test]
-    fn inject_labels_js_has_high_z_index() {
-        assert!(INJECT_LABELS_JS.contains("z-index:99999"), "labels should have high z-index to appear on top");
+    fn inject_labels_fullpage_js_adds_scroll_offset() {
+        assert!(INJECT_LABELS_FULLPAGE_JS.contains("rect.x + scrollX"), "full-page should add scrollX");
+        assert!(INJECT_LABELS_FULLPAGE_JS.contains("rect.y + scrollY"), "full-page should add scrollY");
     }
 
     #[test]
-    fn inject_labels_js_disables_pointer_events() {
-        assert!(INJECT_LABELS_JS.contains("pointer-events:none"), "labels should not intercept clicks");
+    fn inject_labels_viewport_js_creates_div_element() {
+        assert!(INJECT_LABELS_VIEWPORT_JS.contains("createElement('div')"), "should create div elements for labels");
     }
 
     #[test]
-    fn inject_labels_js_filters_invisible_elements() {
-        assert!(INJECT_LABELS_JS.contains("style.display === 'none'"), "should skip display:none elements");
-        assert!(INJECT_LABELS_JS.contains("style.visibility === 'hidden'"), "should skip visibility:hidden elements");
-        assert!(INJECT_LABELS_JS.contains("parseFloat(style.opacity) < 0.01"), "should skip near-zero opacity elements");
-        assert!(INJECT_LABELS_JS.contains("rect.width === 0"), "should skip zero-width elements");
-        assert!(INJECT_LABELS_JS.contains("rect.height === 0"), "should skip zero-height elements");
+    fn inject_labels_viewport_js_has_high_z_index() {
+        assert!(INJECT_LABELS_VIEWPORT_JS.contains("z-index:99999"), "labels should have high z-index to appear on top");
     }
 
     #[test]
-    fn inject_labels_js_uses_same_selectors_as_discover() {
-        // Must match the element discovery selectors to keep indices consistent
-        assert!(INJECT_LABELS_JS.contains(super::INTERACTIVE_SELECTOR), "should use shared INTERACTIVE_SELECTOR");
+    fn inject_labels_viewport_js_disables_pointer_events() {
+        assert!(INJECT_LABELS_VIEWPORT_JS.contains("pointer-events:none"), "labels should not intercept clicks");
     }
 
     #[test]
-    fn inject_labels_js_positions_at_element_coordinates() {
-        assert!(INJECT_LABELS_JS.contains("rect.x + 'px'"), "should position left at element x");
-        assert!(INJECT_LABELS_JS.contains("rect.y + 'px'"), "should position top at element y");
+    fn inject_labels_viewport_js_filters_invisible_elements() {
+        assert!(INJECT_LABELS_VIEWPORT_JS.contains("style.display === 'none'"), "should skip display:none elements");
+        assert!(INJECT_LABELS_VIEWPORT_JS.contains("style.visibility === 'hidden'"), "should skip visibility:hidden elements");
+        assert!(INJECT_LABELS_VIEWPORT_JS.contains("parseFloat(style.opacity) < 0.01"), "should skip near-zero opacity elements");
+        assert!(INJECT_LABELS_VIEWPORT_JS.contains("rect.width === 0"), "should skip zero-width elements");
+        assert!(INJECT_LABELS_VIEWPORT_JS.contains("rect.height === 0"), "should skip zero-height elements");
     }
 
     #[test]
-    fn inject_labels_js_returns_count() {
-        assert!(INJECT_LABELS_JS.contains("return index"), "should return the number of labels injected");
+    fn inject_labels_viewport_js_uses_same_selectors_as_discover() {
+        assert!(INJECT_LABELS_VIEWPORT_JS.contains(super::INTERACTIVE_SELECTOR), "should use shared INTERACTIVE_SELECTOR");
+    }
+
+    #[test]
+    fn inject_labels_viewport_js_positions_at_element_coordinates() {
+        assert!(INJECT_LABELS_VIEWPORT_JS.contains("rect.x + 'px'"), "should position left at element x");
+        assert!(INJECT_LABELS_VIEWPORT_JS.contains("rect.y + 'px'"), "should position top at element y");
+    }
+
+    #[test]
+    fn inject_labels_viewport_js_returns_count() {
+        assert!(INJECT_LABELS_VIEWPORT_JS.contains("return index"), "should return the number of labels injected");
+    }
+
+    #[test]
+    fn inject_labels_js_penetrates_shadow_dom() {
+        assert!(INJECT_LABELS_VIEWPORT_JS.contains("el.shadowRoot"), "viewport should recurse into shadow roots");
+        assert!(INJECT_LABELS_FULLPAGE_JS.contains("el.shadowRoot"), "full-page should recurse into shadow roots");
     }
 
     #[test]
@@ -452,9 +579,8 @@ mod tests {
 
     #[test]
     fn inject_and_remove_labels_use_matching_class_name() {
-        // The class used in inject must exactly match what remove queries for
         let inject_class = "_bk_label";
-        assert!(INJECT_LABELS_JS.contains(&format!("className = '{}'", inject_class)));
+        assert!(INJECT_LABELS_VIEWPORT_JS.contains(&format!("className = '{}'", inject_class)));
         assert!(REMOVE_LABELS_JS.contains(&format!("querySelectorAll('.{}')", inject_class)));
     }
 }
