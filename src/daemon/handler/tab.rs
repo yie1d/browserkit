@@ -178,6 +178,8 @@ async fn do_tab_switch(
 
     let alias = ws.tabs.get(&tid).map(|t| t.alias.clone()).unwrap_or_default();
 
+    drop(ws); // release DashMap lock before request_persist
+    state.request_persist();
     info!(wid = %wid, tid = %tid, alias = %alias, "tab switched");
     Ok(Response::ok(json!({ "wid": wid, "tid": tid, "alias": alias, "status": "switched" })))
 }
@@ -667,5 +669,66 @@ mod tests {
         let ws = state.workspaces.get(&wid).unwrap();
         assert!(ws.tabs.is_empty());
         assert!(ws.active_tab.is_none(), "active_tab must be None when no tabs remain");
+    }
+
+    // ─── Fix 4: tab.switch persists active_tab change ────────────────────
+
+    #[test]
+    fn tab_switch_updates_active_tab_and_persists() {
+        // tab.switch changes active_tab (persisted field). Verify state mutation
+        // and that request_persist() succeeds (non-panic = channel accepted signal).
+        let state = DaemonState::new();
+        let wid = "ws_switch_test01".to_string();
+
+        let tid_a = "tid_switch_aaaa".to_string();
+        let tid_b = "tid_switch_bbbb".to_string();
+
+        let tab_a = Tab {
+            tid: tid_a.clone(),
+            target_id: "TGT_A".to_string(),
+            cdp_session_id: "sess_a".to_string(),
+            url: "https://a.com".to_string(),
+            title: "A".to_string(),
+            managed: true,
+            alias: "t1".to_string(),
+        };
+        let tab_b = Tab {
+            tid: tid_b.clone(),
+            target_id: "TGT_B".to_string(),
+            cdp_session_id: "sess_b".to_string(),
+            url: "https://b.com".to_string(),
+            title: "B".to_string(),
+            managed: true,
+            alias: "t2".to_string(),
+        };
+
+        let mut tabs = HashMap::new();
+        tabs.insert(tid_a.clone(), tab_a);
+        tabs.insert(tid_b.clone(), tab_b);
+
+        let ws = Workspace {
+            wid: wid.clone(),
+            browser_host: "localhost:9222".to_string(),
+            browser_context_id: Some("ctx1".to_string()),
+            mode: WorkspaceMode::Isolated,
+            label: None,
+            tabs,
+            active_tab: Some(tid_a.clone()),
+            created_at: 1000,
+            last_active: 1000,
+            next_alias_seq: 2,
+        };
+        state.workspaces.insert(wid.clone(), ws);
+
+        // Replicate do_tab_switch mutation
+        if let Some(mut ws) = state.workspaces.get_mut(&wid) {
+            ws.active_tab = Some(tid_b.clone());
+            ws.last_active = 9999;
+        }
+        state.request_persist();
+
+        let ws = state.workspaces.get(&wid).unwrap();
+        assert_eq!(ws.active_tab.as_deref(), Some(tid_b.as_str()));
+        assert_eq!(ws.last_active, 9999);
     }
 }

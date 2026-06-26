@@ -30,6 +30,7 @@ async fn do_goto(req: &Request, state: &Arc<DaemonState>) -> Result<Response, Bk
         ws.last_active = now_ts();
     }
 
+    state.request_persist();
     info!(wid = %ctx.wid, tid = %ctx.tid, url = %url, "navigated");
     Ok(Response::ok(json!({ "wid": ctx.wid, "tid": ctx.tid, "url": nav_url })))
 }

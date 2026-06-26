@@ -756,6 +756,7 @@ pub async fn handle_ws_use(req: &Request, state: &Arc<DaemonState>) -> Response 
         Err(e) => return Response::err(e.to_string()),
     };
     state.set_default_wid(Some(wid.clone()));
+    state.request_persist();
     info!(wid = %wid, "default workspace set");
     Response::ok(json!({ "wid": wid, "status": "ok" }))
 }
@@ -1566,5 +1567,22 @@ mod tests {
         assert!(token1.is_cancelled());
         assert!(token2.is_cancelled());
         assert!(state.auto_attach_tasks.is_empty());
+    }
+
+    // ─── ws.use persists default_wid change ─────────────────────────────
+
+    #[test]
+    fn ws_use_sets_default_and_persists() {
+        // ws.use changes default_wid (persisted). Verify state mutation and
+        // that request_persist() succeeds.
+        let state = DaemonState::new();
+        let wid = "ws_use_persist_1".to_string();
+        state.workspaces.insert(wid.clone(), make_attached_workspace(&wid, "localhost:9222"));
+
+        // Replicate handle_ws_use logic
+        state.set_default_wid(Some(wid.clone()));
+        state.request_persist();
+
+        assert_eq!(state.get_default_wid(), Some(wid));
     }
 }

@@ -47,6 +47,7 @@ async fn do_network_har(req: &Request, state: &Arc<DaemonState>) -> Result<Respo
         ws.last_active = now_ts();
     }
 
+    state.request_persist();
     info!(wid = %ctx.wid, url = %url, "HAR navigation completed (stub: entry collection not implemented)");
 
     Ok(Response::ok(json!({

@@ -396,6 +396,8 @@ pub enum WsAction {
         /// Workspace ID
         wid: String,
     },
+    /// Show current default workspace
+    Default,
 }
 
 #[derive(Subcommand)]
@@ -867,6 +869,10 @@ async fn dispatch(cli: &Cli, client: &mut DaemonClient) -> Result<(), String> {
             }
             WsAction::Use { wid } => {
                 let resp = send_cmd(client, "ws.use", json!({"wid": wid})).await?;
+                print_response(&resp, fmt);
+            }
+            WsAction::Default => {
+                let resp = send_cmd(client, "ws.default", json!({})).await?;
                 print_response(&resp, fmt);
             }
         },
