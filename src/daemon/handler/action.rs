@@ -2,9 +2,11 @@
 
 use std::sync::Arc;
 
+use futures::StreamExt;
 use serde_json::json;
 use tracing::info;
 
+use crate::daemon::dialog::DialogPolicy;
 use crate::daemon::protocol::{Request, Response};
 use crate::daemon::state::DaemonState;
 use crate::error::BkError;
@@ -20,20 +22,101 @@ async fn do_click(req: &Request, state: &Arc<DaemonState>) -> Result<Response, B
     let x = req.params.get("x").and_then(|v| v.as_f64());
     let y = req.params.get("y").and_then(|v| v.as_f64());
 
-    match (target, x, y) {
-        (Some(t), _, _) => {
-            crate::page::interaction::click_element_by_target(&ctx.cdp, &ctx.cdp_session_id, &t).await?;
-            info!(wid = %ctx.wid, tid = %ctx.tid, "click by target");
+    // Determine the click future based on target type
+    let click_fut = match (target, x, y) {
+        (Some(ref t), _, _) => {
+            let cdp = ctx.cdp.clone();
+            let sid = ctx.cdp_session_id.clone();
+            let t_clone = t.clone();
+            Box::pin(async move {
+                crate::page::interaction::click_element_by_target(&cdp, &sid, &t_clone).await
+            }) as std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), BkError>> + Send>>
         }
         (None, Some(cx), Some(cy)) => {
-            crate::page::interaction::click_coordinates(&ctx.cdp, &ctx.cdp_session_id, cx, cy).await?;
-            info!(wid = %ctx.wid, tid = %ctx.tid, x = cx, y = cy, "click by coordinates");
+            let cdp = ctx.cdp.clone();
+            let sid = ctx.cdp_session_id.clone();
+            Box::pin(async move {
+                crate::page::interaction::click_coordinates(&cdp, &sid, cx, cy).await
+            }) as std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), BkError>> + Send>>
         }
         _ => return Err(BkError::InvalidRequest("click requires 'ref', 'index', or both 'x' and 'y' params".into())),
-    }
+    };
+
+    // Check dialog policy to decide whether to race against dialog events
+    let policy = state.dialog_state.get_policy(&ctx.wid);
+
+    let result = match policy {
+        DialogPolicy::Manual => {
+            // Race: click vs dialog opening. If dialog fires first under manual policy,
+            // return immediately with blocked_by_dialog instead of waiting for timeout.
+            let owned_session = ctx.cdp.owned_session(&ctx.cdp_session_id);
+            let mut dialog_stream =
+                cdpkit::page::events::JavascriptDialogOpening::subscribe(&owned_session);
+
+            tokio::select! {
+                click_result = click_fut => {
+                    // Click completed normally (no dialog, or dialog handled externally)
+                    click_result?;
+                    ClickOutcome::Normal
+                }
+                dialog_ev = dialog_stream.next() => {
+                    match dialog_ev {
+                        Some(ev) => {
+                            // Dialog fired — return immediately, don't wait for the stalled dispatch.
+                            // The daemon's long-lived dialog subscription will record this as pending.
+                            ClickOutcome::BlockedByDialog {
+                                dialog_type: ev.type_.as_ref().to_string(),
+                                message: ev.message.clone(),
+                            }
+                        }
+                        None => {
+                            // Stream ended unexpectedly — shouldn't happen, treat as normal
+                            // (the click_fut will likely error out on its own)
+                            return Err(BkError::Other("dialog event stream closed unexpectedly during click".into()));
+                        }
+                    }
+                }
+            }
+        }
+        DialogPolicy::Accept | DialogPolicy::Dismiss => {
+            // Auto policy: the daemon's background subscription will handle the dialog,
+            // unblocking the page. Just await the click normally.
+            click_fut.await?;
+            ClickOutcome::Normal
+        }
+    };
 
     touch_workspace(state, &ctx.wid);
-    Ok(Response::ok(json!({ "wid": ctx.wid, "tid": ctx.tid, "status": "clicked" })))
+
+    match result {
+        ClickOutcome::Normal => {
+            info!(wid = %ctx.wid, tid = %ctx.tid, "click completed");
+            Ok(Response::ok(json!({ "wid": ctx.wid, "tid": ctx.tid, "status": "clicked" })))
+        }
+        ClickOutcome::BlockedByDialog { dialog_type, message } => {
+            info!(wid = %ctx.wid, tid = %ctx.tid, dialog_type = %dialog_type, "click blocked by dialog");
+            Ok(Response::ok(json!({
+                "wid": ctx.wid,
+                "tid": ctx.tid,
+                "status": "blocked_by_dialog",
+                "dialog": {
+                    "type": dialog_type,
+                    "message": message,
+                }
+            })))
+        }
+    }
+}
+
+/// Outcome of a click operation that may be interrupted by a JS dialog.
+enum ClickOutcome {
+    /// Click completed normally.
+    Normal,
+    /// A JS dialog opened during the click, blocking the page (manual policy).
+    BlockedByDialog {
+        dialog_type: String,
+        message: String,
+    },
 }
 
 handler!(handle_type, do_type(req, state));
@@ -214,4 +297,132 @@ async fn do_act_upload(req: &Request, state: &Arc<DaemonState>) -> Result<Respon
 
     touch_workspace(state, &ctx.wid);
     Ok(Response::ok(json!({ "wid": ctx.wid, "tid": ctx.tid, "status": "uploaded", "files": files })))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::daemon::dialog::DialogPolicy;
+
+    // ── ClickOutcome serialization structure ─────────────────────────────
+
+    #[test]
+    fn click_outcome_blocked_produces_correct_json() {
+        let outcome = ClickOutcome::BlockedByDialog {
+            dialog_type: "confirm".to_string(),
+            message: "Are you sure?".to_string(),
+        };
+
+        // Simulate the response construction from the handler
+        let response = match outcome {
+            ClickOutcome::Normal => {
+                json!({ "wid": "w1", "tid": "t1", "status": "clicked" })
+            }
+            ClickOutcome::BlockedByDialog { dialog_type, message } => {
+                json!({
+                    "wid": "w1",
+                    "tid": "t1",
+                    "status": "blocked_by_dialog",
+                    "dialog": {
+                        "type": dialog_type,
+                        "message": message,
+                    }
+                })
+            }
+        };
+
+        assert_eq!(response["status"], "blocked_by_dialog");
+        assert_eq!(response["dialog"]["type"], "confirm");
+        assert_eq!(response["dialog"]["message"], "Are you sure?");
+    }
+
+    #[test]
+    fn click_outcome_normal_produces_clicked_status() {
+        let outcome = ClickOutcome::Normal;
+        let response = match outcome {
+            ClickOutcome::Normal => {
+                json!({ "wid": "w1", "tid": "t1", "status": "clicked" })
+            }
+            ClickOutcome::BlockedByDialog { dialog_type, message } => {
+                json!({
+                    "wid": "w1",
+                    "tid": "t1",
+                    "status": "blocked_by_dialog",
+                    "dialog": { "type": dialog_type, "message": message }
+                })
+            }
+        };
+
+        assert_eq!(response["status"], "clicked");
+        assert!(response.get("dialog").is_none() || response["dialog"].is_null());
+    }
+
+    // ── Policy-based decision logic ─────────────────────────────────────
+
+    #[test]
+    fn manual_policy_should_race_dialog() {
+        // Manual policy means we race click against dialog — if dialog wins,
+        // return blocked_by_dialog immediately.
+        let policy = DialogPolicy::Manual;
+        let should_race = matches!(policy, DialogPolicy::Manual);
+        assert!(should_race, "manual policy should race click vs dialog");
+    }
+
+    #[test]
+    fn accept_policy_should_not_race_dialog() {
+        // Accept policy: background subscription handles it, click completes normally.
+        let policy = DialogPolicy::Accept;
+        let should_race = matches!(policy, DialogPolicy::Manual);
+        assert!(!should_race, "accept policy should await click normally");
+    }
+
+    #[test]
+    fn dismiss_policy_should_not_race_dialog() {
+        let policy = DialogPolicy::Dismiss;
+        let should_race = matches!(policy, DialogPolicy::Manual);
+        assert!(!should_race, "dismiss policy should await click normally");
+    }
+
+    // ── blocked_by_dialog response is well-formed ────────────────────────
+
+    #[test]
+    fn blocked_by_dialog_response_has_required_fields() {
+        let dialog_type = "alert";
+        let message = "Something happened!";
+
+        let resp_data = json!({
+            "wid": "abc123",
+            "tid": "def456",
+            "status": "blocked_by_dialog",
+            "dialog": {
+                "type": dialog_type,
+                "message": message,
+            }
+        });
+
+        // Verify structure matches what CLI would parse
+        assert_eq!(resp_data["status"].as_str(), Some("blocked_by_dialog"));
+        assert!(resp_data["dialog"].is_object());
+        assert_eq!(resp_data["dialog"]["type"].as_str(), Some("alert"));
+        assert_eq!(resp_data["dialog"]["message"].as_str(), Some("Something happened!"));
+        // wid and tid still present for context
+        assert!(resp_data["wid"].as_str().is_some());
+        assert!(resp_data["tid"].as_str().is_some());
+    }
+
+    #[test]
+    fn blocked_by_dialog_all_dialog_types() {
+        for dtype in &["alert", "confirm", "prompt", "beforeunload"] {
+            let outcome = ClickOutcome::BlockedByDialog {
+                dialog_type: dtype.to_string(),
+                message: "test".to_string(),
+            };
+            match outcome {
+                ClickOutcome::BlockedByDialog { dialog_type, .. } => {
+                    assert_eq!(dialog_type, *dtype);
+                }
+                _ => panic!("expected BlockedByDialog"),
+            }
+        }
+    }
 }

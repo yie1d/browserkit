@@ -422,6 +422,9 @@ mod tests {
             href: None,
             placeholder: None,
             backend_node_id: Some(123),
+            element_type: None,
+            id: None,
+            aria_label: None,
         }];
         let el = get_element(&elements, 0).unwrap();
         assert_eq!(el.tag, "button");

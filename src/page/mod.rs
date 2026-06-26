@@ -77,6 +77,16 @@ pub struct ElementInfo {
     /// Use with `--ref` on action commands for DOM-change-resilient addressing.
     #[serde(rename = "ref", default, skip_serializing_if = "Option::is_none")]
     pub backend_node_id: Option<i64>,
+    /// Input type attribute (e.g. "checkbox", "file", "text", "password").
+    /// Only present for input elements or elements with a meaningful type.
+    #[serde(rename = "type", default, skip_serializing_if = "Option::is_none")]
+    pub element_type: Option<String>,
+    /// Element id attribute (non-empty only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    /// Element aria-label attribute (non-empty only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub aria_label: Option<String>,
 }
 
 /// Viewport, scroll position, and document dimensions.

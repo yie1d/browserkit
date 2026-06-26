@@ -24,9 +24,10 @@ const DISCOVER_ELEMENTS_JS: &str = r#"(() => {
     for (const el of elements) {
         const rect = el.getBoundingClientRect();
         if (rect.width === 0 || rect.height === 0) continue;
-        result.push({
+        const tag = el.tagName.toLowerCase();
+        const entry = {
             index: index++,
-            tag: el.tagName.toLowerCase(),
+            tag: tag,
             text: (el.textContent || '').trim().substring(0, 100),
             x: rect.x,
             y: rect.y,
@@ -34,7 +35,15 @@ const DISCOVER_ELEMENTS_JS: &str = r#"(() => {
             height: rect.height,
             href: el.href || null,
             placeholder: el.placeholder || null,
-        });
+        };
+        if (tag === 'input' || tag === 'select' || tag === 'textarea') {
+            const t = (el.type || '').toLowerCase();
+            if (t) entry.type = t;
+        }
+        if (el.id) entry.id = el.id;
+        const ariaLabel = el.getAttribute('aria-label');
+        if (ariaLabel) entry.aria_label = ariaLabel;
+        result.push(entry);
     }
     return JSON.stringify(result);
 })()"#;
@@ -151,9 +160,10 @@ const FULL_PAGE_STATE_JS: &str = r#"(() => {
     for (const el of allEls) {
         const rect = el.getBoundingClientRect();
         if (rect.width === 0 || rect.height === 0) continue;
-        elements.push({
+        const tag = el.tagName.toLowerCase();
+        const entry = {
             index: index++,
-            tag: el.tagName.toLowerCase(),
+            tag: tag,
             text: (el.textContent || '').trim().substring(0, 100),
             x: rect.x,
             y: rect.y,
@@ -161,7 +171,15 @@ const FULL_PAGE_STATE_JS: &str = r#"(() => {
             height: rect.height,
             href: el.href || null,
             placeholder: el.placeholder || null,
-        });
+        };
+        if (tag === 'input' || tag === 'select' || tag === 'textarea') {
+            const t = (el.type || '').toLowerCase();
+            if (t) entry.type = t;
+        }
+        if (el.id) entry.id = el.id;
+        const ariaLabel = el.getAttribute('aria-label');
+        if (ariaLabel) entry.aria_label = ariaLabel;
+        elements.push(entry);
     }
     const MAX_TEXT = 2000;
     const rawText = (document.body && document.body.innerText) || '';
@@ -692,6 +710,9 @@ mod tests {
             href: None,
             placeholder: None,
             backend_node_id: Some(123),
+            element_type: None,
+            id: None,
+            aria_label: None,
         };
 
         let json = serde_json::to_string(&el).unwrap();
@@ -711,6 +732,9 @@ mod tests {
             href: None,
             placeholder: None,
             backend_node_id: None,
+            element_type: None,
+            id: None,
+            aria_label: None,
         };
 
         let json = serde_json::to_string(&el).unwrap();
@@ -724,8 +748,8 @@ mod tests {
         // Simulates the merge behavior when phase-2 returns a different count
         // (the actual get_backend_node_ids returns Vec<Option<i64>>)
         let mut elements = vec![
-            ElementInfo { index: 0, tag: "a".into(), text: "".into(), x: 0.0, y: 0.0, width: 10.0, height: 10.0, href: None, placeholder: None, backend_node_id: None },
-            ElementInfo { index: 1, tag: "button".into(), text: "".into(), x: 0.0, y: 0.0, width: 10.0, height: 10.0, href: None, placeholder: None, backend_node_id: None },
+            ElementInfo { index: 0, tag: "a".into(), text: "".into(), x: 0.0, y: 0.0, width: 10.0, height: 10.0, href: None, placeholder: None, backend_node_id: None, element_type: None, id: None, aria_label: None },
+            ElementInfo { index: 1, tag: "button".into(), text: "".into(), x: 0.0, y: 0.0, width: 10.0, height: 10.0, href: None, placeholder: None, backend_node_id: None, element_type: None, id: None, aria_label: None },
         ];
 
         // Simulate count mismatch: 2 elements but 3 backend ids would be a mismatch.
@@ -747,8 +771,8 @@ mod tests {
     fn backend_ids_individual_failure_produces_none_not_zero() {
         // Simulates individual DescribeNode failures: should produce None, not Some(0)
         let mut elements = vec![
-            ElementInfo { index: 0, tag: "a".into(), text: "".into(), x: 0.0, y: 0.0, width: 10.0, height: 10.0, href: None, placeholder: None, backend_node_id: None },
-            ElementInfo { index: 1, tag: "button".into(), text: "".into(), x: 0.0, y: 0.0, width: 10.0, height: 10.0, href: None, placeholder: None, backend_node_id: None },
+            ElementInfo { index: 0, tag: "a".into(), text: "".into(), x: 0.0, y: 0.0, width: 10.0, height: 10.0, href: None, placeholder: None, backend_node_id: None, element_type: None, id: None, aria_label: None },
+            ElementInfo { index: 1, tag: "button".into(), text: "".into(), x: 0.0, y: 0.0, width: 10.0, height: 10.0, href: None, placeholder: None, backend_node_id: None, element_type: None, id: None, aria_label: None },
         ];
 
         // Simulate: first element resolved, second failed (None)
@@ -760,5 +784,165 @@ mod tests {
 
         assert_eq!(elements[0].backend_node_id, Some(42));
         assert_eq!(elements[1].backend_node_id, None); // Not Some(0)!
+    }
+
+    // ── type / id / aria_label field tests ────────────────────────────────
+
+    #[test]
+    fn element_info_with_type_id_aria_label_deserializes() {
+        let json_str = r#"[
+            {
+                "index": 0,
+                "tag": "input",
+                "text": "",
+                "x": 10.0,
+                "y": 20.0,
+                "width": 200.0,
+                "height": 30.0,
+                "href": null,
+                "placeholder": "email",
+                "type": "email",
+                "id": "user-email",
+                "aria_label": "Email address"
+            },
+            {
+                "index": 1,
+                "tag": "input",
+                "text": "",
+                "x": 10.0,
+                "y": 60.0,
+                "width": 20.0,
+                "height": 20.0,
+                "href": null,
+                "placeholder": null,
+                "type": "checkbox",
+                "id": "agree-tos"
+            },
+            {
+                "index": 2,
+                "tag": "button",
+                "text": "Submit",
+                "x": 10.0,
+                "y": 100.0,
+                "width": 80.0,
+                "height": 30.0,
+                "href": null,
+                "placeholder": null,
+                "aria_label": "Submit form"
+            }
+        ]"#;
+
+        let elements: Vec<ElementInfo> = serde_json::from_str(json_str).unwrap();
+        assert_eq!(elements.len(), 3);
+
+        // First: has all three new fields
+        assert_eq!(elements[0].element_type.as_deref(), Some("email"));
+        assert_eq!(elements[0].id.as_deref(), Some("user-email"));
+        assert_eq!(elements[0].aria_label.as_deref(), Some("Email address"));
+
+        // Second: has type + id, no aria_label
+        assert_eq!(elements[1].element_type.as_deref(), Some("checkbox"));
+        assert_eq!(elements[1].id.as_deref(), Some("agree-tos"));
+        assert!(elements[1].aria_label.is_none());
+
+        // Third: button with only aria_label (no type, no id)
+        assert!(elements[2].element_type.is_none());
+        assert!(elements[2].id.is_none());
+        assert_eq!(elements[2].aria_label.as_deref(), Some("Submit form"));
+    }
+
+    #[test]
+    fn element_info_without_new_fields_still_deserializes() {
+        // Backward compat: old JSON without type/id/aria_label still works
+        let json_str = r#"[{
+            "index": 0,
+            "tag": "input",
+            "text": "",
+            "x": 0,
+            "y": 0,
+            "width": 200,
+            "height": 30,
+            "href": null,
+            "placeholder": "Name"
+        }]"#;
+
+        let elements: Vec<ElementInfo> = serde_json::from_str(json_str).unwrap();
+        assert_eq!(elements.len(), 1);
+        assert!(elements[0].element_type.is_none());
+        assert!(elements[0].id.is_none());
+        assert!(elements[0].aria_label.is_none());
+    }
+
+    #[test]
+    fn element_info_serializes_new_fields_when_present() {
+        let el = ElementInfo {
+            index: 0,
+            tag: "input".into(),
+            text: "".into(),
+            x: 0.0,
+            y: 0.0,
+            width: 200.0,
+            height: 30.0,
+            href: None,
+            placeholder: None,
+            backend_node_id: None,
+            element_type: Some("file".into()),
+            id: Some("avatar-upload".into()),
+            aria_label: Some("Upload avatar".into()),
+        };
+
+        let json = serde_json::to_string(&el).unwrap();
+        assert!(json.contains(r#""type":"file""#), "should serialize type: {}", json);
+        assert!(json.contains(r#""id":"avatar-upload""#), "should serialize id: {}", json);
+        assert!(json.contains(r#""aria_label":"Upload avatar""#), "should serialize aria_label: {}", json);
+    }
+
+    #[test]
+    fn element_info_skips_new_fields_when_none() {
+        let el = ElementInfo {
+            index: 0,
+            tag: "button".into(),
+            text: "Ok".into(),
+            x: 0.0,
+            y: 0.0,
+            width: 80.0,
+            height: 30.0,
+            href: None,
+            placeholder: None,
+            backend_node_id: None,
+            element_type: None,
+            id: None,
+            aria_label: None,
+        };
+
+        let json = serde_json::to_string(&el).unwrap();
+        assert!(!json.contains("\"type\""), "should not serialize type when None: {}", json);
+        assert!(!json.contains("\"id\""), "should not serialize id when None: {}", json);
+        assert!(!json.contains("aria_label"), "should not serialize aria_label when None: {}", json);
+    }
+
+    #[test]
+    fn discover_js_includes_type_for_inputs() {
+        // Verify the JS snippet includes type extraction logic
+        assert!(DISCOVER_ELEMENTS_JS.contains("entry.type = t"), "should set type for input/select/textarea");
+        assert!(DISCOVER_ELEMENTS_JS.contains("el.type"), "should read el.type");
+    }
+
+    #[test]
+    fn discover_js_includes_id_extraction() {
+        assert!(DISCOVER_ELEMENTS_JS.contains("entry.id = el.id"), "should set id");
+    }
+
+    #[test]
+    fn discover_js_includes_aria_label_extraction() {
+        assert!(DISCOVER_ELEMENTS_JS.contains("getAttribute('aria-label')"), "should read aria-label attribute");
+        assert!(DISCOVER_ELEMENTS_JS.contains("entry.aria_label = ariaLabel"), "should set aria_label");
+    }
+
+    #[test]
+    fn full_page_state_js_includes_type_id_aria_label() {
+        assert!(FULL_PAGE_STATE_JS.contains("entry.type = t"), "full state JS should set type");
+        assert!(FULL_PAGE_STATE_JS.contains("entry.id = el.id"), "full state JS should set id");
+        assert!(FULL_PAGE_STATE_JS.contains("entry.aria_label = ariaLabel"), "full state JS should set aria_label");
     }
 }

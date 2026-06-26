@@ -1358,6 +1358,9 @@ mod tests {
                 href: None,
                 placeholder: None,
                 backend_node_id: None,
+                element_type: None,
+                id: None,
+                aria_label: None,
             },
             ElementInfo {
                 index: 1,
@@ -1370,6 +1373,9 @@ mod tests {
                 href: None,
                 placeholder: Some("Name".into()),
                 backend_node_id: None,
+                element_type: None,
+                id: None,
+                aria_label: None,
             },
         ];
 
@@ -1393,6 +1399,9 @@ mod tests {
             href: Some("https://example.com".into()),
             placeholder: None,
             backend_node_id: None,
+            element_type: None,
+            id: None,
+            aria_label: None,
         }];
 
         let err = get_element(&elements, 5).unwrap_err();
@@ -1423,6 +1432,9 @@ mod tests {
             href: None,
             placeholder: None,
             backend_node_id: None,
+            element_type: None,
+            id: None,
+            aria_label: None,
         };
         let (cx, cy) = element_center(&el);
         assert!((cx - 140.0).abs() < f64::EPSILON);
@@ -1442,6 +1454,9 @@ mod tests {
             href: None,
             placeholder: None,
             backend_node_id: None,
+            element_type: None,
+            id: None,
+            aria_label: None,
         };
         let (cx, cy) = element_center(&el);
         assert!((cx - 5.0).abs() < f64::EPSILON);
