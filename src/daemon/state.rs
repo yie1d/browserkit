@@ -1,7 +1,7 @@
 // DaemonState: global state management for the daemon process
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use cdpkit::CDP;
 use dashmap::DashMap;
@@ -61,6 +61,10 @@ pub struct DaemonState {
     pub auto_attach_tasks: DashMap<String, CancellationToken>,
     /// Dialog management state: pending dialogs, policies, subscription tokens.
     pub dialog_state: DialogState,
+    /// When true, the persist task will not write state.json.
+    /// Set when a newer-version state.json is detected on disk to avoid
+    /// clobbering data written by a newer binary.
+    pub persist_disabled: AtomicBool,
 }
 
 impl DaemonState {
@@ -88,6 +92,7 @@ impl DaemonState {
             _persist_rx_guard: Some(persist_rx),
             auto_attach_tasks: DashMap::new(),
             dialog_state: DialogState::new(),
+            persist_disabled: AtomicBool::new(false),
         }
     }
 

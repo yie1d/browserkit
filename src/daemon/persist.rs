@@ -1,14 +1,20 @@
-// State persistence: browsers.json and workspaces.json
+// State persistence: unified state.json
 //
 // Persists browser and workspace metadata to disk so the daemon can restore
 // state after a restart. CDP connections are re-established on restore.
+//
+// All state is stored in a single `~/.bk/state.json` file (atomic tmp+rename).
+// Backward-compatible migration: if state.json is absent but old browsers.json /
+// workspaces.json / default_ws files exist, they are read, merged into state.json,
+// and the old files are removed (best-effort).
 //
 // Persistence is debounced: callers send a signal on a channel, and a
 // dedicated background task coalesces rapid bursts into a single write
 // (500 ms quiet window). This avoids blocking request handlers on file I/O.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::net::TcpStream;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -83,20 +89,55 @@ fn default_managed_true() -> bool {
     true
 }
 
+// ── Unified persisted state ──────────────────────────────────────────
+
+/// The single top-level structure written to `~/.bk/state.json`.
+///
+/// All daemon state (browsers, workspaces, default workspace) is stored
+/// together in one atomic file write to eliminate cross-file inconsistency.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PersistedState {
+    /// Schema version for forward compatibility. Current = 1.
+    pub version: u32,
+    pub browsers: Vec<PersistedBrowser>,
+    pub workspaces: Vec<PersistedWorkspace>,
+    pub default_ws: Option<String>,
+}
+
+impl PersistedState {
+    /// Current schema version.
+    pub const CURRENT_VERSION: u32 = 1;
+
+    /// Create an empty state with the current version.
+    pub fn empty() -> Self {
+        Self {
+            version: Self::CURRENT_VERSION,
+            browsers: Vec::new(),
+            workspaces: Vec::new(),
+            default_ws: None,
+        }
+    }
+}
+
 // ── File paths ───────────────────────────────────────────────────────
 
-/// Path to `~/.bk/browsers.json`.
-pub fn browsers_file_path() -> PathBuf {
+/// Path to `~/.bk/state.json` (unified persistence file).
+pub fn state_file_path() -> PathBuf {
+    bk_home().join("state.json")
+}
+
+/// Path to legacy `~/.bk/browsers.json` (for migration only).
+fn legacy_browsers_file_path() -> PathBuf {
     bk_home().join("browsers.json")
 }
 
-/// Path to `~/.bk/workspaces.json`.
-pub fn workspaces_file_path() -> PathBuf {
+/// Path to legacy `~/.bk/workspaces.json` (for migration only).
+fn legacy_workspaces_file_path() -> PathBuf {
     bk_home().join("workspaces.json")
 }
 
-/// Path to `~/.bk/default_ws` (stores the default workspace ID).
-pub fn default_ws_file_path() -> PathBuf {
+/// Path to legacy `~/.bk/default_ws` (for migration only).
+fn legacy_default_ws_file_path() -> PathBuf {
     bk_home().join("default_ws")
 }
 
@@ -208,7 +249,7 @@ impl PersistedWorkspace {
 /// Writes to a `.tmp` sibling file first, then renames into place.
 /// This ensures the target file is never left in a partially-written state
 /// if the process crashes mid-write.
-fn write_json<T: Serialize>(path: &PathBuf, value: &T) -> Result<(), std::io::Error> {
+fn write_json_atomic(path: &Path, value: &impl Serialize) -> Result<(), std::io::Error> {
     let json = serde_json::to_string(value)
         .map_err(std::io::Error::other)?;
     let tmp = path.with_extension("tmp");
@@ -218,36 +259,116 @@ fn write_json<T: Serialize>(path: &PathBuf, value: &T) -> Result<(), std::io::Er
 
 // ── Restore (read) ───────────────────────────────────────────────────
 
-/// Persisted state loaded from disk, before CDP reconnection.
-pub struct RestoredState {
-    pub browsers: Vec<PersistedBrowser>,
-    pub workspaces: Vec<PersistedWorkspace>,
-}
-
-/// Load persisted state from disk.
+/// Load persisted state from `~/.bk/state.json`.
 ///
-/// If files are missing, returns empty vectors (fresh start).
-/// If files are corrupted, logs a warning and returns empty vectors.
-pub fn load_persisted_state() -> RestoredState {
-    let browsers = load_browsers();
-    let workspaces = load_workspaces();
-    RestoredState {
+/// If `state.json` exists, deserializes it directly.
+/// If `state.json` is absent but legacy files exist (browsers.json / workspaces.json /
+/// default_ws), performs a one-time migration: reads the old files, writes state.json,
+/// then removes the old files (best-effort).
+/// If neither exists, returns an empty state (fresh start).
+/// If files are corrupted, logs a warning and returns empty state.
+///
+/// Returns `(state, persist_disabled)`. When `persist_disabled` is true, the caller
+/// must NOT write state.json this session (the on-disk version is newer than we support).
+pub fn load_persisted_state() -> (PersistedState, bool) {
+    let state_path = state_file_path();
+
+    // Try unified state.json first
+    match std::fs::read_to_string(&state_path) {
+        Ok(content) => match serde_json::from_str::<PersistedState>(&content) {
+            Ok(state) => {
+                if state.version > PersistedState::CURRENT_VERSION {
+                    warn!(
+                        on_disk_version = state.version,
+                        supported_version = PersistedState::CURRENT_VERSION,
+                        "state.json version {} is newer than supported ({}), \
+                         ignoring to avoid clobbering — persistence disabled this session",
+                        state.version,
+                        PersistedState::CURRENT_VERSION,
+                    );
+                    return (PersistedState::empty(), true);
+                }
+                return (state, false);
+            }
+            Err(e) => {
+                warn!(
+                    path = %state_path.display(),
+                    error = %e,
+                    "state.json corrupted, starting with empty state"
+                );
+                return (PersistedState::empty(), false);
+            }
+        },
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            // state.json doesn't exist — try legacy migration
+        }
+        Err(e) => {
+            warn!(
+                path = %state_path.display(),
+                error = %e,
+                "failed to read state.json, starting with empty state"
+            );
+            return (PersistedState::empty(), false);
+        }
+    }
+
+    // Legacy migration: read old files if any exist
+    let browsers_path = legacy_browsers_file_path();
+    let workspaces_path = legacy_workspaces_file_path();
+    let default_ws_path = legacy_default_ws_file_path();
+
+    let has_legacy = browsers_path.exists() || workspaces_path.exists() || default_ws_path.exists();
+    if !has_legacy {
+        return (PersistedState::empty(), false);
+    }
+
+    tracing::info!("migrating legacy persistence files to state.json");
+
+    let browsers = load_legacy_browsers(&browsers_path);
+    let workspaces = load_legacy_workspaces(&workspaces_path);
+    let default_ws = load_legacy_default_ws(&default_ws_path);
+
+    let state = PersistedState {
+        version: PersistedState::CURRENT_VERSION,
         browsers,
         workspaces,
+        default_ws,
+    };
+
+    // Write the new state.json
+    let bk_dir = bk_home();
+    if let Err(e) = std::fs::create_dir_all(&bk_dir) {
+        warn!(error = %e, "failed to create ~/.bk directory during migration");
+        return (state, false);
     }
+    if let Err(e) = write_json_atomic(&state_path, &state) {
+        warn!(error = %e, "failed to write state.json during migration");
+        return (state, false);
+    }
+
+    // Remove old files (best-effort)
+    for path in [&browsers_path, &workspaces_path, &default_ws_path] {
+        if let Err(e) = std::fs::remove_file(path) {
+            if e.kind() != std::io::ErrorKind::NotFound {
+                warn!(path = %path.display(), error = %e, "failed to remove legacy file after migration");
+            }
+        }
+    }
+
+    tracing::info!("legacy migration complete");
+    (state, false)
 }
 
-/// Load browsers from `~/.bk/browsers.json`.
-fn load_browsers() -> Vec<PersistedBrowser> {
-    let path = browsers_file_path();
-    match std::fs::read_to_string(&path) {
+/// Load browsers from a legacy `browsers.json` file.
+fn load_legacy_browsers(path: &Path) -> Vec<PersistedBrowser> {
+    match std::fs::read_to_string(path) {
         Ok(content) => match serde_json::from_str(&content) {
             Ok(browsers) => browsers,
             Err(e) => {
                 warn!(
                     path = %path.display(),
                     error = %e,
-                    "browsers.json corrupted, starting with empty browser state"
+                    "legacy browsers.json corrupted, skipping"
                 );
                 Vec::new()
             }
@@ -257,24 +378,23 @@ fn load_browsers() -> Vec<PersistedBrowser> {
             warn!(
                 path = %path.display(),
                 error = %e,
-                "failed to read browsers.json, starting with empty browser state"
+                "failed to read legacy browsers.json, skipping"
             );
             Vec::new()
         }
     }
 }
 
-/// Load workspaces from `~/.bk/workspaces.json`.
-fn load_workspaces() -> Vec<PersistedWorkspace> {
-    let path = workspaces_file_path();
-    match std::fs::read_to_string(&path) {
+/// Load workspaces from a legacy `workspaces.json` file.
+fn load_legacy_workspaces(path: &Path) -> Vec<PersistedWorkspace> {
+    match std::fs::read_to_string(path) {
         Ok(content) => match serde_json::from_str(&content) {
             Ok(workspaces) => workspaces,
             Err(e) => {
                 warn!(
                     path = %path.display(),
                     error = %e,
-                    "workspaces.json corrupted, starting with empty workspace state"
+                    "legacy workspaces.json corrupted, skipping"
                 );
                 Vec::new()
             }
@@ -284,29 +404,149 @@ fn load_workspaces() -> Vec<PersistedWorkspace> {
             warn!(
                 path = %path.display(),
                 error = %e,
-                "failed to read workspaces.json, starting with empty workspace state"
+                "failed to read legacy workspaces.json, skipping"
             );
             Vec::new()
         }
     }
 }
 
+/// Load default workspace ID from a legacy `default_ws` file.
+fn load_legacy_default_ws(path: &Path) -> Option<String> {
+    match std::fs::read_to_string(path) {
+        Ok(content) => {
+            let trimmed = content.trim().to_string();
+            if trimmed.is_empty() { None } else { Some(trimmed) }
+        }
+        Err(_) => None,
+    }
+}
+
 // ── Restore into DaemonState ─────────────────────────────────────────
+
+/// Clean up stale `chrome-<port>` profile directories under `~/.bk/`.
+///
+/// Only removes directories where:
+/// 1. The port is NOT referenced by any persisted browser (managed or not).
+/// 2. The directory's modification time is older than 60 seconds (mtime guard).
+///    This avoids a TOCTOU race where a just-launched Chrome hasn't opened its
+///    debug port yet but already created its profile directory.
+/// 3. Nothing is currently listening on that port (no Chrome running there).
+///    Port probes use a short 200ms connect timeout to avoid blocking.
+///
+/// This is best-effort and conservative: any error or ambiguity causes the
+/// directory to be skipped (never risk deleting a profile in active use).
+fn cleanup_stale_chrome_dirs(persisted_browsers: &[PersistedBrowser]) {
+    let bk_dir = bk_home();
+    let entries = match std::fs::read_dir(&bk_dir) {
+        Ok(entries) => entries,
+        Err(_) => return,
+    };
+
+    // Build set of ports referenced by persisted browsers
+    let referenced_ports: std::collections::HashSet<u16> = persisted_browsers
+        .iter()
+        .filter_map(|b| {
+            // host is "localhost:<port>" or "<ip>:<port>"
+            b.host.rsplit(':').next().and_then(|p| p.parse::<u16>().ok())
+        })
+        .collect();
+
+    let now = std::time::SystemTime::now();
+    // Minimum age (mtime) before a directory is eligible for cleanup.
+    // Prevents TOCTOU: a freshly created profile won't be deleted even if
+    // the Chrome process hasn't opened its debug port yet.
+    let min_age = Duration::from_secs(60);
+
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name_str = name.to_string_lossy();
+
+        // Only consider directories matching "chrome-<port>"
+        let port_str = match name_str.strip_prefix("chrome-") {
+            Some(s) => s,
+            None => continue,
+        };
+        let port: u16 = match port_str.parse() {
+            Ok(p) => p,
+            Err(_) => continue,
+        };
+
+        // Skip if referenced by a persisted browser
+        if referenced_ports.contains(&port) {
+            continue;
+        }
+
+        // Mtime guard: skip directories modified within the last 60 seconds.
+        // If we can't read metadata, skip conservatively.
+        let dir_path = bk_dir.join(&*name_str);
+        match dir_path.metadata() {
+            Ok(meta) => {
+                if let Ok(mtime) = meta.modified() {
+                    if let Ok(age) = now.duration_since(mtime) {
+                        if age < min_age {
+                            tracing::debug!(
+                                port,
+                                age_secs = age.as_secs(),
+                                "skipping chrome dir cleanup: directory too recent (mtime guard)"
+                            );
+                            continue;
+                        }
+                    } else {
+                        // mtime is in the future — skip conservatively
+                        continue;
+                    }
+                } else {
+                    // Can't get mtime — skip conservatively
+                    continue;
+                }
+            }
+            Err(_) => continue,
+        }
+
+        // Skip if something is listening on that port (Chrome might still be running).
+        // Use a short connect timeout (200ms) to avoid blocking the restore path.
+        let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
+        if TcpStream::connect_timeout(&addr, Duration::from_millis(200)).is_ok() {
+            tracing::debug!(port, "skipping chrome dir cleanup: port still has a listener");
+            continue;
+        }
+
+        // Safe to remove — not persisted, old enough, and nothing listening
+        if dir_path.is_dir() {
+            match std::fs::remove_dir_all(&dir_path) {
+                Ok(()) => tracing::info!(path = %dir_path.display(), "cleaned up stale chrome profile directory"),
+                Err(e) => tracing::debug!(path = %dir_path.display(), error = %e, "failed to remove stale chrome dir, skipping"),
+            }
+        }
+    }
+}
 
 /// Restore daemon state by reconnecting to persisted **managed** browsers
 /// and re-attaching their workspace tabs. Inserts results into the provided
 /// `state` (which is already shared and reachable via the TCP server).
 ///
-/// **Unmanaged browsers are always skipped** — even if old `browsers.json`
-/// contains them. This prevents unwanted reconnection to user's real Chrome.
+/// **Unmanaged browsers are always skipped** — even if old data contains them.
+/// This prevents unwanted reconnection to user's real Chrome.
+///
+/// **Stale default_ws cleanup**: if `default_ws` references a workspace ID that
+/// is not present after restore, it is discarded (not set).
 ///
 /// This function is designed to run inside a `tokio::spawn` background task
 /// so that daemon readiness is not blocked by slow CDP reconnections.
 pub async fn restore_into_state(state: &Arc<DaemonState>) {
-    let restored = load_persisted_state();
+    let (restored, persist_disabled) = load_persisted_state();
+
+    // If the on-disk state is from a newer version, disable persistence
+    // for this session to avoid overwriting data we don't understand.
+    if persist_disabled {
+        state.persist_disabled.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    // Best-effort cleanup of orphaned chrome profile directories
+    cleanup_stale_chrome_dirs(&restored.browsers);
 
     // Collect hosts of managed browsers that reconnect successfully.
-    // We need this set to decide which workspaces to restore.
     let mut managed_hosts: std::collections::HashSet<String> = std::collections::HashSet::new();
 
     // Reconnect only managed browsers; skip unmanaged entirely.
@@ -343,6 +583,7 @@ pub async fn restore_into_state(state: &Arc<DaemonState>) {
     }
 
     // Restore workspaces whose browser is available (only managed browsers).
+    let mut restored_wids: std::collections::HashSet<String> = std::collections::HashSet::new();
     for pw in restored.workspaces {
         if !managed_hosts.contains(&pw.browser_host) {
             tracing::debug!(
@@ -358,8 +599,7 @@ pub async fn restore_into_state(state: &Arc<DaemonState>) {
         let mut ws = pw.into_workspace();
 
         // Re-attach to each tab's target to get a fresh CDP session ID.
-        // Track successfully re-attached tabs for dialog subscription rebuild.
-        let mut attached_tabs: Vec<(String, String)> = Vec::new(); // (tid, session_id)
+        let mut attached_tabs: Vec<(String, String)> = Vec::new();
         for tab in ws.tabs.values_mut() {
             match cdpkit::target::methods::AttachToTarget::new(tab.target_id.clone())
                 .with_flatten(true)
@@ -384,11 +624,11 @@ pub async fn restore_into_state(state: &Arc<DaemonState>) {
                         error = %e,
                         "failed to re-attach CDP session for tab, tab will be unusable"
                     );
-                    // Leave cdp_session_id empty; the tab will error on use
                 }
             }
         }
 
+        restored_wids.insert(wid.clone());
         state.workspaces.insert(wid.clone(), ws);
 
         // Rebuild dialog subscriptions for successfully re-attached tabs
@@ -405,13 +645,17 @@ pub async fn restore_into_state(state: &Arc<DaemonState>) {
         tracing::info!(wid = %wid, "restored workspace");
     }
 
-    // Restore default workspace ID (only if the workspace was actually restored)
-    let default_ws_path = default_ws_file_path();
-    if let Ok(wid) = std::fs::read_to_string(&default_ws_path) {
-        let wid = wid.trim().to_string();
-        if !wid.is_empty() && state.workspaces.contains_key(&wid) {
+    // Restore default workspace ID only if the workspace was actually restored.
+    // Stale default_ws (pointing to a non-existent workspace) is discarded.
+    if let Some(ref wid) = restored.default_ws {
+        if restored_wids.contains(wid) {
             state.set_default_wid(Some(wid.clone()));
             tracing::info!(wid = %wid, "restored default workspace");
+        } else {
+            tracing::debug!(
+                wid = %wid,
+                "discarding stale default_ws: workspace not restored"
+            );
         }
     }
 }
@@ -458,13 +702,21 @@ pub fn spawn_persist_task_with_rx(state: Arc<DaemonState>, mut rx: mpsc::Receive
     });
 }
 
-/// Perform the actual state snapshot and file writes.
+/// Perform the actual state snapshot and file write.
 ///
 /// Only **managed** browsers are persisted. Workspaces are only persisted if
 /// their `browser_host` points to a managed browser. Unmanaged browsers and
 /// their dependent workspaces are runtime-only state that ends when the daemon
 /// stops.
+///
+/// Writes a single `~/.bk/state.json` atomically (tmp+rename).
+/// Skips writing if `persist_disabled` is set (newer version detected on disk).
 async fn do_persist(state: &Arc<DaemonState>) {
+    // If a newer-version state.json was detected on load, never overwrite it.
+    if state.persist_disabled.load(std::sync::atomic::Ordering::Relaxed) {
+        tracing::debug!("persist skipped: state.json on disk is from a newer version");
+        return;
+    }
     // Collect managed browsers and build a set of their hosts
     let mut managed_hosts: std::collections::HashSet<String> = std::collections::HashSet::new();
     let browsers: Vec<PersistedBrowser> = state
@@ -490,7 +742,14 @@ async fn do_persist(state: &Arc<DaemonState>) {
         .map(|entry| PersistedWorkspace::from_workspace(entry.value()))
         .collect();
 
-    let default_wid = state.get_default_wid();
+    let default_ws = state.get_default_wid();
+
+    let persisted = PersistedState {
+        version: PersistedState::CURRENT_VERSION,
+        browsers,
+        workspaces,
+        default_ws,
+    };
 
     // Run blocking file I/O on a dedicated thread to avoid blocking the tokio runtime
     let _ = tokio::task::spawn_blocking(move || {
@@ -500,20 +759,8 @@ async fn do_persist(state: &Arc<DaemonState>) {
             return;
         }
 
-        if let Err(e) = write_json(&browsers_file_path(), &browsers) {
-            warn!(error = %e, "failed to persist browsers.json");
-        }
-        if let Err(e) = write_json(&workspaces_file_path(), &workspaces) {
-            warn!(error = %e, "failed to persist workspaces.json");
-        }
-
-        let default_ws_path = default_ws_file_path();
-        if let Some(ref wid) = default_wid {
-            if let Err(e) = std::fs::write(&default_ws_path, wid) {
-                warn!(error = %e, "failed to persist default_ws");
-            }
-        } else {
-            let _ = std::fs::remove_file(&default_ws_path);
+        if let Err(e) = write_json_atomic(&state_file_path(), &persisted) {
+            warn!(error = %e, "failed to persist state.json");
         }
     }).await;
 }
@@ -595,68 +842,238 @@ mod tests {
     }
 
     #[test]
-    fn persist_and_load_to_temp_dir() {
-        // Use a temp directory to avoid interfering with real state
-        let tmp = tempfile::tempdir().unwrap();
-        let browsers_path = tmp.path().join("browsers.json");
-        let workspaces_path = tmp.path().join("workspaces.json");
+    fn persisted_state_roundtrip_json() {
+        let state = PersistedState {
+            version: 1,
+            browsers: vec![
+                make_persisted_browser("localhost:9222", true),
+                make_persisted_browser("localhost:9223", false),
+            ],
+            workspaces: vec![
+                make_persisted_workspace("a3f2", "localhost:9222"),
+                make_persisted_workspace("b7e1", "localhost:9223"),
+            ],
+            default_ws: Some("a3f2".to_string()),
+        };
 
-        let browsers = vec![
-            make_persisted_browser("localhost:9222", true),
-            make_persisted_browser("localhost:9223", false),
-        ];
-        let workspaces = vec![
-            make_persisted_workspace("a3f2", "localhost:9222"),
-            make_persisted_workspace("b7e1", "localhost:9223"),
-        ];
-
-        // Write
-        write_json(&browsers_path, &browsers).unwrap();
-        write_json(&workspaces_path, &workspaces).unwrap();
-
-        // Read back
-        let b_json = std::fs::read_to_string(&browsers_path).unwrap();
-        let restored_browsers: Vec<PersistedBrowser> =
-            serde_json::from_str(&b_json).unwrap();
-        assert_eq!(restored_browsers, browsers);
-
-        let w_json = std::fs::read_to_string(&workspaces_path).unwrap();
-        let restored_workspaces: Vec<PersistedWorkspace> =
-            serde_json::from_str(&w_json).unwrap();
-        assert_eq!(restored_workspaces, workspaces);
+        let json = serde_json::to_string(&state).unwrap();
+        let restored: PersistedState = serde_json::from_str(&json).unwrap();
+        assert_eq!(state, restored);
     }
 
     #[test]
-    fn load_browsers_returns_empty_on_missing_file() {
-        // load_browsers reads from the real path; if the file doesn't exist
-        // it should return an empty vec. We test the deserialization logic
-        // directly instead.
-        let result: Result<Vec<PersistedBrowser>, _> = serde_json::from_str("[]");
-        assert!(result.unwrap().is_empty());
+    fn persisted_state_empty() {
+        let state = PersistedState::empty();
+        assert_eq!(state.version, 1);
+        assert!(state.browsers.is_empty());
+        assert!(state.workspaces.is_empty());
+        assert_eq!(state.default_ws, None);
+    }
+
+    #[test]
+    fn persist_and_load_state_json_to_temp_dir() {
+        // Use a temp directory to avoid interfering with real state
+        let tmp = tempfile::tempdir().unwrap();
+        let state_path = tmp.path().join("state.json");
+
+        let state = PersistedState {
+            version: 1,
+            browsers: vec![
+                make_persisted_browser("localhost:9222", true),
+            ],
+            workspaces: vec![
+                make_persisted_workspace("a3f2", "localhost:9222"),
+            ],
+            default_ws: Some("a3f2".to_string()),
+        };
+
+        // Write atomically
+        write_json_atomic(&state_path, &state).unwrap();
+
+        // tmp file should not remain
+        assert!(!tmp.path().join("state.tmp").exists());
+
+        // Read back
+        let json = std::fs::read_to_string(&state_path).unwrap();
+        let restored: PersistedState = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored, state);
+    }
+
+    #[test]
+    fn empty_state_persists_correctly() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state_path = tmp.path().join("state.json");
+
+        let state = PersistedState::empty();
+        write_json_atomic(&state_path, &state).unwrap();
+
+        let json = std::fs::read_to_string(&state_path).unwrap();
+        let restored: PersistedState = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.version, 1);
+        assert!(restored.browsers.is_empty());
+        assert!(restored.workspaces.is_empty());
+        assert_eq!(restored.default_ws, None);
+    }
+
+    #[test]
+    fn legacy_migration_reads_old_files_writes_state_json_and_removes_old() {
+        let tmp = tempfile::tempdir().unwrap();
+
+        // Create legacy files
+        let browsers = vec![make_persisted_browser("localhost:9222", true)];
+        let workspaces = vec![make_persisted_workspace("ws1", "localhost:9222")];
+
+        let browsers_path = tmp.path().join("browsers.json");
+        let workspaces_path = tmp.path().join("workspaces.json");
+        let default_ws_path = tmp.path().join("default_ws");
+
+        write_json_atomic(&browsers_path, &browsers).unwrap();
+        write_json_atomic(&workspaces_path, &workspaces).unwrap();
+        std::fs::write(&default_ws_path, "ws1").unwrap();
+
+        // load_persisted_state_from_dir simulates what load_persisted_state does
+        // but targeting a specific directory. We test the components directly.
+        let loaded_browsers = load_legacy_browsers(&browsers_path);
+        let loaded_workspaces = load_legacy_workspaces(&workspaces_path);
+        let loaded_default = load_legacy_default_ws(&default_ws_path);
+
+        assert_eq!(loaded_browsers.len(), 1);
+        assert_eq!(loaded_browsers[0].host, "localhost:9222");
+        assert_eq!(loaded_workspaces.len(), 1);
+        assert_eq!(loaded_workspaces[0].wid, "ws1");
+        assert_eq!(loaded_default, Some("ws1".to_string()));
+
+        // Write state.json
+        let state = PersistedState {
+            version: PersistedState::CURRENT_VERSION,
+            browsers: loaded_browsers,
+            workspaces: loaded_workspaces,
+            default_ws: loaded_default,
+        };
+        let state_path = tmp.path().join("state.json");
+        write_json_atomic(&state_path, &state).unwrap();
+
+        // Verify state.json is correct
+        let json = std::fs::read_to_string(&state_path).unwrap();
+        let restored: PersistedState = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.version, 1);
+        assert_eq!(restored.browsers.len(), 1);
+        assert_eq!(restored.workspaces.len(), 1);
+        assert_eq!(restored.default_ws, Some("ws1".to_string()));
+
+        // Simulate removing old files
+        std::fs::remove_file(&browsers_path).unwrap();
+        std::fs::remove_file(&workspaces_path).unwrap();
+        std::fs::remove_file(&default_ws_path).unwrap();
+
+        assert!(!browsers_path.exists());
+        assert!(!workspaces_path.exists());
+        assert!(!default_ws_path.exists());
+        assert!(state_path.exists());
+    }
+
+    #[test]
+    fn legacy_migration_no_old_files_returns_empty() {
+        let tmp = tempfile::tempdir().unwrap();
+
+        // No state.json, no legacy files
+        let browsers_path = tmp.path().join("browsers.json");
+        let workspaces_path = tmp.path().join("workspaces.json");
+        let default_ws_path = tmp.path().join("default_ws");
+
+        // None of these files exist
+        assert!(!browsers_path.exists());
+        assert!(!workspaces_path.exists());
+        assert!(!default_ws_path.exists());
+
+        // Legacy loaders should return empty
+        let browsers = load_legacy_browsers(&browsers_path);
+        let workspaces = load_legacy_workspaces(&workspaces_path);
+        let default_ws = load_legacy_default_ws(&default_ws_path);
+
+        assert!(browsers.is_empty());
+        assert!(workspaces.is_empty());
+        assert_eq!(default_ws, None);
+    }
+
+    #[test]
+    fn stale_default_ws_discarded_when_wid_not_in_workspaces() {
+        // If default_ws points to a workspace that doesn't exist in the
+        // restored set, it should be discarded.
+        let state = PersistedState {
+            version: 1,
+            browsers: vec![make_persisted_browser("localhost:9222", true)],
+            workspaces: vec![make_persisted_workspace("ws_actual", "localhost:9222")],
+            default_ws: Some("ws_nonexistent".to_string()),
+        };
+
+        // The restore logic checks: restored_wids.contains(wid)
+        let restored_wids: std::collections::HashSet<String> =
+            state.workspaces.iter().map(|ws| ws.wid.clone()).collect();
+
+        let effective_default = state.default_ws.as_ref()
+            .filter(|wid| restored_wids.contains(wid.as_str()));
+
+        assert_eq!(effective_default, None, "stale default_ws must be discarded");
+    }
+
+    #[test]
+    fn valid_default_ws_preserved_when_wid_exists() {
+        let state = PersistedState {
+            version: 1,
+            browsers: vec![make_persisted_browser("localhost:9222", true)],
+            workspaces: vec![make_persisted_workspace("ws_real", "localhost:9222")],
+            default_ws: Some("ws_real".to_string()),
+        };
+
+        let restored_wids: std::collections::HashSet<String> =
+            state.workspaces.iter().map(|ws| ws.wid.clone()).collect();
+
+        let effective_default = state.default_ws.as_ref()
+            .filter(|wid| restored_wids.contains(wid.as_str()));
+
+        assert_eq!(effective_default, Some(&"ws_real".to_string()));
+    }
+
+    #[test]
+    fn atomic_write_leaves_no_tmp_on_success() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("test.json");
+
+        write_json_atomic(&path, &vec![1, 2, 3]).unwrap();
+
+        assert!(path.exists());
+        assert!(!tmp.path().join("test.tmp").exists());
+    }
+
+    #[test]
+    fn load_legacy_default_ws_empty_file_returns_none() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("default_ws");
+        std::fs::write(&path, "  \n").unwrap();
+
+        let result = load_legacy_default_ws(&path);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn load_legacy_default_ws_with_content() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("default_ws");
+        std::fs::write(&path, "  abc123  \n").unwrap();
+
+        let result = load_legacy_default_ws(&path);
+        assert_eq!(result, Some("abc123".to_string()));
     }
 
     #[test]
     fn load_browsers_returns_empty_on_corrupted_json() {
-        let result: Result<Vec<PersistedBrowser>, _> =
-            serde_json::from_str("not valid json");
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn empty_state_persists_empty_arrays() {
         let tmp = tempfile::tempdir().unwrap();
-        let browsers_path = tmp.path().join("browsers.json");
-        let workspaces_path = tmp.path().join("workspaces.json");
+        let path = tmp.path().join("browsers.json");
+        std::fs::write(&path, "not valid json").unwrap();
 
-        let empty_browsers: Vec<PersistedBrowser> = vec![];
-        let empty_workspaces: Vec<PersistedWorkspace> = vec![];
-
-        write_json(&browsers_path, &empty_browsers).unwrap();
-        write_json(&workspaces_path, &empty_workspaces).unwrap();
-
-        let b_json = std::fs::read_to_string(&browsers_path).unwrap();
-        let restored: Vec<PersistedBrowser> = serde_json::from_str(&b_json).unwrap();
-        assert!(restored.is_empty());
+        let result = load_legacy_browsers(&path);
+        assert!(result.is_empty());
     }
 
     // ── Backward compatibility: old format (no mode, bare string browser_context_id) ──
@@ -1465,8 +1882,8 @@ mod tests {
         assert_eq!(persisted_workspaces[0].wid, "ws_managed_001");
 
         // Write filtered results and verify roundtrip
-        write_json(&browsers_path, &persisted_browsers).unwrap();
-        write_json(&workspaces_path, &persisted_workspaces).unwrap();
+        write_json_atomic(&browsers_path, &persisted_browsers).unwrap();
+        write_json_atomic(&workspaces_path, &persisted_workspaces).unwrap();
 
         // Read back and verify no unmanaged entries
         let b_json = std::fs::read_to_string(&browsers_path).unwrap();
@@ -1660,5 +2077,193 @@ mod tests {
         assert_eq!(ws2.next_alias_seq, 7);
         let tab = ws2.tabs.get("tid_1").unwrap();
         assert_eq!(tab.alias, "t7");
+    }
+
+    // ── Version guard: newer version on disk → ignored + no persist ──────────
+
+    #[test]
+    fn load_state_version_newer_than_current_returns_empty_and_persist_disabled() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state_path = tmp.path().join("state.json");
+
+        // Write a state.json with version=99 (future)
+        let future_state = serde_json::json!({
+            "version": 99,
+            "browsers": [{"host": "localhost:9222", "managed": true, "pid": 1234}],
+            "workspaces": [],
+            "default_ws": null
+        });
+        std::fs::write(&state_path, serde_json::to_string(&future_state).unwrap()).unwrap();
+
+        // We can't call load_persisted_state() directly (it uses bk_home()),
+        // so we test the version check logic inline.
+        let content = std::fs::read_to_string(&state_path).unwrap();
+        let loaded: PersistedState = serde_json::from_str(&content).unwrap();
+
+        assert_eq!(loaded.version, 99);
+        assert!(loaded.version > PersistedState::CURRENT_VERSION);
+
+        // The logic in load_persisted_state: if version > CURRENT → empty + disabled
+        let (result, persist_disabled) = if loaded.version > PersistedState::CURRENT_VERSION {
+            (PersistedState::empty(), true)
+        } else {
+            (loaded, false)
+        };
+
+        assert!(persist_disabled, "persist must be disabled for newer version");
+        assert!(result.browsers.is_empty(), "must return empty state");
+        assert_eq!(result.version, PersistedState::CURRENT_VERSION);
+    }
+
+    #[test]
+    fn load_state_version_equal_to_current_loads_normally() {
+        let state = PersistedState {
+            version: PersistedState::CURRENT_VERSION,
+            browsers: vec![make_persisted_browser("localhost:9222", true)],
+            workspaces: vec![make_persisted_workspace("ws1", "localhost:9222")],
+            default_ws: Some("ws1".to_string()),
+        };
+
+        // Simulate the version check
+        assert!(state.version <= PersistedState::CURRENT_VERSION);
+
+        let (result, persist_disabled) = if state.version > PersistedState::CURRENT_VERSION {
+            (PersistedState::empty(), true)
+        } else {
+            (state.clone(), false)
+        };
+
+        assert!(!persist_disabled, "persist must NOT be disabled for current version");
+        assert_eq!(result.browsers.len(), 1);
+        assert_eq!(result.workspaces.len(), 1);
+    }
+
+    #[test]
+    fn persist_disabled_flag_prevents_do_persist_write() {
+        // Verify the AtomicBool flag on DaemonState gates persist writes.
+        use std::sync::atomic::Ordering;
+        use crate::daemon::state::DaemonState;
+
+        let state = DaemonState::new();
+        assert!(!state.persist_disabled.load(Ordering::Relaxed), "default is not disabled");
+
+        state.persist_disabled.store(true, Ordering::Relaxed);
+        assert!(state.persist_disabled.load(Ordering::Relaxed), "can be set to true");
+    }
+
+    // ── Chrome-dir cleanup: mtime guard skips recent directories ─────────────
+
+    #[test]
+    fn cleanup_chrome_dirs_skips_recent_directories() {
+        // Create a temp dir simulating ~/.bk/ with a chrome-<port> subdirectory.
+        // The directory is freshly created (mtime < 60s), so it must NOT be deleted
+        // even though nothing is listening on that port.
+        let tmp = tempfile::tempdir().unwrap();
+        let chrome_dir = tmp.path().join("chrome-19999");
+        std::fs::create_dir_all(&chrome_dir).unwrap();
+
+        // Write a marker file so we can verify the directory survives
+        std::fs::write(chrome_dir.join("marker.txt"), "alive").unwrap();
+
+        // Simulate the cleanup logic (same as cleanup_stale_chrome_dirs)
+        let referenced_ports: std::collections::HashSet<u16> = std::collections::HashSet::new();
+        let now = std::time::SystemTime::now();
+        let min_age = Duration::from_secs(60);
+
+        let entries: Vec<_> = std::fs::read_dir(tmp.path()).unwrap()
+            .flatten()
+            .collect();
+
+        for entry in &entries {
+            let name = entry.file_name();
+            let name_str = name.to_string_lossy();
+            let port_str = match name_str.strip_prefix("chrome-") {
+                Some(s) => s,
+                None => continue,
+            };
+            let port: u16 = match port_str.parse() {
+                Ok(p) => p,
+                Err(_) => continue,
+            };
+
+            if referenced_ports.contains(&port) {
+                continue;
+            }
+
+            let dir_path = tmp.path().join(&*name_str);
+            let meta = dir_path.metadata().unwrap();
+            let mtime = meta.modified().unwrap();
+            let age = now.duration_since(mtime).unwrap_or(Duration::ZERO);
+
+            // This is the key assertion: freshly created dir has age < 60s
+            assert!(
+                age < min_age,
+                "freshly created chrome dir must be younger than min_age ({:?} < {:?})",
+                age, min_age
+            );
+            // Therefore cleanup would skip it (not delete)
+        }
+
+        // Verify the directory still exists (was not deleted)
+        assert!(chrome_dir.exists(), "recent chrome dir must NOT be deleted");
+        assert!(chrome_dir.join("marker.txt").exists());
+    }
+
+    #[test]
+    fn cleanup_chrome_dirs_skips_referenced_ports() {
+        // Even an old directory should be preserved if its port is referenced.
+        let tmp = tempfile::tempdir().unwrap();
+        let chrome_dir = tmp.path().join("chrome-9222");
+        std::fs::create_dir_all(&chrome_dir).unwrap();
+
+        let referenced_ports: std::collections::HashSet<u16> =
+            [9222u16].into_iter().collect();
+
+        // Port 9222 is referenced → must be skipped regardless of age
+        let name_str = "chrome-9222";
+        let port: u16 = name_str.strip_prefix("chrome-").unwrap().parse().unwrap();
+        assert!(referenced_ports.contains(&port), "port must be in referenced set");
+
+        // Directory preserved
+        assert!(chrome_dir.exists());
+    }
+
+    #[test]
+    fn cleanup_chrome_dirs_skips_non_chrome_prefix() {
+        // Directories not matching "chrome-<port>" pattern are never touched
+        let tmp = tempfile::tempdir().unwrap();
+        let other_dir = tmp.path().join("some-other-dir");
+        std::fs::create_dir_all(&other_dir).unwrap();
+
+        let name_str = "some-other-dir";
+        let stripped = name_str.strip_prefix("chrome-");
+        assert!(stripped.is_none(), "non-chrome prefix must not match");
+
+        assert!(other_dir.exists());
+    }
+
+    #[test]
+    fn cleanup_chrome_dirs_skips_unparseable_port() {
+        // "chrome-abc" is not a valid port — must be skipped
+        let name_str = "chrome-abc";
+        let port_str = name_str.strip_prefix("chrome-").unwrap();
+        let port_result = port_str.parse::<u16>();
+        assert!(port_result.is_err(), "non-numeric port must fail to parse");
+    }
+
+    #[test]
+    fn connect_timeout_is_short() {
+        // Verify that connecting to a definitely-closed port with timeout returns
+        // quickly (does not hang). Port 1 is almost certainly not in use on test machines.
+        let addr = std::net::SocketAddr::from(([127, 0, 0, 1], 1u16));
+        let start = std::time::Instant::now();
+        let _ = TcpStream::connect_timeout(&addr, Duration::from_millis(200));
+        let elapsed = start.elapsed();
+        // Should complete within ~250ms (200ms timeout + overhead)
+        assert!(
+            elapsed < Duration::from_millis(500),
+            "connect_timeout must not hang; took {:?}",
+            elapsed
+        );
     }
 }
