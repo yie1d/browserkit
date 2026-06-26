@@ -75,6 +75,7 @@ pub async fn handle_request(
         "act.upload" => action::handle_act_upload(req, state).await,
         "act.dropdown_options" => action::handle_act_dropdown_options(req, state).await,
         "act.drag" => action::handle_act_drag(req, state).await,
+        "act.keys" => action::handle_act_keys(req, state).await,
         "js.eval" | "js.await" => js::handle_eval(req, state).await,
         "storage.cookies.get" => storage::handle_storage_cookies_get(req, state).await,
         "storage.cookies.set" => storage::handle_storage_cookies_set(req, state).await,

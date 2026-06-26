@@ -10,6 +10,77 @@
 use clap::{ArgGroup, CommandFactory, Parser, Subcommand, ValueEnum};
 use serde_json::json;
 
+// ── Custom grouped help text ──────────────────────────────────
+
+const HELP_TEXT: &str = "\
+Browser automation CLI powered by Chrome DevTools Protocol.
+Controls headless or visible Chrome instances through a persistent daemon.
+
+Usage: bk [OPTIONS] <COMMAND>
+
+Navigation:
+  goto      Navigate to URL
+  back      Go back in browser history
+  forward   Go forward in browser history
+  reload    Reload current page
+  wait      Wait for page condition
+
+Interaction:
+  click     Click element by index, ref, or coordinates
+  type      Type text into element
+  fill      Batch fill multiple form fields
+  select    Select a dropdown option
+  scroll    Scroll page or element into view
+  hover     Hover over element
+  drag      Drag element to target
+  focus     Focus element without clicking
+  upload    Upload files to file input
+  keys      Send keyboard keys or shortcuts
+
+Page State:
+  info      Page elements, visible text, and viewport info
+  find      Find elements by CSS selector
+  search    Search text in page content
+  eval      Execute JavaScript in page context
+  html      Get page HTML
+  url       Get current page URL
+  title     Get current page title
+  console   Show browser console log buffer
+  options   List options in a <select> dropdown
+
+Output:
+  shot      Take a screenshot
+  pdf       Generate a PDF
+
+One-shot:
+  open      Open URL in new workspace (persistent)
+  fetch     Fetch rendered page HTML (ephemeral)
+
+Overview:
+  status    Daemon, browser, and workspace summary
+
+Management:
+  ws        Workspace management
+  tab       Tab management
+  browser   Browser connection
+  daemon    Daemon lifecycle
+  storage   Cookie and localStorage management
+  dialog    JavaScript dialog handling
+  debug     Network monitoring and raw CDP
+
+Aliases:
+  new       ws new  -- create new workspace
+  ls        ws list -- list workspaces
+  rm        ws close -- close workspace
+
+Options:
+  -w, --ws <ID>         Target workspace (or BK_WS env var)
+      --format <FMT>    Output format: text | json | tsv  [default: text]
+  -h, --help            Print help
+      --version         Print version
+
+Run `bk <COMMAND> --help` for detailed usage and examples.";
+
 use browserkit::client::{build_request, DaemonClient};
 use browserkit::daemon;
 use browserkit::daemon::protocol::Response;
@@ -26,7 +97,7 @@ pub enum OutputFormat {
 // ── Top-level CLI ──────────────────────────────────────────────
 
 #[derive(Parser)]
-#[command(name = "bk", about = "Browser automation CLI")]
+#[command(name = "bk", about = "Browser automation CLI", long_about = "Browser automation CLI powered by Chrome DevTools Protocol.\n\nControls headless or visible Chrome instances through a persistent daemon process.\nAll commands communicate with the daemon over local TCP.", version)]
 pub struct Cli {
     /// Target workspace ID (or set BK_WS env var)
     #[arg(short = 'w', long = "ws", global = true, env = "BK_WS")]
@@ -44,76 +115,60 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Command {
-    // ── Management ─────────────────────────────────────────
-    /// Daemon management
-    Daemon {
-        #[command(subcommand)]
-        action: DaemonAction,
-    },
-    /// Browser management
-    Browser {
-        #[command(subcommand)]
-        action: BrowserAction,
-    },
-    /// Workspace management
-    Ws {
-        #[command(subcommand)]
-        action: WsAction,
-    },
-    /// Tab management (uses --ws for workspace)
-    Tab {
-        #[command(subcommand)]
-        action: TabAction,
-    },
-    /// Navigation commands
-    Nav {
-        #[command(subcommand)]
-        action: NavAction,
-    },
-    /// Page inspection
-    Page {
-        #[command(subcommand)]
-        action: PageAction,
-    },
-    /// JavaScript execution
-    Js {
-        #[command(subcommand)]
-        action: JsAction,
-    },
-
-    /// Storage management
-    Storage {
-        #[command(subcommand)]
-        action: StorageAction,
-    },
-    /// Debug tools (network monitoring, raw CDP)
-    Debug {
-        #[command(subcommand)]
-        action: DebugAction,
-    },
-    /// JavaScript dialog management (alert/confirm/prompt/beforeunload)
-    Dialog {
-        #[command(subcommand)]
-        action: DialogAction,
-    },
-
-    // ── Top-level shortcuts ────────────────────────────────
-
-    /// Show daemon + browser + workspace overview
-    Status,
-
+    // ── Navigation ────────────────────────────────────────────
     /// Navigate to URL
+    #[command(about = "Navigate to URL", long_about = "Navigate the active tab to the specified URL and wait for initial load.\n\nExamples:\n  bk goto https://example.com\n  bk goto file:///tmp/test.html")]
     Goto {
         /// Target URL
         url: String,
     },
+    /// Go back in browser history
+    #[command(about = "Go back", long_about = "Navigate back one entry in the session history.\n\nExamples:\n  bk back\n  bk back --ws abc123")]
+    Back,
+    /// Go forward in browser history
+    #[command(about = "Go forward", long_about = "Navigate forward one entry in the session history.\n\nExamples:\n  bk forward\n  bk forward --ws abc123")]
+    Forward,
+    /// Reload current page
+    #[command(about = "Reload page", long_about = "Reload the current page in the active tab.\n\nExamples:\n  bk reload\n  bk reload --ws abc123")]
+    Reload,
+    /// Wait for page conditions
+    #[command(about = "Wait for condition", long_about = "Wait for various conditions: element visibility, text, URL change, load state,\ncustom JS expression, or a fixed delay. Without flags, waits for networkidle.\n\nExamples:\n  bk wait --selector \"#login-form\"\n  bk wait --text \"Welcome back\"\n  bk wait --text-gone \"Loading...\"\n  bk wait --url \"/dashboard\"\n  bk wait --load-state networkidle\n  bk wait --fn \"document.querySelectorAll('li').length > 5\"\n  bk wait --time 2000")]
+    Wait {
+        /// Fixed delay in milliseconds
+        #[arg(long)]
+        time: Option<u64>,
+        /// CSS selector to wait for (visible)
+        #[arg(long)]
+        selector: Option<String>,
+        /// Wait for text to appear
+        #[arg(long)]
+        text: Option<String>,
+        /// Wait for text to disappear
+        #[arg(long)]
+        text_gone: Option<String>,
+        /// Wait for URL to match (substring or glob)
+        #[arg(long)]
+        url: Option<String>,
+        /// Wait for load state (load, domcontentloaded, networkidle)
+        #[arg(long)]
+        load_state: Option<String>,
+        /// Wait for JS expression to return truthy
+        #[arg(long, value_name = "EXPR")]
+        r#fn: Option<String>,
+        /// Timeout in milliseconds (default: 30000)
+        #[arg(long, default_value = "30000")]
+        timeout: u64,
+    },
+
+    // ── Interaction ───────────────────────────────────────────
     /// Click element by index, ref, or coordinates
     #[command(group(ArgGroup::new("target").required(true).args(["index", "element_ref", "x"])))]
+    #[command(about = "Click element", long_about = "Click an element by index, ref (backendNodeId), or coordinates.\n\nExamples:\n  bk click --index 3\n  bk click --ref 42\n  bk click --x 100 --y 200")]
     Click {
         /// Element index from page state
         #[arg(short, long)]
         index: Option<usize>,
-        /// Element ref (backendNodeId) from page state — stable across DOM changes
+        /// Element ref (backendNodeId) -- stable across DOM changes
         #[arg(short = 'r', long = "ref")]
         element_ref: Option<i64>,
         /// X coordinate
@@ -125,11 +180,12 @@ pub enum Command {
     },
     /// Type text into element
     #[command(group(ArgGroup::new("target").required(true).args(["index", "element_ref"])))]
+    #[command(about = "Type text", long_about = "Type text into a focused element via Input.insertText.\n\nExamples:\n  bk type --index 2 \"hello world\"\n  bk type --ref 55 --clear \"new value\"\n  bk type --index 0 --autocomplete \"react\"")]
     Type {
         /// Element index
         #[arg(short, long)]
         index: Option<usize>,
-        /// Element ref (backendNodeId) — stable across DOM changes
+        /// Element ref (backendNodeId)
         #[arg(short = 'r', long = "ref")]
         element_ref: Option<i64>,
         /// Clear existing content before typing
@@ -141,14 +197,35 @@ pub enum Command {
         /// Text to type
         text: String,
     },
-    /// Scroll page
+    /// Batch fill form fields
+    #[command(about = "Batch fill form", long_about = "Fill multiple form fields in one command. Supports input, textarea,\nselect, checkbox, radio, and contenteditable elements.\n\nExamples:\n  bk fill --set 0=John --set 1=Doe --set 2=john@example.com\n  bk fill --set ref:42=hello --set ref:55=world")]
+    Fill {
+        /// Field assignments: <index>=<value> or ref:<id>=<value> (repeatable)
+        #[arg(long = "set", required = true)]
+        set: Vec<String>,
+    },
+    /// Select dropdown option
+    #[command(group(ArgGroup::new("target").required(true).args(["index", "element_ref"])))]
+    #[command(about = "Select option", long_about = "Select an option in a <select> element by value or display text.\n\nExamples:\n  bk select --index 3 \"United States\"\n  bk select --ref 77 \"option-value\"")]
+    Select {
+        /// Element index
+        #[arg(short, long)]
+        index: Option<usize>,
+        /// Element ref (backendNodeId)
+        #[arg(short = 'r', long = "ref")]
+        element_ref: Option<i64>,
+        /// Option value or display text
+        value: String,
+    },
+    /// Scroll page or to element
+    #[command(about = "Scroll page", long_about = "Scroll by direction, amount, or to a specific element.\n\nExamples:\n  bk scroll down\n  bk scroll up --amount 200\n  bk scroll top\n  bk scroll --index 5\n  bk scroll --selector \"#footer\"")]
     Scroll {
         /// Direction: up, down, left, right, top, bottom (default: down)
         direction: Option<String>,
-        /// Scroll amount in pixels (overrides default 500px for directional scrolls)
+        /// Scroll amount in pixels (overrides default 500px)
         #[arg(long)]
         amount: Option<f64>,
-        /// Scroll to element by index (from page state)
+        /// Scroll to element by index
         #[arg(short, long)]
         index: Option<usize>,
         /// Scroll to element by ref (backendNodeId)
@@ -158,47 +235,21 @@ pub enum Command {
         #[arg(short, long)]
         selector: Option<String>,
     },
-    /// Select dropdown option
-    #[command(group(ArgGroup::new("target").required(true).args(["index", "element_ref"])))]
-    Select {
-        /// Element index
-        #[arg(short, long)]
-        index: Option<usize>,
-        /// Element ref (backendNodeId) — stable across DOM changes
-        #[arg(short = 'r', long = "ref")]
-        element_ref: Option<i64>,
-        /// Option value or display text
-        value: String,
-    },
-    /// Batch fill form fields
-    Fill {
-        /// Field assignments: <index>=<value> or ref:<id>=<value> (repeatable)
-        #[arg(long = "set", required = true)]
-        set: Vec<String>,
-    },
-    /// List options in a dropdown (select element)
-    #[command(group(ArgGroup::new("target").required(true).args(["index", "element_ref"])))]
-    DropdownOptions {
-        /// Element index
-        #[arg(short, long)]
-        index: Option<usize>,
-        /// Element ref (backendNodeId) — stable across DOM changes
-        #[arg(short = 'r', long = "ref")]
-        element_ref: Option<i64>,
-    },
     /// Hover over element
     #[command(group(ArgGroup::new("target").required(true).args(["index", "element_ref"])))]
+    #[command(about = "Hover element", long_about = "Move mouse over an element to trigger hover states.\n\nExamples:\n  bk hover --index 3\n  bk hover --ref 42")]
     Hover {
         /// Element index
         #[arg(short, long)]
         index: Option<usize>,
-        /// Element ref (backendNodeId) — stable across DOM changes
+        /// Element ref (backendNodeId)
         #[arg(short = 'r', long = "ref")]
         element_ref: Option<i64>,
     },
     /// Drag from one element to another
     #[command(group(ArgGroup::new("from_target").required(true).args(["from_ref", "from_index", "from_selector"])))]
     #[command(group(ArgGroup::new("to_target").required(true).args(["to_ref", "to_index", "to_selector"])))]
+    #[command(about = "Drag element", long_about = "Drag from one element to another using mouse events.\n\nExamples:\n  bk drag --from-index 2 --to-index 5\n  bk drag --from-ref 10 --to-ref 20\n  bk drag --from-selector \".item\" --to-selector \".dropzone\"")]
     Drag {
         /// Source element ref (backendNodeId)
         #[arg(long)]
@@ -221,20 +272,22 @@ pub enum Command {
     },
     /// Focus element
     #[command(group(ArgGroup::new("target").required(true).args(["index", "element_ref"])))]
+    #[command(about = "Focus element", long_about = "Set keyboard focus to an element without clicking.\n\nExamples:\n  bk focus --index 2\n  bk focus --ref 42")]
     Focus {
         /// Element index
         #[arg(short, long)]
         index: Option<usize>,
-        /// Element ref (backendNodeId) — stable across DOM changes
+        /// Element ref (backendNodeId)
         #[arg(short = 'r', long = "ref")]
         element_ref: Option<i64>,
     },
     /// Upload files to a file input element
+    #[command(about = "Upload files", long_about = "Set files on an <input type=\"file\"> element. Paths must be absolute.\n\nExamples:\n  bk upload --index 3 /path/to/file.pdf\n  bk upload --selector \"input[type=file]\" /tmp/a.png /tmp/b.png")]
     Upload {
         /// Element index (from page state)
         #[arg(short, long)]
         index: Option<usize>,
-        /// Element ref (backendNodeId) — stable across DOM changes
+        /// Element ref (backendNodeId)
         #[arg(short = 'r', long = "ref")]
         element_ref: Option<i64>,
         /// CSS selector for the file input
@@ -244,22 +297,31 @@ pub enum Command {
         #[arg(required = true)]
         files: Vec<String>,
     },
-    /// Execute JS expression (async-capable, maps to js.await)
-    Eval {
-        /// JavaScript expression
-        expr: String,
+    /// Send keyboard keys
+    #[command(about = "Send keys", long_about = "Dispatch keyboard events for special keys and combinations.\nUse '+' for modifier combos.\n\nSupported: Enter, Tab, Escape, Backspace, Delete, ArrowUp/Down/Left/Right,\nHome, End, PageUp, PageDown, Space, F1-F12, single chars (a-z, 0-9).\nModifiers: Control, Shift, Alt, Meta.\n\nExamples:\n  bk keys Enter\n  bk keys Tab Tab Tab\n  bk keys Control+a\n  bk keys Control+Shift+Enter\n  bk keys Escape")]
+    Keys {
+        /// Key names to press (e.g. Enter, Tab, Control+a)
+        #[arg(required = true)]
+        keys: Vec<String>,
     },
-    /// Get page HTML
-    Html {
-        /// CSS selector for element HTML
-        #[arg(short, long)]
-        selector: Option<String>,
+
+    // ── Page State ────────────────────────────────────────────
+    /// Get page info (elements + text + viewport)
+    #[command(about = "Get page info", long_about = "Get interactive elements, page text, and viewport info for the active tab.\n\nExamples:\n  bk info\n  bk info --no-text\n  bk info --screenshot")]
+    Info {
+        /// Exclude page text from output
+        #[arg(long)]
+        no_text: bool,
+        /// Include viewport screenshot
+        #[arg(long)]
+        screenshot: bool,
     },
-    /// Find elements by CSS selector (structured query)
-    FindElements {
+    /// Find elements by CSS selector
+    #[command(about = "Find elements", long_about = "Query DOM for elements matching a CSS selector.\n\nExamples:\n  bk find \"a[href]\" --attributes href,class --include-text\n  bk find \".error\" --max 10\n  bk find \"input[type=text]\"")]
+    Find {
         /// CSS selector
         selector: String,
-        /// Comma-separated attribute names to extract (e.g. id,href,class)
+        /// Comma-separated attribute names to extract
         #[arg(long)]
         attributes: Option<String>,
         /// Maximum number of elements to return (default: 50)
@@ -269,11 +331,76 @@ pub enum Command {
         #[arg(long)]
         include_text: bool,
     },
-    /// Reload current page
-    Reload,
-    /// Screenshot (supports one-shot with URL)
+    /// Search text in page
+    #[command(about = "Search page text", long_about = "Search for text or regex patterns in the visible page content.\n\nExamples:\n  bk search \"error message\"\n  bk search \"\\\\d{3}-\\\\d{4}\" --regex\n  bk search \"price\" --scope \".product-card\" --max 5")]
+    Search {
+        /// Text or pattern to search
+        text: String,
+        /// Treat pattern as regex
+        #[arg(long)]
+        regex: bool,
+        /// CSS selector to scope search
+        #[arg(long)]
+        scope: Option<String>,
+        /// Characters of context around each match (default: 40)
+        #[arg(long)]
+        context: Option<usize>,
+        /// Maximum number of matches to return
+        #[arg(long)]
+        max: Option<usize>,
+    },
+    /// Execute JavaScript expression
+    #[command(about = "Execute JavaScript", long_about = "Execute JavaScript in the page context. Async by default (can await).\nUse --sync for synchronous-only. Use --file to load from a file.\n\nExamples:\n  bk eval \"document.title\"\n  bk eval \"await fetch('/api').then(r => r.json())\"\n  bk eval --sync \"1 + 1\"\n  bk eval --file script.js")]
+    Eval {
+        /// JavaScript expression (omit when using --file)
+        expr: Option<String>,
+        /// Run synchronously without await
+        #[arg(long)]
+        sync: bool,
+        /// Execute JS from file path
+        #[arg(long, value_name = "PATH")]
+        file: Option<String>,
+    },
+    /// Get page HTML
+    #[command(about = "Get page HTML", long_about = "Get HTML content of the page or a specific element.\n\nExamples:\n  bk html\n  bk html --selector \"#main-content\"")]
+    Html {
+        /// CSS selector for element HTML
+        #[arg(short, long)]
+        selector: Option<String>,
+    },
+    /// Get current page URL
+    #[command(about = "Get current URL", long_about = "Print the URL of the active tab.\n\nExamples:\n  bk url\n  bk url --format json")]
+    Url,
+    /// Get current page title
+    #[command(about = "Get page title", long_about = "Print the document title of the active tab.\n\nExamples:\n  bk title\n  bk title --format json")]
+    Title,
+    /// Show console log buffer
+    #[command(about = "Show console logs", long_about = "Display buffered console messages from the active tab.\n\nExamples:\n  bk console\n  bk console --level error\n  bk console --level warn --limit 20")]
+    Console {
+        /// Filter by level: error, warn, info, log, all (default: all)
+        #[arg(long, default_value = "all")]
+        level: String,
+        /// Maximum number of entries to return
+        #[arg(long)]
+        limit: Option<usize>,
+    },
+    /// List options in a dropdown element
+    #[command(group(ArgGroup::new("target").required(true).args(["index", "element_ref"])))]
+    #[command(about = "List dropdown options", long_about = "List all <option> elements in a <select> dropdown.\n\nExamples:\n  bk options --index 3\n  bk options --ref 77")]
+    Options {
+        /// Element index
+        #[arg(short, long)]
+        index: Option<usize>,
+        /// Element ref (backendNodeId)
+        #[arg(short = 'r', long = "ref")]
+        element_ref: Option<i64>,
+    },
+
+    // ── Output ────────────────────────────────────────────────
+    /// Take screenshot
+    #[command(about = "Take screenshot", long_about = "Capture a screenshot. Supports one-shot mode with URL.\n\nExamples:\n  bk shot\n  bk shot --output page.png --full-page\n  bk shot --selector \".hero\" --output hero.png\n  bk shot https://example.com --output example.png\n  bk shot --labels")]
     Shot {
-        /// URL for one-shot mode (auto-creates and closes workspace)
+        /// URL for one-shot mode
         url: Option<String>,
         /// Output file path
         #[arg(short, long)]
@@ -284,11 +411,12 @@ pub enum Command {
         /// CSS selector for element screenshot
         #[arg(short, long)]
         selector: Option<String>,
-        /// Overlay index labels on interactive elements before capture
+        /// Overlay index labels on interactive elements
         #[arg(long)]
         labels: bool,
     },
-    /// Generate PDF (supports one-shot with URL)
+    /// Generate PDF
+    #[command(about = "Generate PDF", long_about = "Generate a PDF of the current page. Supports one-shot with URL.\n\nExamples:\n  bk pdf --output page.pdf\n  bk pdf https://example.com --output report.pdf")]
     Pdf {
         /// URL for one-shot mode
         url: Option<String>,
@@ -297,24 +425,66 @@ pub enum Command {
         output: Option<String>,
     },
 
-    // ── One-shot commands ──────────────────────────────────
-
-    /// Open URL in new workspace (keeps workspace alive)
+    // ── One-shot ──────────────────────────────────────────────
+    /// Open URL in new workspace
+    #[command(about = "Open URL in new workspace", long_about = "Create a workspace, navigate to URL, and keep it alive as default.\n\nExamples:\n  bk open https://example.com\n  bk open https://app.local --no-headless")]
     Open {
         /// URL to open
         url: String,
-        /// Show browser window (override config headless = true)
+        /// Show browser window
         #[arg(long)]
         no_headless: bool,
     },
-    /// Fetch HTML from URL (one-shot: auto-creates and closes workspace)
+    /// Fetch HTML from URL (one-shot)
+    #[command(about = "Fetch page HTML", long_about = "Create temp workspace, navigate, get rendered HTML, then close.\n\nExamples:\n  bk fetch https://example.com\n  bk fetch https://spa-app.com/page")]
     Fetch {
         /// URL to fetch
         url: String,
     },
 
-    // ── Aliases ────────────────────────────────────────────
+    // ── Overview ──────────────────────────────────────────────
+    /// Show daemon + browser + workspace overview
+    #[command(about = "Show status overview", long_about = "Display daemon, browsers, and workspace summary.\n\nExamples:\n  bk status\n  bk status --format json")]
+    Status,
 
+    // ── Management ────────────────────────────────────────────
+    /// Workspace management
+    Ws {
+        #[command(subcommand)]
+        action: WsAction,
+    },
+    /// Tab management
+    Tab {
+        #[command(subcommand)]
+        action: TabAction,
+    },
+    /// Browser management
+    Browser {
+        #[command(subcommand)]
+        action: BrowserAction,
+    },
+    /// Daemon management
+    Daemon {
+        #[command(subcommand)]
+        action: DaemonAction,
+    },
+    /// Storage management (cookies, localStorage)
+    Storage {
+        #[command(subcommand)]
+        action: StorageAction,
+    },
+    /// JavaScript dialog management
+    Dialog {
+        #[command(subcommand)]
+        action: DialogAction,
+    },
+    /// Debug tools (network, raw CDP)
+    Debug {
+        #[command(subcommand)]
+        action: DebugAction,
+    },
+
+    // ── Aliases ───────────────────────────────────────────────
     /// Create new workspace (alias for ws new)
     New {
         /// Browser host to connect to
@@ -323,7 +493,7 @@ pub enum Command {
         /// Workspace label
         #[arg(short, long)]
         label: Option<String>,
-        /// Show browser window (override config headless = true)
+        /// Show browser window
         #[arg(long)]
         no_headless: bool,
     },
@@ -336,6 +506,7 @@ pub enum Command {
     },
 
     /// Generate shell completions
+    #[command(hide = true)]
     Completions {
         /// Shell to generate completions for
         shell: clap_complete::Shell,
@@ -455,141 +626,6 @@ pub enum TabAction {
     },
 }
 
-#[derive(Subcommand)]
-pub enum NavAction {
-    /// Navigate to URL
-    Goto {
-        /// Target URL
-        url: String,
-    },
-    /// Go back
-    Back,
-    /// Go forward
-    Forward,
-    /// Reload page
-    Reload,
-    /// Get current URL
-    Url,
-    /// Get page title
-    Title,
-    /// Wait for page load
-    Wait,
-}
-
-#[derive(Subcommand)]
-pub enum PageAction {
-    /// Get interactive elements + page text + viewport info (default includes page text)
-    Info {
-        /// Exclude page text from output
-        #[arg(long)]
-        no_text: bool,
-        /// Include viewport screenshot
-        #[arg(long)]
-        screenshot: bool,
-    },
-    /// Get interactive elements + page text + viewport info
-    State {
-        /// Include viewport screenshot
-        #[arg(long)]
-        screenshot: bool,
-    },
-    /// Search text in page
-    Search {
-        /// Text or pattern to search
-        text: String,
-        /// Treat pattern as regex
-        #[arg(long)]
-        regex: bool,
-        /// CSS selector to scope search (default: document.body)
-        #[arg(long)]
-        scope: Option<String>,
-        /// Characters of context around each match (default: 40)
-        #[arg(long)]
-        context: Option<usize>,
-        /// Maximum number of matches to return
-        #[arg(long)]
-        max: Option<usize>,
-    },
-    /// Wait for conditions on the page
-    Wait {
-        /// Fixed delay in milliseconds
-        #[arg(long)]
-        time: Option<u64>,
-        /// CSS selector to wait for (visible)
-        #[arg(long)]
-        selector: Option<String>,
-        /// Wait for text to appear
-        #[arg(long)]
-        text: Option<String>,
-        /// Wait for text to disappear
-        #[arg(long)]
-        text_gone: Option<String>,
-        /// Wait for URL to match (substring or glob)
-        #[arg(long)]
-        url: Option<String>,
-        /// Wait for load state (load, domcontentloaded, networkidle)
-        #[arg(long)]
-        load_state: Option<String>,
-        /// Wait for JS expression to return truthy
-        #[arg(long, value_name = "EXPR")]
-        r#fn: Option<String>,
-        /// Timeout in milliseconds (default: 30000)
-        #[arg(long, default_value = "30000")]
-        timeout: u64,
-    },
-    /// Find elements by CSS selector (structured query)
-    FindElements {
-        /// CSS selector
-        selector: String,
-        /// Comma-separated attribute names to extract (e.g. id,href,class)
-        #[arg(long)]
-        attributes: Option<String>,
-        /// Maximum number of elements to return (default: 50)
-        #[arg(long)]
-        max: Option<usize>,
-        /// Include element inner text (truncated to 200 chars)
-        #[arg(long)]
-        include_text: bool,
-    },
-    /// Show console log buffer for current tab
-    Console {
-        /// Filter by level: error, warn, info, log, all (default: all)
-        #[arg(long, default_value = "all")]
-        level: String,
-        /// Maximum number of entries to return
-        #[arg(long)]
-        limit: Option<usize>,
-    },
-    /// Generate PDF of current page
-    Pdf {
-        /// Output file path (default: page.pdf)
-        #[arg(short, long)]
-        output: Option<String>,
-        /// Landscape orientation
-        #[arg(long)]
-        landscape: bool,
-        /// Print background graphics
-        #[arg(long)]
-        background: bool,
-    },
-}
-
-#[derive(Subcommand)]
-pub enum JsAction {
-    /// Execute JS synchronously (no await)
-    Eval {
-        /// JavaScript expression
-        expr: String,
-    },
-    /// Execute JS from file
-    File {
-        /// Path to JS file
-        path: String,
-        /// Await promises in the file (default: true)
-        #[arg(long, default_value = "true")]
-        r#await: bool,
-    },
-}
 
 #[derive(Subcommand)]
 pub enum StorageAction {
@@ -703,8 +739,60 @@ pub enum DialogAction {
 
 // ── Main ───────────────────────────────────────────────────────
 
-#[tokio::main]
-async fn main() {
+fn main() {
+    // Clap derive generates deep recursion for large enum variants in debug builds.
+    // Spawn the async runtime on a thread with a larger stack to prevent overflow.
+    let thread = std::thread::Builder::new()
+        .stack_size(8 * 1024 * 1024)
+        .spawn(|| {
+            tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+                .expect("failed to create tokio runtime")
+                .block_on(async_main());
+        })
+        .expect("failed to spawn main thread");
+    thread.join().unwrap();
+}
+
+async fn async_main() {
+    // Intercept top-level --help / -h before clap parsing.
+    // We show our grouped help when -h/--help is present and no subcommand is detected.
+    // Subcommand help (e.g. `bk goto --help`) is handled by clap normally.
+    {
+        let args: Vec<String> = std::env::args().skip(1).collect();
+        let has_help = args.iter().any(|a| a == "-h" || a == "--help");
+        if has_help {
+            // Check if any argument looks like a subcommand (not starting with '-')
+            // and is not a value for --ws or --format
+            let has_subcommand = {
+                let mut skip_next = false;
+                let mut found = false;
+                for arg in &args {
+                    if skip_next {
+                        skip_next = false;
+                        continue;
+                    }
+                    if arg == "-w" || arg == "--ws" || arg == "--format" {
+                        skip_next = true;
+                        continue;
+                    }
+                    if arg.starts_with('-') {
+                        continue;
+                    }
+                    // Positional argument = subcommand
+                    found = true;
+                    break;
+                }
+                found
+            };
+            if !has_subcommand {
+                println!("{}", HELP_TEXT);
+                std::process::exit(0);
+            }
+        }
+    }
+
     let cli = Cli::parse();
 
     // daemon start is special — runs the server in foreground
@@ -977,232 +1065,34 @@ async fn dispatch(cli: &Cli, client: &mut DaemonClient) -> Result<(), String> {
             }
         },
 
-        // ── Nav ────────────────────────────────────────────
-        Command::Nav { action } => {
-            match action {
-                NavAction::Goto { url } => {
-                    ws_cmd!(cli, client, fmt, "nav.goto", { "url" => url });
-                }
-                NavAction::Back => { ws_cmd!(cli, client, fmt, "nav.back", {}); }
-                NavAction::Forward => { ws_cmd!(cli, client, fmt, "nav.forward", {}); }
-                NavAction::Reload => { ws_cmd!(cli, client, fmt, "nav.reload", {}); }
-                NavAction::Url => { ws_cmd!(cli, client, fmt, "nav.url", {}); }
-                NavAction::Title => { ws_cmd!(cli, client, fmt, "nav.title", {}); }
-                NavAction::Wait => { ws_cmd!(cli, client, fmt, "nav.wait", {}); }
-            }
-        },
-
-        // ── Page ───────────────────────────────────────────
-        Command::Page { action } => {
-            let wid = resolve_workspace(&cli.workspace, client).await?;
-            match action {
-                PageAction::Info { no_text, screenshot } => {
-                    let resp = send_cmd(client, "page.info", json!({"wid": wid, "no_text": no_text, "screenshot": screenshot})).await?;
-                    print_response(&resp, fmt);
-                }
-                PageAction::State { screenshot } => {
-                    let resp = send_cmd(client, "page.state", json!({"wid": wid, "screenshot": screenshot})).await?;
-                    print_response(&resp, fmt);
-                }
-                PageAction::Search { text, regex, scope, context, max } => {
-                    let mut params = json!({"wid": wid, "text": text, "regex": regex});
-                    if let Some(s) = scope { params["scope"] = json!(s); }
-                    if let Some(c) = context { params["context"] = json!(c); }
-                    if let Some(m) = max { params["max"] = json!(m); }
-                    let resp = send_cmd(client, "page.search", params).await?;
-                    print_response(&resp, fmt);
-                }
-                PageAction::Wait { time, selector, text, text_gone, url, load_state, r#fn, timeout } => {
-                    let mut params = json!({"wid": wid, "timeout": timeout});
-                    if let Some(t) = time { params["time"] = json!(t); }
-                    if let Some(s) = selector { params["selector"] = json!(s); }
-                    if let Some(t) = text { params["text"] = json!(t); }
-                    if let Some(t) = text_gone { params["text_gone"] = json!(t); }
-                    if let Some(u) = url { params["url"] = json!(u); }
-                    if let Some(l) = load_state { params["load_state"] = json!(l); }
-                    if let Some(f) = r#fn { params["fn"] = json!(f); }
-                    let resp = send_cmd(client, "page.wait", params).await?;
-                    print_response(&resp, fmt);
-                }
-                PageAction::FindElements { selector, attributes, max, include_text } => {
-                    let mut params = json!({"wid": wid, "selector": selector, "include_text": include_text});
-                    if let Some(attrs) = attributes {
-                        let attr_list: Vec<&str> = attrs.split(',').map(|s| s.trim()).collect();
-                        params["attributes"] = json!(attr_list);
-                    }
-                    if let Some(m) = max { params["max"] = json!(m); }
-                    let resp = send_cmd(client, "page.find_elements", params).await?;
-                    print_response(&resp, fmt);
-                }
-                PageAction::Console { level, limit } => {
-                    let mut params = json!({"wid": wid, "level": level});
-                    if let Some(n) = limit { params["limit"] = json!(n); }
-                    let resp = send_cmd(client, "page.console", params).await?;
-                    print_response(&resp, fmt);
-                }
-                PageAction::Pdf { output, landscape, background } => {
-                    let mut params = json!({"wid": wid, "landscape": landscape, "background": background});
-                    if let Some(o) = output { params["output"] = json!(o); }
-                    let resp = send_cmd(client, "page.pdf", params).await?;
-                    handle_binary_response(&resp, fmt, output.as_deref(), "page.pdf");
-                }
-            }
-        },
-
-        // ── JS ─────────────────────────────────────────────
-        Command::Js { action } => {
-            let wid = resolve_workspace(&cli.workspace, client).await?;
-            match action {
-                JsAction::Eval { expr } => {
-                    let resp = send_cmd(client, "js.eval", json!({"wid": wid, "expr": expr, "await": false})).await?;
-                    print_response(&resp, fmt);
-                }
-                JsAction::File { path, r#await } => {
-                    let content = std::fs::read_to_string(path)
-                        .map_err(|e| format!("failed to read JS file: {}", e))?;
-                    // Guard against sending excessively large files over TCP
-                    const MAX_JS_FILE_SIZE: usize = 5 * 1024 * 1024; // 5 MB
-                    if content.len() > MAX_JS_FILE_SIZE {
-                        return Err(format!(
-                            "JS file too large ({} bytes, max {} bytes)",
-                            content.len(),
-                            MAX_JS_FILE_SIZE
-                        ));
-                    }
-                    let resp = send_cmd(client, "js.eval", json!({"wid": wid, "expr": content, "await": r#await})).await?;
-                    print_response(&resp, fmt);
-                }
-            }
-        },
-
-        // ── Storage ────────────────────────────────────────
-        Command::Storage { action } => {
-            let wid = resolve_workspace(&cli.workspace, client).await?;
-            match action {
-                StorageAction::Cookies { action: ca } => match ca {
-                    CookieAction::Get => {
-                        let resp = send_cmd(client, "storage.cookies.get", json!({"wid": wid})).await?;
-                        print_response(&resp, fmt);
-                    }
-                    CookieAction::Set { json: j } => {
-                        let cookies: serde_json::Value = serde_json::from_str(j)
-                            .map_err(|e| format!("invalid cookie JSON: {}", e))?;
-                        let resp = send_cmd(client, "storage.cookies.set", json!({"wid": wid, "cookies": cookies})).await?;
-                        print_response(&resp, fmt);
-                    }
-                    CookieAction::Clear => {
-                        let resp = send_cmd(client, "storage.cookies.clear", json!({"wid": wid})).await?;
-                        print_response(&resp, fmt);
-                    }
-                },
-                StorageAction::Local { action: la } => match la {
-                    LocalAction::Get { key } => {
-                        let resp = send_cmd(client, "storage.local.get", json!({"wid": wid, "key": key})).await?;
-                        print_response(&resp, fmt);
-                    }
-                    LocalAction::Set { key, value } => {
-                        let resp = send_cmd(client, "storage.local.set", json!({"wid": wid, "key": key, "value": value})).await?;
-                        print_response(&resp, fmt);
-                    }
-                },
-                StorageAction::Export => {
-                    let resp = send_cmd(client, "storage.export", json!({"wid": wid})).await?;
-                    print_response(&resp, fmt);
-                }
-                StorageAction::Import { file } => {
-                    let content = std::fs::read_to_string(file)
-                        .map_err(|e| format!("failed to read storage file: {}", e))?;
-                    let state: serde_json::Value = serde_json::from_str(&content)
-                        .map_err(|e| format!("invalid storage JSON: {}", e))?;
-                    let resp = send_cmd(client, "storage.import", json!({"wid": wid, "state": state})).await?;
-                    print_response(&resp, fmt);
-                }
-            }
-        },
-
-        // ── Debug (network + CDP) ──────────────────────────
-        Command::Debug { action } => {
-            let wid = resolve_workspace(&cli.workspace, client).await?;
-            match action {
-                DebugAction::Monitor => {
-                    let resp = send_cmd(client, "network.monitor", json!({"wid": wid})).await?;
-                    print_response(&resp, fmt);
-                    run_streaming(client, fmt).await;
-                }
-                DebugAction::Har { url } => {
-                    let resp = send_cmd(client, "network.har", json!({"wid": wid, "url": url})).await?;
-                    print_response(&resp, fmt);
-                    run_streaming(client, fmt).await;
-                }
-                DebugAction::Block { pattern } => {
-                    let resp = send_cmd(client, "network.block", json!({"wid": wid, "pattern": pattern})).await?;
-                    print_response(&resp, fmt);
-                }
-                DebugAction::Unblock { pattern } => {
-                    let mut params = json!({"wid": wid});
-                    if let Some(p) = pattern { params["pattern"] = json!(p); }
-                    let resp = send_cmd(client, "network.unblock", params).await?;
-                    print_response(&resp, fmt);
-                }
-                DebugAction::Cdp { method, params } => {
-                    let cdp_params = match params {
-                        Some(p) => serde_json::from_str(p)
-                            .map_err(|e| format!("invalid CDP params JSON: {}", e))?,
-                        None => json!({}),
-                    };
-                    let resp = send_cmd(client, "cdp.send", json!({"wid": wid, "method": method, "params": cdp_params})).await?;
-                    print_response(&resp, fmt);
-                }
-                DebugAction::Events { filter } => {
-                    let mut params = json!({"wid": wid});
-                    if let Some(f) = filter { params["filter"] = json!(f); }
-                    let resp = send_cmd(client, "cdp.events", params).await?;
-                    print_response(&resp, fmt);
-                    run_streaming(client, fmt).await;
-                }
-            }
-        },
-
-        // ── Dialog ────────────────────────────────────────────
-        Command::Dialog { action } => {
-            let wid = resolve_workspace(&cli.workspace, client).await?;
-            match action {
-                DialogAction::List => {
-                    let resp = send_cmd(client, "dialog.list", json!({"wid": wid})).await?;
-                    print_response(&resp, fmt);
-                }
-                DialogAction::Accept { tid, text } => {
-                    let mut params = json!({"wid": wid});
-                    if let Some(t) = tid { params["tid"] = json!(t); }
-                    if let Some(txt) = text { params["text"] = json!(txt); }
-                    let resp = send_cmd(client, "dialog.accept", params).await?;
-                    print_response(&resp, fmt);
-                }
-                DialogAction::Dismiss { tid } => {
-                    let mut params = json!({"wid": wid});
-                    if let Some(t) = tid { params["tid"] = json!(t); }
-                    let resp = send_cmd(client, "dialog.dismiss", params).await?;
-                    print_response(&resp, fmt);
-                }
-                DialogAction::Policy { policy } => {
-                    let mut params = json!({"wid": wid});
-                    if let Some(p) = policy { params["policy"] = json!(p); }
-                    let resp = send_cmd(client, "dialog.policy", params).await?;
-                    print_response(&resp, fmt);
-                }
-            }
-        },
-
-        // ── Top-level shortcuts ────────────────────────────
-
-        Command::Status => {
-            dispatch_status(client, fmt).await?;
-        }
-
+        // ── Navigation (top-level) ────────────────────────
         Command::Goto { url } => {
             ws_cmd!(cli, client, fmt, "nav.goto", { "url" => url });
         }
+        Command::Back => {
+            ws_cmd!(cli, client, fmt, "nav.back", {});
+        }
+        Command::Forward => {
+            ws_cmd!(cli, client, fmt, "nav.forward", {});
+        }
+        Command::Reload => {
+            ws_cmd!(cli, client, fmt, "nav.reload", {});
+        }
+        Command::Wait { time, selector, text, text_gone, url, load_state, r#fn, timeout } => {
+            let wid = resolve_workspace(&cli.workspace, client).await?;
+            let mut params = json!({"wid": wid, "timeout": timeout});
+            if let Some(t) = time { params["time"] = json!(t); }
+            if let Some(s) = selector { params["selector"] = json!(s); }
+            if let Some(t) = text { params["text"] = json!(t); }
+            if let Some(t) = text_gone { params["text_gone"] = json!(t); }
+            if let Some(u) = url { params["url"] = json!(u); }
+            if let Some(l) = load_state { params["load_state"] = json!(l); }
+            if let Some(f) = r#fn { params["fn"] = json!(f); }
+            let resp = send_cmd(client, "page.wait", params).await?;
+            print_response(&resp, fmt);
+        }
 
+        // ── Interaction (top-level) ───────────────────────
         Command::Click { index, element_ref, x, y } => {
             let wid = resolve_workspace(&cli.workspace, client).await?;
             let mut params = json!({"wid": wid});
@@ -1220,27 +1110,6 @@ async fn dispatch(cli: &Cli, client: &mut DaemonClient) -> Result<(), String> {
             if let Some(r) = element_ref { params["ref"] = json!(r); }
             else if let Some(i) = index { params["index"] = json!(i); }
             let resp = send_cmd(client, "act.type", params).await?;
-            print_response(&resp, fmt);
-        }
-
-        Command::Scroll { direction, amount, index, element_ref, selector } => {
-            let wid = resolve_workspace(&cli.workspace, client).await?;
-            let dir = direction.as_deref().unwrap_or("down");
-            let mut params = json!({"wid": wid, "direction": dir});
-            if let Some(a) = amount { params["amount"] = json!(a); }
-            if let Some(r) = element_ref { params["ref"] = json!(r); }
-            else if let Some(i) = index { params["index"] = json!(i); }
-            if let Some(s) = selector { params["selector"] = json!(s); }
-            let resp = send_cmd(client, "act.scroll", params).await?;
-            print_response(&resp, fmt);
-        }
-
-        Command::Select { index, element_ref, value } => {
-            let wid = resolve_workspace(&cli.workspace, client).await?;
-            let mut params = json!({"wid": wid, "value": value});
-            if let Some(r) = element_ref { params["ref"] = json!(r); }
-            else if let Some(i) = index { params["index"] = json!(i); }
-            let resp = send_cmd(client, "act.select", params).await?;
             print_response(&resp, fmt);
         }
 
@@ -1262,12 +1131,24 @@ async fn dispatch(cli: &Cli, client: &mut DaemonClient) -> Result<(), String> {
             print_response(&resp, fmt);
         }
 
-        Command::DropdownOptions { index, element_ref } => {
+        Command::Select { index, element_ref, value } => {
             let wid = resolve_workspace(&cli.workspace, client).await?;
-            let mut params = json!({"wid": wid});
+            let mut params = json!({"wid": wid, "value": value});
             if let Some(r) = element_ref { params["ref"] = json!(r); }
             else if let Some(i) = index { params["index"] = json!(i); }
-            let resp = send_cmd(client, "act.dropdown_options", params).await?;
+            let resp = send_cmd(client, "act.select", params).await?;
+            print_response(&resp, fmt);
+        }
+
+        Command::Scroll { direction, amount, index, element_ref, selector } => {
+            let wid = resolve_workspace(&cli.workspace, client).await?;
+            let dir = direction.as_deref().unwrap_or("down");
+            let mut params = json!({"wid": wid, "direction": dir});
+            if let Some(a) = amount { params["amount"] = json!(a); }
+            if let Some(r) = element_ref { params["ref"] = json!(r); }
+            else if let Some(i) = index { params["index"] = json!(i); }
+            if let Some(s) = selector { params["selector"] = json!(s); }
+            let resp = send_cmd(client, "act.scroll", params).await?;
             print_response(&resp, fmt);
         }
 
@@ -1312,19 +1193,20 @@ async fn dispatch(cli: &Cli, client: &mut DaemonClient) -> Result<(), String> {
             print_response(&resp, fmt);
         }
 
-        Command::Eval { expr } => {
-            ws_cmd!(cli, client, fmt, "js.eval", { "expr" => expr, "await" => true });
-        }
-
-        Command::Html { selector } => {
+        Command::Keys { keys } => {
             let wid = resolve_workspace(&cli.workspace, client).await?;
-            let mut params = json!({"wid": wid});
-            if let Some(s) = selector { params["selector"] = json!(s); }
-            let resp = send_cmd(client, "page.html", params).await?;
+            let resp = send_cmd(client, "act.keys", json!({"wid": wid, "keys": keys})).await?;
             print_response(&resp, fmt);
         }
 
-        Command::FindElements { selector, attributes, max, include_text } => {
+        // ── Page State (top-level) ────────────────────────
+        Command::Info { no_text, screenshot } => {
+            let wid = resolve_workspace(&cli.workspace, client).await?;
+            let resp = send_cmd(client, "page.info", json!({"wid": wid, "no_text": no_text, "screenshot": screenshot})).await?;
+            print_response(&resp, fmt);
+        }
+
+        Command::Find { selector, attributes, max, include_text } => {
             let wid = resolve_workspace(&cli.workspace, client).await?;
             let mut params = json!({"wid": wid, "selector": selector, "include_text": include_text});
             if let Some(attrs) = attributes {
@@ -1336,13 +1218,75 @@ async fn dispatch(cli: &Cli, client: &mut DaemonClient) -> Result<(), String> {
             print_response(&resp, fmt);
         }
 
-        Command::Reload => {
-            ws_cmd!(cli, client, fmt, "nav.reload", {});
+        Command::Search { text, regex, scope, context, max } => {
+            let wid = resolve_workspace(&cli.workspace, client).await?;
+            let mut params = json!({"wid": wid, "text": text, "regex": regex});
+            if let Some(s) = scope { params["scope"] = json!(s); }
+            if let Some(c) = context { params["context"] = json!(c); }
+            if let Some(m) = max { params["max"] = json!(m); }
+            let resp = send_cmd(client, "page.search", params).await?;
+            print_response(&resp, fmt);
         }
 
+        Command::Eval { expr, sync, file } => {
+            let wid = resolve_workspace(&cli.workspace, client).await?;
+            let js_expr = if let Some(path) = file {
+                let content = std::fs::read_to_string(path)
+                    .map_err(|e| format!("failed to read JS file: {}", e))?;
+                const MAX_JS_FILE_SIZE: usize = 5 * 1024 * 1024;
+                if content.len() > MAX_JS_FILE_SIZE {
+                    return Err(format!(
+                        "JS file too large ({} bytes, max {} bytes)",
+                        content.len(), MAX_JS_FILE_SIZE
+                    ));
+                }
+                content
+            } else if let Some(e) = expr {
+                e.clone()
+            } else {
+                return Err("eval requires either an expression or --file".into());
+            };
+            let await_promise = !sync;
+            let resp = send_cmd(client, "js.eval", json!({"wid": wid, "expr": js_expr, "await": await_promise})).await?;
+            print_response(&resp, fmt);
+        }
+
+        Command::Html { selector } => {
+            let wid = resolve_workspace(&cli.workspace, client).await?;
+            let mut params = json!({"wid": wid});
+            if let Some(s) = selector { params["selector"] = json!(s); }
+            let resp = send_cmd(client, "page.html", params).await?;
+            print_response(&resp, fmt);
+        }
+
+        Command::Url => {
+            ws_cmd!(cli, client, fmt, "nav.url", {});
+        }
+
+        Command::Title => {
+            ws_cmd!(cli, client, fmt, "nav.title", {});
+        }
+
+        Command::Console { level, limit } => {
+            let wid = resolve_workspace(&cli.workspace, client).await?;
+            let mut params = json!({"wid": wid, "level": level});
+            if let Some(n) = limit { params["limit"] = json!(n); }
+            let resp = send_cmd(client, "page.console", params).await?;
+            print_response(&resp, fmt);
+        }
+
+        Command::Options { index, element_ref } => {
+            let wid = resolve_workspace(&cli.workspace, client).await?;
+            let mut params = json!({"wid": wid});
+            if let Some(r) = element_ref { params["ref"] = json!(r); }
+            else if let Some(i) = index { params["index"] = json!(i); }
+            let resp = send_cmd(client, "act.dropdown_options", params).await?;
+            print_response(&resp, fmt);
+        }
+
+        // ── Output ────────────────────────────────────────
         Command::Shot { url, output, full_page, selector, labels } => {
             if let Some(target_url) = url {
-                // One-shot mode: create ws → goto → screenshot → close ws
                 dispatch_oneshot_shot(client, fmt, target_url, output, full_page, selector, labels).await?;
             } else {
                 let wid = resolve_workspace(&cli.workspace, client).await?;
@@ -1369,7 +1313,6 @@ async fn dispatch(cli: &Cli, client: &mut DaemonClient) -> Result<(), String> {
         // ── One-shot commands ──────────────────────────────
 
         Command::Open { url, no_headless } => {
-            // Create workspace + navigate, keep workspace alive
             let mut ws_params = json!({});
             if *no_headless { ws_params["headless"] = json!(false); }
             let resp = send_cmd(client, "ws.new", ws_params).await?;
@@ -1382,7 +1325,6 @@ async fn dispatch(cli: &Cli, client: &mut DaemonClient) -> Result<(), String> {
                 .and_then(|v| v.as_str())
                 .ok_or("failed to get wid from ws.new response")?
                 .to_string();
-            // Explicitly set as default (open is a human-terminal convenience command)
             let use_resp = send_cmd(client, "ws.use", json!({"wid": wid})).await?;
             if !use_resp.ok {
                 eprintln!("warning: failed to set default workspace: {}", use_resp.error.unwrap_or_default());
@@ -1392,7 +1334,6 @@ async fn dispatch(cli: &Cli, client: &mut DaemonClient) -> Result<(), String> {
         }
 
         Command::Fetch { url } => {
-            // One-shot: create ws → goto → html → close ws
             let resp = send_cmd(client, "ws.new", json!({})).await?;
             if !resp.ok {
                 print_response(&resp, fmt);
@@ -1409,8 +1350,130 @@ async fn dispatch(cli: &Cli, client: &mut DaemonClient) -> Result<(), String> {
             let _ = send_cmd(client, "ws.close", json!({"wid": wid})).await;
         }
 
-        // ── Aliases ────────────────────────────────────────
+        // ── Overview ──────────────────────────────────────
+        Command::Status => {
+            dispatch_status(client, fmt).await?;
+        }
 
+        // ── Management (Storage) ──────────────────────────
+        Command::Storage { action } => {
+            let wid = resolve_workspace(&cli.workspace, client).await?;
+            match action {
+                StorageAction::Cookies { action: ca } => match ca {
+                    CookieAction::Get => {
+                        let resp = send_cmd(client, "storage.cookies.get", json!({"wid": wid})).await?;
+                        print_response(&resp, fmt);
+                    }
+                    CookieAction::Set { json: j } => {
+                        let cookies: serde_json::Value = serde_json::from_str(j)
+                            .map_err(|e| format!("invalid cookie JSON: {}", e))?;
+                        let resp = send_cmd(client, "storage.cookies.set", json!({"wid": wid, "cookies": cookies})).await?;
+                        print_response(&resp, fmt);
+                    }
+                    CookieAction::Clear => {
+                        let resp = send_cmd(client, "storage.cookies.clear", json!({"wid": wid})).await?;
+                        print_response(&resp, fmt);
+                    }
+                },
+                StorageAction::Local { action: la } => match la {
+                    LocalAction::Get { key } => {
+                        let resp = send_cmd(client, "storage.local.get", json!({"wid": wid, "key": key})).await?;
+                        print_response(&resp, fmt);
+                    }
+                    LocalAction::Set { key, value } => {
+                        let resp = send_cmd(client, "storage.local.set", json!({"wid": wid, "key": key, "value": value})).await?;
+                        print_response(&resp, fmt);
+                    }
+                },
+                StorageAction::Export => {
+                    let resp = send_cmd(client, "storage.export", json!({"wid": wid})).await?;
+                    print_response(&resp, fmt);
+                }
+                StorageAction::Import { file } => {
+                    let content = std::fs::read_to_string(file)
+                        .map_err(|e| format!("failed to read storage file: {}", e))?;
+                    let state: serde_json::Value = serde_json::from_str(&content)
+                        .map_err(|e| format!("invalid storage JSON: {}", e))?;
+                    let resp = send_cmd(client, "storage.import", json!({"wid": wid, "state": state})).await?;
+                    print_response(&resp, fmt);
+                }
+            }
+        },
+
+        // ── Management (Dialog) ───────────────────────────
+        Command::Dialog { action } => {
+            let wid = resolve_workspace(&cli.workspace, client).await?;
+            match action {
+                DialogAction::List => {
+                    let resp = send_cmd(client, "dialog.list", json!({"wid": wid})).await?;
+                    print_response(&resp, fmt);
+                }
+                DialogAction::Accept { tid, text } => {
+                    let mut params = json!({"wid": wid});
+                    if let Some(t) = tid { params["tid"] = json!(t); }
+                    if let Some(txt) = text { params["text"] = json!(txt); }
+                    let resp = send_cmd(client, "dialog.accept", params).await?;
+                    print_response(&resp, fmt);
+                }
+                DialogAction::Dismiss { tid } => {
+                    let mut params = json!({"wid": wid});
+                    if let Some(t) = tid { params["tid"] = json!(t); }
+                    let resp = send_cmd(client, "dialog.dismiss", params).await?;
+                    print_response(&resp, fmt);
+                }
+                DialogAction::Policy { policy } => {
+                    let mut params = json!({"wid": wid});
+                    if let Some(p) = policy { params["policy"] = json!(p); }
+                    let resp = send_cmd(client, "dialog.policy", params).await?;
+                    print_response(&resp, fmt);
+                }
+            }
+        },
+
+        // ── Management (Debug) ────────────────────────────
+        Command::Debug { action } => {
+            let wid = resolve_workspace(&cli.workspace, client).await?;
+            match action {
+                DebugAction::Monitor => {
+                    let resp = send_cmd(client, "network.monitor", json!({"wid": wid})).await?;
+                    print_response(&resp, fmt);
+                    run_streaming(client, fmt).await;
+                }
+                DebugAction::Har { url } => {
+                    let resp = send_cmd(client, "network.har", json!({"wid": wid, "url": url})).await?;
+                    print_response(&resp, fmt);
+                    run_streaming(client, fmt).await;
+                }
+                DebugAction::Block { pattern } => {
+                    let resp = send_cmd(client, "network.block", json!({"wid": wid, "pattern": pattern})).await?;
+                    print_response(&resp, fmt);
+                }
+                DebugAction::Unblock { pattern } => {
+                    let mut params = json!({"wid": wid});
+                    if let Some(p) = pattern { params["pattern"] = json!(p); }
+                    let resp = send_cmd(client, "network.unblock", params).await?;
+                    print_response(&resp, fmt);
+                }
+                DebugAction::Cdp { method, params } => {
+                    let cdp_params = match params {
+                        Some(p) => serde_json::from_str(p)
+                            .map_err(|e| format!("invalid CDP params JSON: {}", e))?,
+                        None => json!({}),
+                    };
+                    let resp = send_cmd(client, "cdp.send", json!({"wid": wid, "method": method, "params": cdp_params})).await?;
+                    print_response(&resp, fmt);
+                }
+                DebugAction::Events { filter } => {
+                    let mut params = json!({"wid": wid});
+                    if let Some(f) = filter { params["filter"] = json!(f); }
+                    let resp = send_cmd(client, "cdp.events", params).await?;
+                    print_response(&resp, fmt);
+                    run_streaming(client, fmt).await;
+                }
+            }
+        },
+
+        // ── Aliases ───────────────────────────────────────
         Command::New { host, label, no_headless } => {
             let mut params = json!({});
             if let Some(h) = host { params["host"] = json!(h); }
@@ -1869,14 +1932,14 @@ mod tests {
     }
 
     #[test]
-    fn dropdown_options_without_target_is_rejected() {
-        let result = try_parse(&["bk", "dropdown-options"]);
-        assert!(result.is_err(), "dropdown-options without --index or --ref should be rejected");
+    fn options_without_target_is_rejected() {
+        let result = try_parse(&["bk", "options"]);
+        assert!(result.is_err(), "options without --index or --ref should be rejected");
     }
 
     #[test]
-    fn dropdown_options_with_ref_succeeds() {
-        let result = try_parse(&["bk", "dropdown-options", "--ref", "77"]);
+    fn options_with_ref_succeeds() {
+        let result = try_parse(&["bk", "options", "--ref", "77"]);
         assert!(result.is_ok());
     }
 
@@ -1909,5 +1972,127 @@ mod tests {
     fn click_x_without_y_is_rejected() {
         let result = try_parse(&["bk", "click", "--x", "100.0"]);
         assert!(result.is_err(), "click with --x but no --y should be rejected");
+    }
+
+    // ── New commands tests ────────────────────────────────────────────
+
+    #[test]
+    fn back_succeeds() {
+        let result = try_parse(&["bk", "back"]);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn forward_succeeds() {
+        let result = try_parse(&["bk", "forward"]);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn url_succeeds() {
+        let result = try_parse(&["bk", "url"]);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn title_succeeds() {
+        let result = try_parse(&["bk", "title"]);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn keys_requires_at_least_one_arg() {
+        let result = try_parse(&["bk", "keys"]);
+        assert!(result.is_err(), "keys without arguments should be rejected");
+    }
+
+    #[test]
+    fn keys_with_single_key_succeeds() {
+        let result = try_parse(&["bk", "keys", "Enter"]);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn keys_with_multiple_keys_succeeds() {
+        let result = try_parse(&["bk", "keys", "Tab", "Tab", "Enter"]);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn keys_with_combo_succeeds() {
+        let result = try_parse(&["bk", "keys", "Control+a"]);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn eval_with_expr_succeeds() {
+        let result = try_parse(&["bk", "eval", "document.title"]);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn eval_with_sync_flag_succeeds() {
+        let result = try_parse(&["bk", "eval", "--sync", "1+1"]);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn eval_with_file_flag_succeeds() {
+        let result = try_parse(&["bk", "eval", "--file", "script.js"]);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn find_requires_selector() {
+        let result = try_parse(&["bk", "find"]);
+        assert!(result.is_err(), "find without selector should be rejected");
+    }
+
+    #[test]
+    fn find_with_selector_succeeds() {
+        let result = try_parse(&["bk", "find", "a[href]"]);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn search_requires_text() {
+        let result = try_parse(&["bk", "search"]);
+        assert!(result.is_err(), "search without text should be rejected");
+    }
+
+    #[test]
+    fn search_with_text_succeeds() {
+        let result = try_parse(&["bk", "search", "hello"]);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn info_succeeds() {
+        let result = try_parse(&["bk", "info"]);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn info_with_flags_succeeds() {
+        let result = try_parse(&["bk", "info", "--no-text", "--screenshot"]);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn console_succeeds() {
+        let result = try_parse(&["bk", "console"]);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn wait_with_selector_succeeds() {
+        let result = try_parse(&["bk", "wait", "--selector", "#foo"]);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn wait_with_text_succeeds() {
+        let result = try_parse(&["bk", "wait", "--text", "Loading"]);
+        assert!(result.is_ok());
     }
 }
