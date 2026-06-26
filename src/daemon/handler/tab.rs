@@ -70,7 +70,6 @@ async fn do_tab_new(
     let target_id = target_resp.target_id;
 
     let attach_resp = cdpkit::target::methods::AttachToTarget::new(target_id.clone())
-        .with_flatten(true)
         .send(cdp.as_ref())
         .await?;
     let cdp_session_id = attach_resp.session_id;
@@ -367,7 +366,6 @@ async fn do_tab_attach(
 
     // Attach to the target (await — cannot hold DashMap lock here)
     let attach_resp = cdpkit::target::methods::AttachToTarget::new(target_id.clone())
-        .with_flatten(true)
         .send(cdp.as_ref())
         .await?;
     let cdp_session_id = attach_resp.session_id.clone();

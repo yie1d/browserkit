@@ -607,7 +607,6 @@ pub async fn restore_into_state(state: &Arc<DaemonState>) {
         let mut attached_tabs: Vec<(String, String)> = Vec::new();
         for tab in ws.tabs.values_mut() {
             match cdpkit::target::methods::AttachToTarget::new(tab.target_id.clone())
-                .with_flatten(true)
                 .send(cdp.as_ref())
                 .await
             {

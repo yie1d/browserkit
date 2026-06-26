@@ -215,8 +215,7 @@ pub fn spawn_auto_attach_task(
             cdpkit::target::events::DetachedFromTarget::subscribe(cdp.as_ref());
 
         // Enable setAutoAttach on the browser-level connection
-        let set_auto = cdpkit::target::methods::SetAutoAttach::new(true, false)
-            .with_flatten(true);
+        let set_auto = cdpkit::target::methods::SetAutoAttach::new(true, false);
         if let Err(e) = set_auto.send(cdp.as_ref()).await {
             warn!(browser_host = %browser_host, error = %e, "auto-attach: failed to enable SetAutoAttach");
             return;
@@ -395,7 +394,6 @@ pub fn spawn_auto_attach_task(
 
                     // Actively attach to this new top-level page target
                     let attach_result = cdpkit::target::methods::AttachToTarget::new(target_info.target_id.clone())
-                        .with_flatten(true)
                         .send(cdp.as_ref())
                         .await;
 

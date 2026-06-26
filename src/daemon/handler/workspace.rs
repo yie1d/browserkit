@@ -99,7 +99,6 @@ async fn do_ws_new(
             }
 
             let attach_resp = cdpkit::target::methods::AttachToTarget::new(target.target_id.clone())
-                .with_flatten(true)
                 .send(cdp.as_ref())
                 .await?;
             let cdp_session_id = attach_resp.session_id.clone();
@@ -226,7 +225,6 @@ async fn do_ws_new(
         let target_id = target_resp.target_id;
 
         let attach_resp = cdpkit::target::methods::AttachToTarget::new(target_id.clone())
-            .with_flatten(true)
             .send(cdp.as_ref())
             .await?;
         let cdp_session_id = attach_resp.session_id;
@@ -431,7 +429,6 @@ async fn merge_into_existing_attached_ws(
         }
 
         let attach_resp = cdpkit::target::methods::AttachToTarget::new(target.target_id.clone())
-            .with_flatten(true)
             .send(cdp.as_ref())
             .await?;
         let cdp_session_id = attach_resp.session_id.clone();
@@ -885,7 +882,6 @@ async fn do_ws_attach(
         }
 
         let attach_resp = cdpkit::target::methods::AttachToTarget::new(target.target_id.clone())
-            .with_flatten(true)
             .send(cdp.as_ref())
             .await?;
         let cdp_session_id = attach_resp.session_id.clone();
