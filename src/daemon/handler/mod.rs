@@ -16,6 +16,7 @@ mod debug;
 mod dialog;
 mod open;
 mod snapshot;
+mod navigate_v2;
 
 use std::sync::Arc;
 
@@ -37,6 +38,7 @@ pub async fn handle_request(
         "connect" | "v2.connect" => connect::handle_connect(req, state).await,
         "open" | "v2.open" => open::handle_open(req, state).await,
         "snapshot" | "v2.snapshot" => snapshot::handle_snapshot(req, state).await,
+        "navigate" | "v2.navigate" => navigate_v2::handle_navigate_v2(req, state).await,
         "daemon.status" => daemon::handle_daemon_status(state, ctx).await,
         "daemon.stop" => daemon::handle_daemon_stop(state, ctx).await,
         "browser.connect" => browser::handle_browser_connect(req, state).await,
