@@ -16,12 +16,12 @@ mod debug;
 mod dialog;
 mod open;
 mod snapshot;
-mod navigate_v2;
-mod act_v2;
-mod tabs_v2;
-mod session_v2;
-mod evaluate_v2;
-mod screenshot_v2;
+mod navigate;
+mod act;
+mod tabs;
+mod session;
+mod evaluate;
+mod screenshot;
 
 use std::sync::Arc;
 
@@ -43,17 +43,17 @@ pub async fn handle_request(
         "connect" | "v2.connect" => connect::handle_connect(req, state).await,
         "open" | "v2.open" => open::handle_open(req, state).await,
         "snapshot" | "v2.snapshot" => snapshot::handle_snapshot(req, state).await,
-        "navigate" | "v2.navigate" => navigate_v2::handle_navigate_v2(req, state).await,
-        "act" | "v2.act" => act_v2::handle_act_v2(req, state).await,
-        "tabs" | "v2.tabs" => tabs_v2::handle_tabs_v2(req, state).await,
-        "close" | "v2.close" => tabs_v2::handle_close_v2(req, state).await,
-        "session.close" | "v2.session.close" => session_v2::handle_session_close(req, state).await,
-        "session.list" | "v2.session.list" => session_v2::handle_session_list(req, state).await,
-        "session.cookies.get" => session_v2::handle_session_cookies_get(req, state).await,
-        "session.cookies.set" => session_v2::handle_session_cookies_set(req, state).await,
-        "session.cookies.clear" => session_v2::handle_session_cookies_clear(req, state).await,
-        "evaluate" | "v2.evaluate" => evaluate_v2::handle_evaluate_v2(req, state).await,
-        "screenshot" | "v2.screenshot" => screenshot_v2::handle_screenshot_v2(req, state).await,
+        "navigate" | "v2.navigate" => navigate::handle_navigate(req, state).await,
+        "act" | "v2.act" => act::handle_act(req, state).await,
+        "tabs" | "v2.tabs" => tabs::handle_tabs(req, state).await,
+        "close" | "v2.close" => tabs::handle_close(req, state).await,
+        "session.close" | "v2.session.close" => session::handle_session_close(req, state).await,
+        "session.list" | "v2.session.list" => session::handle_session_list(req, state).await,
+        "session.cookies.get" => session::handle_session_cookies_get(req, state).await,
+        "session.cookies.set" => session::handle_session_cookies_set(req, state).await,
+        "session.cookies.clear" => session::handle_session_cookies_clear(req, state).await,
+        "evaluate" | "v2.evaluate" => evaluate::handle_evaluate(req, state).await,
+        "screenshot" | "v2.screenshot" => screenshot::handle_screenshot(req, state).await,
         "daemon.status" => daemon::handle_daemon_status(state, ctx).await,
         "daemon.stop" => daemon::handle_daemon_stop(state, ctx).await,
         "browser.connect" => browser::handle_browser_connect(req, state).await,

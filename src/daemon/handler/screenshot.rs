@@ -38,7 +38,7 @@ fn validate_screenshot_params(params: &serde_json::Value) -> ScreenshotParams {
 }
 
 /// Handle the `screenshot` / `v2.screenshot` command.
-pub async fn handle_screenshot_v2(req: &Request, state: &Arc<DaemonState>) -> Response {
+pub async fn handle_screenshot(req: &Request, state: &Arc<DaemonState>) -> Response {
     let params = validate_screenshot_params(&req.params);
 
     // Resolve session
@@ -183,7 +183,7 @@ mod tests {
             params: serde_json::json!({"session": "nonexistent"}),
             token: None,
         };
-        let resp = handle_screenshot_v2(&req, &state).await;
+        let resp = handle_screenshot(&req, &state).await;
         let json = serde_json::to_value(&resp).unwrap();
         assert!(!json["ok"].as_bool().unwrap());
         assert_eq!(json["error"]["code"], "SESSION_NOT_FOUND");
@@ -201,7 +201,7 @@ mod tests {
             params: serde_json::json!({}),
             token: None,
         };
-        let resp = handle_screenshot_v2(&req, &state).await;
+        let resp = handle_screenshot(&req, &state).await;
         let json = serde_json::to_value(&resp).unwrap();
         assert!(!json["ok"].as_bool().unwrap());
         assert_eq!(json["error"]["code"], "CHROME_DISCONNECTED");
@@ -218,7 +218,7 @@ mod tests {
             params: serde_json::json!({}),
             token: None,
         };
-        let resp = handle_screenshot_v2(&req, &state).await;
+        let resp = handle_screenshot(&req, &state).await;
         let json = serde_json::to_value(&resp).unwrap();
         assert!(!json["ok"].as_bool().unwrap());
         assert_eq!(json["error"]["code"], "SESSION_NO_TAB");
@@ -236,7 +236,7 @@ mod tests {
             params: serde_json::json!({"target": "NONEXISTENT"}),
             token: None,
         };
-        let resp = handle_screenshot_v2(&req, &state).await;
+        let resp = handle_screenshot(&req, &state).await;
         let json = serde_json::to_value(&resp).unwrap();
         assert!(!json["ok"].as_bool().unwrap());
         assert_eq!(json["error"]["code"], "TARGET_NOT_FOUND");
@@ -257,7 +257,7 @@ mod tests {
             params: serde_json::json!({}),
             token: None,
         };
-        let resp = handle_screenshot_v2(&req, &state).await;
+        let resp = handle_screenshot(&req, &state).await;
         let json = serde_json::to_value(&resp).unwrap();
         assert!(!json["ok"].as_bool().unwrap());
         assert_eq!(json["error"]["code"], "CHROME_DISCONNECTED");

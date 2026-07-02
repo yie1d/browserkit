@@ -51,7 +51,7 @@ fn validate_evaluate_params(params: &serde_json::Value) -> Result<EvaluateParams
 }
 
 /// Handle the `evaluate` / `v2.evaluate` command.
-pub async fn handle_evaluate_v2(req: &Request, state: &Arc<DaemonState>) -> Response {
+pub async fn handle_evaluate(req: &Request, state: &Arc<DaemonState>) -> Response {
     let params = match validate_evaluate_params(&req.params) {
         Ok(p) => p,
         Err(resp) => return resp,
@@ -201,7 +201,7 @@ mod tests {
             params: serde_json::json!({"expression": "1+1", "session": "nonexistent"}),
             token: None,
         };
-        let resp = handle_evaluate_v2(&req, &state).await;
+        let resp = handle_evaluate(&req, &state).await;
         let json = serde_json::to_value(&resp).unwrap();
         assert!(!json["ok"].as_bool().unwrap());
         assert_eq!(json["error"]["code"], "SESSION_NOT_FOUND");
@@ -219,7 +219,7 @@ mod tests {
             params: serde_json::json!({"expression": "1+1"}),
             token: None,
         };
-        let resp = handle_evaluate_v2(&req, &state).await;
+        let resp = handle_evaluate(&req, &state).await;
         let json = serde_json::to_value(&resp).unwrap();
         assert!(!json["ok"].as_bool().unwrap());
         assert_eq!(json["error"]["code"], "CHROME_DISCONNECTED");
@@ -236,7 +236,7 @@ mod tests {
             params: serde_json::json!({"expression": "1+1"}),
             token: None,
         };
-        let resp = handle_evaluate_v2(&req, &state).await;
+        let resp = handle_evaluate(&req, &state).await;
         let json = serde_json::to_value(&resp).unwrap();
         assert!(!json["ok"].as_bool().unwrap());
         assert_eq!(json["error"]["code"], "SESSION_NO_TAB");
@@ -254,7 +254,7 @@ mod tests {
             params: serde_json::json!({"expression": "1+1", "target": "NONEXISTENT"}),
             token: None,
         };
-        let resp = handle_evaluate_v2(&req, &state).await;
+        let resp = handle_evaluate(&req, &state).await;
         let json = serde_json::to_value(&resp).unwrap();
         assert!(!json["ok"].as_bool().unwrap());
         assert_eq!(json["error"]["code"], "TARGET_NOT_FOUND");
@@ -275,7 +275,7 @@ mod tests {
             params: serde_json::json!({"expression": "1+1"}),
             token: None,
         };
-        let resp = handle_evaluate_v2(&req, &state).await;
+        let resp = handle_evaluate(&req, &state).await;
         let json = serde_json::to_value(&resp).unwrap();
         assert!(!json["ok"].as_bool().unwrap());
         assert_eq!(json["error"]["code"], "CHROME_DISCONNECTED");

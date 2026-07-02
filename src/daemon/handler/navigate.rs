@@ -68,7 +68,7 @@ fn validate_navigate_params(params: &serde_json::Value) -> Result<NavigateParams
 }
 
 /// Handle the `navigate` / `v2.navigate` command.
-pub async fn handle_navigate_v2(req: &Request, state: &Arc<DaemonState>) -> Response {
+pub async fn handle_navigate(req: &Request, state: &Arc<DaemonState>) -> Response {
     let params = match validate_navigate_params(&req.params) {
         Ok(p) => p,
         Err(resp) => return resp,
@@ -280,7 +280,7 @@ mod tests {
             params: serde_json::json!({"url": "https://example.com", "session": "nonexistent"}),
             token: None,
         };
-        let resp = handle_navigate_v2(&req, &state).await;
+        let resp = handle_navigate(&req, &state).await;
         let json = serde_json::to_value(&resp).unwrap();
         assert!(!json["ok"].as_bool().unwrap());
         assert_eq!(json["error"]["code"], "SESSION_NOT_FOUND");
@@ -298,7 +298,7 @@ mod tests {
             params: serde_json::json!({"url": "https://example.com"}),
             token: None,
         };
-        let resp = handle_navigate_v2(&req, &state).await;
+        let resp = handle_navigate(&req, &state).await;
         let json = serde_json::to_value(&resp).unwrap();
         assert!(!json["ok"].as_bool().unwrap());
         assert_eq!(json["error"]["code"], "CHROME_DISCONNECTED");
@@ -316,7 +316,7 @@ mod tests {
             params: serde_json::json!({"url": "https://example.com"}),
             token: None,
         };
-        let resp = handle_navigate_v2(&req, &state).await;
+        let resp = handle_navigate(&req, &state).await;
         let json = serde_json::to_value(&resp).unwrap();
         assert!(!json["ok"].as_bool().unwrap());
         assert_eq!(json["error"]["code"], "SESSION_NO_TAB");
@@ -334,7 +334,7 @@ mod tests {
             params: serde_json::json!({"url": "https://example.com", "target": "NONEXISTENT"}),
             token: None,
         };
-        let resp = handle_navigate_v2(&req, &state).await;
+        let resp = handle_navigate(&req, &state).await;
         let json = serde_json::to_value(&resp).unwrap();
         assert!(!json["ok"].as_bool().unwrap());
         assert_eq!(json["error"]["code"], "TARGET_NOT_FOUND");
@@ -356,7 +356,7 @@ mod tests {
             params: serde_json::json!({"url": "https://example.com"}),
             token: None,
         };
-        let resp = handle_navigate_v2(&req, &state).await;
+        let resp = handle_navigate(&req, &state).await;
         let json = serde_json::to_value(&resp).unwrap();
         assert!(!json["ok"].as_bool().unwrap());
         assert_eq!(json["error"]["code"], "CHROME_DISCONNECTED");

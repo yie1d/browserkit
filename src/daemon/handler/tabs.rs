@@ -64,7 +64,7 @@ fn close_tab_in_session(state: &Arc<DaemonState>, session_name: &str, target_id:
 }
 
 /// Handle `bk tabs` — list all tabs in the specified (or default) session.
-pub async fn handle_tabs_v2(req: &Request, state: &Arc<DaemonState>) -> Response {
+pub async fn handle_tabs(req: &Request, state: &Arc<DaemonState>) -> Response {
     let session_name = req
         .params
         .get("session")
@@ -82,7 +82,7 @@ pub async fn handle_tabs_v2(req: &Request, state: &Arc<DaemonState>) -> Response
 /// If no `target` param is provided, closes the session's active tab.
 /// Sends CDP `Target.closeTarget`, removes the tab from session state,
 /// and updates `active_target` to fallback.
-pub async fn handle_close_v2(req: &Request, state: &Arc<DaemonState>) -> Response {
+pub async fn handle_close(req: &Request, state: &Arc<DaemonState>) -> Response {
     let session_name = req
         .params
         .get("session")

@@ -198,7 +198,7 @@ fn build_act_response(
 // ── Main handler ─────────────────────────────────────────────────────────────
 
 /// Handle the `act` / `v2.act` command.
-pub async fn handle_act_v2(req: &Request, state: &Arc<DaemonState>) -> Response {
+pub async fn handle_act(req: &Request, state: &Arc<DaemonState>) -> Response {
     let params = match parse_act_params(&req.params) {
         Ok(p) => p,
         Err(resp) => return resp,
@@ -594,21 +594,21 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn handle_act_v2_session_not_found() {
+    async fn handle_act_session_not_found() {
         let state = Arc::new(DaemonState::new());
         let req = Request {
             cmd: "act".into(),
             params: json!({"kind": "click", "ref": 1, "session": "nonexistent"}),
             token: None,
         };
-        let resp = handle_act_v2(&req, &state).await;
+        let resp = handle_act(&req, &state).await;
         let json = serde_json::to_value(&resp).unwrap();
         assert_eq!(json["ok"], false);
         assert_eq!(json["error"]["code"], "SESSION_NOT_FOUND");
     }
 
     #[tokio::test]
-    async fn handle_act_v2_session_disconnected() {
+    async fn handle_act_session_disconnected() {
         let state = Arc::new(DaemonState::new());
         let mut session = Session::new_default("localhost:9222".into());
         session.mark_disconnected();
@@ -619,14 +619,14 @@ mod tests {
             params: json!({"kind": "click", "ref": 1}),
             token: None,
         };
-        let resp = handle_act_v2(&req, &state).await;
+        let resp = handle_act(&req, &state).await;
         let json = serde_json::to_value(&resp).unwrap();
         assert_eq!(json["ok"], false);
         assert_eq!(json["error"]["code"], "CHROME_DISCONNECTED");
     }
 
     #[tokio::test]
-    async fn handle_act_v2_no_active_tab() {
+    async fn handle_act_no_active_tab() {
         let state = Arc::new(DaemonState::new());
         let session = Session::new_default("localhost:9222".into());
         state.sessions.insert("default".into(), session);
@@ -636,14 +636,14 @@ mod tests {
             params: json!({"kind": "click", "ref": 1}),
             token: None,
         };
-        let resp = handle_act_v2(&req, &state).await;
+        let resp = handle_act(&req, &state).await;
         let json = serde_json::to_value(&resp).unwrap();
         assert_eq!(json["ok"], false);
         assert_eq!(json["error"]["code"], "SESSION_NO_TAB");
     }
 
     #[tokio::test]
-    async fn handle_act_v2_target_not_in_session() {
+    async fn handle_act_target_not_in_session() {
         let state = Arc::new(DaemonState::new());
         let mut session = Session::new_default("localhost:9222".into());
         session.add_tab("TAB1".into(), "https://x.com".into(), "X".into());
@@ -654,14 +654,14 @@ mod tests {
             params: json!({"kind": "click", "ref": 1, "target": "NONEXISTENT"}),
             token: None,
         };
-        let resp = handle_act_v2(&req, &state).await;
+        let resp = handle_act(&req, &state).await;
         let json = serde_json::to_value(&resp).unwrap();
         assert_eq!(json["ok"], false);
         assert_eq!(json["error"]["code"], "TARGET_NOT_FOUND");
     }
 
     #[tokio::test]
-    async fn handle_act_v2_no_browser_connection() {
+    async fn handle_act_no_browser_connection() {
         let state = Arc::new(DaemonState::new());
         let mut session = Session::new_default("localhost:9222".into());
         session.add_tab("TAB1".into(), "https://x.com".into(), "X".into());
@@ -672,7 +672,7 @@ mod tests {
             params: json!({"kind": "click", "ref": 1}),
             token: None,
         };
-        let resp = handle_act_v2(&req, &state).await;
+        let resp = handle_act(&req, &state).await;
         let json = serde_json::to_value(&resp).unwrap();
         assert_eq!(json["ok"], false);
         assert_eq!(json["error"]["code"], "CHROME_DISCONNECTED");
