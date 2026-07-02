@@ -20,6 +20,8 @@ mod navigate_v2;
 mod act_v2;
 mod tabs_v2;
 mod session_v2;
+mod evaluate_v2;
+mod screenshot_v2;
 
 use std::sync::Arc;
 
@@ -50,6 +52,8 @@ pub async fn handle_request(
         "session.cookies.get" => session_v2::handle_session_cookies_get(req, state).await,
         "session.cookies.set" => session_v2::handle_session_cookies_set(req, state).await,
         "session.cookies.clear" => session_v2::handle_session_cookies_clear(req, state).await,
+        "evaluate" | "v2.evaluate" => evaluate_v2::handle_evaluate_v2(req, state).await,
+        "screenshot" | "v2.screenshot" => screenshot_v2::handle_screenshot_v2(req, state).await,
         "daemon.status" => daemon::handle_daemon_status(state, ctx).await,
         "daemon.stop" => daemon::handle_daemon_stop(state, ctx).await,
         "browser.connect" => browser::handle_browser_connect(req, state).await,

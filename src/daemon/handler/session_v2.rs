@@ -9,6 +9,7 @@
 use std::sync::Arc;
 
 use serde_json::json;
+use tracing;
 
 use crate::daemon::protocol::{Request, Response};
 use crate::daemon::session::SessionMode;
@@ -193,6 +194,12 @@ pub async fn handle_session_cookies_get(req: &Request, state: &Arc<DaemonState>)
     }
 
     let browser_host = session.browser_host.clone();
+    // Get CDP session ID from active tab for proper BrowserContext isolation
+    let cdp_session_id = session
+        .active_target
+        .as_ref()
+        .and_then(|tid| session.tabs.get(tid))
+        .map(|tab| tab.cdp_session_id.clone());
     drop(session);
 
     let cdp = match state.browsers.get(&browser_host) {
@@ -206,10 +213,20 @@ pub async fn handle_session_cookies_get(req: &Request, state: &Arc<DaemonState>)
         }
     };
 
-    match cdpkit::network::methods::GetCookies::new()
-        .send(cdp.as_ref())
-        .await
-    {
+    let result = if let Some(session_id) = cdp_session_id {
+        let session = cdp.session(&session_id);
+        cdpkit::network::methods::GetCookies::new()
+            .send(&session)
+            .await
+    } else {
+        // No active tab — fallback to browser level
+        tracing::warn!(session = session_name, "no active tab; getting cookies at browser level (no BrowserContext isolation)");
+        cdpkit::network::methods::GetCookies::new()
+            .send(cdp.as_ref())
+            .await
+    };
+
+    match result {
         Ok(result) => {
             // Serialize cookies to JSON value
             let cookies = serde_json::to_value(&result.cookies).unwrap_or(json!([]));
@@ -314,6 +331,12 @@ pub async fn handle_session_cookies_set(req: &Request, state: &Arc<DaemonState>)
     }
 
     let browser_host = session.browser_host.clone();
+    // Get CDP session ID from active tab for proper BrowserContext isolation
+    let cdp_session_id = session
+        .active_target
+        .as_ref()
+        .and_then(|tid| session.tabs.get(tid))
+        .map(|tab| tab.cdp_session_id.clone());
     drop(session);
 
     let cdp = match state.browsers.get(&browser_host) {
@@ -327,10 +350,20 @@ pub async fn handle_session_cookies_set(req: &Request, state: &Arc<DaemonState>)
         }
     };
 
-    match cdpkit::network::methods::SetCookies::new(cookies)
-        .send(cdp.as_ref())
-        .await
-    {
+    let result = if let Some(session_id) = cdp_session_id {
+        let session = cdp.session(&session_id);
+        cdpkit::network::methods::SetCookies::new(cookies)
+            .send(&session)
+            .await
+    } else {
+        // No active tab — fallback to browser level
+        tracing::warn!(session = session_name, "no active tab; setting cookies at browser level (no BrowserContext isolation)");
+        cdpkit::network::methods::SetCookies::new(cookies)
+            .send(cdp.as_ref())
+            .await
+    };
+
+    match result {
         Ok(_) => Response::ok(json!({ "set": true, "count": cookie_count })),
         Err(e) => Response::error_detail(
             ErrorCode::DaemonError,
@@ -364,6 +397,12 @@ pub async fn handle_session_cookies_clear(req: &Request, state: &Arc<DaemonState
     }
 
     let browser_host = session.browser_host.clone();
+    // Get CDP session ID from active tab for proper BrowserContext isolation
+    let cdp_session_id = session
+        .active_target
+        .as_ref()
+        .and_then(|tid| session.tabs.get(tid))
+        .map(|tab| tab.cdp_session_id.clone());
     drop(session);
 
     let cdp = match state.browsers.get(&browser_host) {
@@ -377,10 +416,20 @@ pub async fn handle_session_cookies_clear(req: &Request, state: &Arc<DaemonState
         }
     };
 
-    match cdpkit::network::methods::ClearBrowserCookies::new()
-        .send(cdp.as_ref())
-        .await
-    {
+    let result = if let Some(session_id) = cdp_session_id {
+        let session = cdp.session(&session_id);
+        cdpkit::network::methods::ClearBrowserCookies::new()
+            .send(&session)
+            .await
+    } else {
+        // No active tab — fallback to browser level
+        tracing::warn!(session = session_name, "no active tab; clearing cookies at browser level (no BrowserContext isolation)");
+        cdpkit::network::methods::ClearBrowserCookies::new()
+            .send(cdp.as_ref())
+            .await
+    };
+
+    match result {
         Ok(_) => Response::ok(json!({ "cleared": true })),
         Err(e) => Response::error_detail(
             ErrorCode::DaemonError,

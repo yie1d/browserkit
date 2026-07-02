@@ -133,22 +133,25 @@ pub async fn handle_navigate_v2(req: &Request, state: &Arc<DaemonState>) -> Resp
 
     // Execute navigation using existing page::navigation functions.
     // These already handle wait_for_load internally.
-    let _timeout = std::time::Duration::from_millis(params.timeout);
-    let nav_result = match &params.action {
-        NavAction::Goto(url) => crate::page::navigation::goto(&cdp, cdp_session_id, url).await,
-        NavAction::Back => crate::page::navigation::back(&cdp, cdp_session_id)
-            .await
-            .map(|()| String::new()),
-        NavAction::Forward => crate::page::navigation::forward(&cdp, cdp_session_id)
-            .await
-            .map(|()| String::new()),
-        NavAction::Reload => crate::page::navigation::reload(&cdp, cdp_session_id)
-            .await
-            .map(|()| String::new()),
-    };
+    let timeout_dur = std::time::Duration::from_millis(params.timeout);
+    let nav_result = tokio::time::timeout(timeout_dur, async {
+        match &params.action {
+            NavAction::Goto(url) => crate::page::navigation::goto(&cdp, cdp_session_id, url).await,
+            NavAction::Back => crate::page::navigation::back(&cdp, cdp_session_id)
+                .await
+                .map(|()| String::new()),
+            NavAction::Forward => crate::page::navigation::forward(&cdp, cdp_session_id)
+                .await
+                .map(|()| String::new()),
+            NavAction::Reload => crate::page::navigation::reload(&cdp, cdp_session_id)
+                .await
+                .map(|()| String::new()),
+        }
+    })
+    .await;
 
     match nav_result {
-        Ok(_) => {
+        Ok(Ok(_)) => {
             // Get current URL and title after navigation
             let url = crate::page::navigation::get_url(&cdp, cdp_session_id)
                 .await
@@ -181,9 +184,14 @@ pub async fn handle_navigate_v2(req: &Request, state: &Arc<DaemonState>) -> Resp
                 "target": target_id,
             }))
         }
-        Err(e) => Response::error_detail(
+        Ok(Err(e)) => Response::error_detail(
             ErrorCode::NavigateFailed,
             format!("navigation failed: {e}"),
+            None,
+        ),
+        Err(_) => Response::error_detail(
+            ErrorCode::Timeout,
+            format!("navigation timed out after {}ms", params.timeout),
             None,
         ),
     }

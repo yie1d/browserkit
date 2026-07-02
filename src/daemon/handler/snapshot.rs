@@ -86,22 +86,30 @@ fn validate_snapshot_params(params: &serde_json::Value) -> SnapshotParams {
     }
 }
 
-/// Truncate page text to the given maximum length.
+/// Truncate page text to the given maximum length (in bytes).
 /// Attempts to break at paragraph or sentence boundaries when possible.
+/// Safely handles multi-byte characters by finding valid UTF-8 boundaries.
 fn truncate_page_text(text: &str, max: usize) -> &str {
     if text.len() <= max {
         return text;
     }
-    let slice = &text[..max];
+    // Find the last valid char boundary at or before `max`
+    let boundary = text
+        .char_indices()
+        .take_while(|(i, _)| *i < max)
+        .last()
+        .map(|(i, c)| i + c.len_utf8())
+        .unwrap_or(0);
+    let slice = &text[..boundary];
     // Try paragraph boundary
     if let Some(pos) = slice.rfind('\n') {
-        if pos > max / 2 {
+        if pos > boundary / 2 {
             return &text[..pos];
         }
     }
     // Try sentence boundary
     if let Some(pos) = slice.rfind(". ") {
-        if pos > max / 2 {
+        if pos > boundary / 2 {
             return &text[..pos + 1];
         }
     }
@@ -251,32 +259,44 @@ pub async fn handle_snapshot(req: &Request, state: &Arc<DaemonState>) -> Respons
 
     // Apply wait strategy
     if params.wait_strategy != WaitStrategy::None {
-        let wait_js = match params.wait_strategy {
-            WaitStrategy::DomStable => DOM_STABLE_JS,
+        match params.wait_strategy {
+            WaitStrategy::DomStable => {
+                let wait_result = tokio::time::timeout(
+                    std::time::Duration::from_millis(params.timeout),
+                    cdpkit::runtime::methods::Evaluate::new(DOM_STABLE_JS)
+                        .with_await_promise(true)
+                        .send(&cdp_session),
+                )
+                .await;
+
+                match wait_result {
+                    Ok(Ok(_)) => {} // Wait completed successfully
+                    Ok(Err(_)) => {} // JS error during wait -- proceed with snapshot anyway
+                    Err(_) => {} // Timeout -- proceed with snapshot of current state
+                }
+            }
             WaitStrategy::NetworkIdle => {
-                // For network idle, we use the existing page wait logic's networkidle approach.
-                // For now, fall back to DOM stable as a reasonable approximation in snapshot context.
-                // Full network idle support uses the event-driven in-flight tracking from page/wait.rs.
-                DOM_STABLE_JS
+                // Use the real event-driven networkidle implementation from page/wait.rs
+                let conditions = crate::page::wait::WaitConditions {
+                    time: None,
+                    selector: None,
+                    text: None,
+                    text_gone: None,
+                    url: None,
+                    load_state: None,
+                    networkidle: true,
+                    js_fn: None,
+                    timeout: params.timeout,
+                };
+                // Best-effort: if networkidle fails or times out, proceed with snapshot anyway
+                let _ = crate::page::wait::wait_for_conditions(
+                    &cdp,
+                    &session_tab.cdp_session_id,
+                    &conditions,
+                )
+                .await;
             }
             WaitStrategy::None => unreachable!(),
-        };
-
-        let wait_result = tokio::time::timeout(
-            std::time::Duration::from_millis(params.timeout),
-            cdpkit::runtime::methods::Evaluate::new(wait_js)
-                .with_await_promise(true)
-                .send(&cdp_session),
-        )
-        .await;
-
-        match wait_result {
-            Ok(Ok(_)) => {} // Wait completed successfully
-            Ok(Err(_)) => {} // JS error during wait -- proceed with snapshot anyway
-            Err(_) => {
-                // Timeout -- proceed with snapshot of current state
-                // (don't fail, just collect what we have)
-            }
         }
     }
 
@@ -438,6 +458,41 @@ mod tests {
         // slice[..2000] has ". " at position 1200
         let truncated = truncate_page_text(&text, 2000);
         assert_eq!(truncated.len(), 1201); // includes the period
+    }
+
+    #[test]
+    fn page_text_truncation_cjk_boundary() {
+        // CJK characters are 3 bytes each in UTF-8
+        // "aaaa" (4 bytes) + "中文测试" (12 bytes) = 16 bytes total
+        // truncate at max=7 should not panic and should land on a char boundary
+        let text = "aaaa中文测试";
+        let truncated = truncate_page_text(text, 7);
+        // 4 bytes of 'a' + 3 bytes of '中' = 7, which is a valid char boundary
+        assert_eq!(truncated, "aaaa中");
+        assert!(truncated.is_char_boundary(truncated.len()));
+    }
+
+    #[test]
+    fn page_text_truncation_emoji_boundary() {
+        // "hello" = 5 bytes, "😀" = 4 bytes, "world" = 5 bytes; total = 14
+        // max = 7: chars starting at byte < 7 are included: h(0),e(1),l(2),l(3),o(4),😀(5)
+        // boundary = 5 + 4 = 9; slice = "hello😀"
+        let text = "hello😀world";
+        let truncated = truncate_page_text(text, 7);
+        assert_eq!(truncated, "hello\u{1f600}");
+        assert!(truncated.is_char_boundary(truncated.len()));
+    }
+
+    #[test]
+    fn page_text_truncation_mid_multibyte() {
+        // "ab中文" = 2 + 3 + 3 = 8 bytes
+        // max = 4: chars starting at byte < 4 are included: 'a'(0), 'b'(1), '中'(2)
+        // '文' starts at byte 5 which is >= 4, excluded
+        // boundary = 2 + 3 = 5; slice = "ab中"
+        let text = "ab中文";
+        let truncated = truncate_page_text(text, 4);
+        assert_eq!(truncated, "ab中");
+        assert!(truncated.is_char_boundary(truncated.len()));
     }
 
     #[test]

@@ -1183,7 +1183,7 @@ async fn dispatch(cli: &Cli, client: &mut DaemonClient) -> Result<(), String> {
             if let Some(s) = &cli.session { params["session"] = json!(s); }
             if let Some(t) = &cli.target { params["target"] = json!(t); }
             if let Some(to) = cli.timeout { params["timeout"] = json!(to); }
-            let resp = send_cmd(client, "js.eval", json!({"wid": "_v2", "expr": js_expr, "await": true})).await?;
+            let resp = send_cmd(client, "evaluate", params).await?;
             print_response(&resp);
         }
 
@@ -1192,11 +1192,7 @@ async fn dispatch(cli: &Cli, client: &mut DaemonClient) -> Result<(), String> {
             if let Some(o) = output { params["output"] = json!(o); }
             if let Some(s) = &cli.session { params["session"] = json!(s); }
             if let Some(t) = &cli.target { params["target"] = json!(t); }
-            // For now route through v1 handler with workspace resolution
-            let wid = resolve_workspace(client).await.unwrap_or_default();
-            let mut p = json!({"wid": wid, "full_page": full_page});
-            if let Some(o) = output { p["output"] = json!(o); }
-            let resp = send_cmd(client, "page.screenshot", p).await?;
+            let resp = send_cmd(client, "screenshot", params).await?;
             handle_binary_response(&resp, output.as_deref(), "screenshot.png");
         }
 
