@@ -140,6 +140,24 @@ impl DaemonState {
     }
 }
 
+/// Spawn a background task that detects WebSocket closure for a browser.
+/// Uses cdpkit's `CDP::closed().await` which resolves when the WebSocket
+/// closes (Chrome crash, shutdown, or network error).
+///
+/// When triggered, removes the browser from state and marks all associated
+/// sessions as disconnected so subsequent commands return `CHROME_DISCONNECTED`.
+pub fn spawn_disconnect_monitor(
+    state: Arc<DaemonState>,
+    host: String,
+    cdp: Arc<CDP>,
+) {
+    tokio::spawn(async move {
+        cdp.closed().await;
+        tracing::warn!(host = %host, "CDP WebSocket closed, triggering disconnect cleanup");
+        state.handle_browser_disconnect(&host);
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

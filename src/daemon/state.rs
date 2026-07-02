@@ -131,6 +131,25 @@ impl DaemonState {
     pub fn set_default_wid(&self, wid: Option<Wid>) {
         *self.default_wid.lock() = wid;
     }
+
+    /// Called when a browser WebSocket disconnects (Chrome crash, shutdown, or network error).
+    /// Removes browser from DashMap, cancels auto-attach tasks, and marks all sessions
+    /// using that browser as disconnected.
+    pub fn handle_browser_disconnect(&self, host: &str) {
+        self.browsers.remove(host);
+        // Cancel any auto-attach tasks for this host
+        if let Some((_, token)) = self.auto_attach_tasks.remove(host) {
+            token.cancel();
+        }
+        // Mark all sessions using this browser as disconnected
+        for mut entry in self.sessions.iter_mut() {
+            if entry.value().browser_host == host {
+                entry.value_mut().mark_disconnected();
+            }
+        }
+        self.request_persist();
+        tracing::warn!(host, "browser disconnected, sessions marked");
+    }
 }
 
 impl Default for DaemonState {
@@ -306,5 +325,53 @@ mod tests {
         let state = DaemonState::new();
         let err = resolve_wid(&state, "a3").unwrap_err();
         assert!(err.to_string().contains("workspace not found"));
+    }
+
+    #[test]
+    fn cleanup_sessions_on_browser_disconnect() {
+        use crate::daemon::session::Session;
+
+        let state = DaemonState::new();
+        // Insert a session tied to this host
+        let mut session = Session::new_default("localhost:9222".into());
+        session.add_tab("T1".into(), "https://x.com".into(), "X".into());
+        state.sessions.insert("default".into(), session);
+
+        // Insert a browser entry (use a real-looking Browser)
+        // We cannot create a real CDP, so just insert a session and verify it's marked.
+        // Browser removal is tested by checking the map after disconnect.
+        // For this test we skip inserting an actual Browser (requires real CDP).
+        // Instead, we test that sessions are marked disconnected and auto_attach_tasks cleaned.
+        let token = CancellationToken::new();
+        state.auto_attach_tasks.insert("localhost:9222".into(), token.clone());
+
+        // Call handle_browser_disconnect
+        state.handle_browser_disconnect("localhost:9222");
+
+        // Browser should be removed (it wasn't there, so just verify no panic)
+        assert!(!state.browsers.contains_key("localhost:9222"));
+        // Auto-attach task token should be cancelled
+        assert!(token.is_cancelled());
+        assert!(!state.auto_attach_tasks.contains_key("localhost:9222"));
+        // Session should be marked disconnected
+        let s = state.sessions.get("default").unwrap();
+        assert!(s.disconnected);
+    }
+
+    #[test]
+    fn cleanup_sessions_unrelated_session_not_affected() {
+        use crate::daemon::session::Session;
+
+        let state = DaemonState::new();
+        // Session on a different host
+        let session = Session::new_default("localhost:9333".into());
+        state.sessions.insert("other".into(), session);
+
+        // Disconnect a different host
+        state.handle_browser_disconnect("localhost:9222");
+
+        // The unrelated session should NOT be marked disconnected
+        let s = state.sessions.get("other").unwrap();
+        assert!(!s.disconnected);
     }
 }

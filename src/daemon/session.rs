@@ -8,6 +8,9 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
+use crate::daemon::protocol::Response;
+use crate::error::ErrorCode;
+
 /// Session operation mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -36,6 +39,9 @@ pub struct Session {
     pub active_target: Option<String>,
     pub created_at: u64,
     pub last_active: u64,
+    /// Set to true when the backing browser WebSocket closes unexpectedly.
+    #[serde(default)]
+    pub disconnected: bool,
 }
 
 impl Session {
@@ -51,6 +57,7 @@ impl Session {
             active_target: None,
             created_at: now,
             last_active: now,
+            disconnected: false,
         }
     }
 
@@ -66,6 +73,7 @@ impl Session {
             active_target: None,
             created_at: now,
             last_active: now,
+            disconnected: false,
         }
     }
 
@@ -107,6 +115,24 @@ impl Session {
     /// Update last_active timestamp to now.
     pub fn touch(&mut self) {
         self.last_active = now_ts();
+    }
+
+    /// Mark this session as disconnected from its browser.
+    pub fn mark_disconnected(&mut self) {
+        self.disconnected = true;
+    }
+
+    /// Returns an error response if this session is disconnected.
+    pub fn check_connected(&self) -> Result<(), Response> {
+        if self.disconnected {
+            Err(Response::error_detail(
+                ErrorCode::ChromeDisconnected,
+                format!("browser for session '{}' has disconnected", self.name),
+                None,
+            ))
+        } else {
+            Ok(())
+        }
     }
 }
 
@@ -217,5 +243,30 @@ mod tests {
         s.remove_tab("TAB1");
         assert_eq!(s.tab_count(), 0);
         assert_eq!(s.active_target, None);
+    }
+
+    #[test]
+    fn session_disconnected_flag() {
+        let mut s = Session::new_default("localhost:9222".into());
+        assert!(!s.disconnected);
+        s.mark_disconnected();
+        assert!(s.disconnected);
+    }
+
+    #[test]
+    fn session_check_connected_ok_when_connected() {
+        let s = Session::new_default("localhost:9222".into());
+        assert!(s.check_connected().is_ok());
+    }
+
+    #[test]
+    fn session_check_connected_err_when_disconnected() {
+        let mut s = Session::new_default("localhost:9222".into());
+        s.mark_disconnected();
+        let err = s.check_connected().unwrap_err();
+        let json = serde_json::to_value(&err).unwrap();
+        assert_eq!(json["ok"], false);
+        assert_eq!(json["error"]["code"], "CHROME_DISCONNECTED");
+        assert!(json["error"]["message"].as_str().unwrap().contains("default"));
     }
 }
