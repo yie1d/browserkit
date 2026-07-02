@@ -5,6 +5,7 @@ pub mod find_elements;
 pub mod interaction;
 pub mod navigation;
 pub mod state;
+pub mod state_diff;
 pub mod wait;
 
 use std::collections::VecDeque;

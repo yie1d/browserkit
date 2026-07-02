@@ -1,7 +1,7 @@
 // Handler for the v2 `act` command (click/type/press).
 //
 // Unified action dispatcher for the three most common interactions.
-// Each returns result + state_diff (null until Task 11 integrates it).
+// Each returns result + state_diff (before/after URL/title/element comparison).
 //
 // Session/target resolution follows the same pattern as snapshot/navigate.
 
@@ -13,6 +13,7 @@ use tracing::info;
 use crate::daemon::protocol::{Request, Response};
 use crate::daemon::state::DaemonState;
 use crate::error::ErrorCode;
+use crate::page::state_diff::{capture_state_snapshot, compute_state_diff};
 
 // ── ActKind enum ─────────────────────────────────────────────────────────────
 
@@ -259,13 +260,49 @@ pub async fn handle_act_v2(req: &Request, state: &Arc<DaemonState>) -> Response 
     };
 
     let cdp_session_id = &session_tab.cdp_session_id;
+    let cdp_session = cdp.session(cdp_session_id);
+
+    // Capture before-snapshot for state_diff (unless opted out)
+    let before_snapshot = if !params.no_state_diff {
+        capture_state_snapshot(&cdp_session).await.ok()
+    } else {
+        None
+    };
 
     // Dispatch by kind
-    match params.kind {
+    let action_result = match params.kind {
         ActKind::Click => execute_click(&cdp, cdp_session_id, &params, &target_id).await,
         ActKind::Type => execute_type(&cdp, cdp_session_id, &params, &target_id).await,
         ActKind::Press => execute_press(&cdp, cdp_session_id, &params, &target_id).await,
-    }
+    };
+
+    // If the action failed, return the error response directly
+    let (action_name, action_ref_id) = match &action_result {
+        Ok(success) => (success.action.clone(), success.ref_id),
+        Err(resp) => return resp.clone(),
+    };
+
+    // Compute state_diff after action (with 500ms DOM settle window)
+    let state_diff_json = if let Some(before) = before_snapshot {
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        match capture_state_snapshot(&cdp_session).await {
+            Ok(after) => Some(compute_state_diff(&before, &after).to_json()),
+            Err(_) => None,
+        }
+    } else {
+        None
+    };
+
+    info!(action = %action_name, ref_id = ?action_ref_id, target = %target_id, "act completed");
+    build_act_response(&action_name, action_ref_id, "completed", state_diff_json, None, &target_id)
+}
+
+// ── Action result ────────────────────────────────────────────────────────────
+
+/// Successful action outcome (before state_diff is attached).
+struct ActionSuccess {
+    action: String,
+    ref_id: Option<i64>,
 }
 
 // ── Click execution ──────────────────────────────────────────────────────────
@@ -275,8 +312,8 @@ async fn execute_click(
     cdp: &Arc<cdpkit::CDP>,
     session_id: &str,
     params: &ActParams,
-    target_id: &str,
-) -> Response {
+    _target_id: &str,
+) -> Result<ActionSuccess, Response> {
     use crate::page::element_ref::ElementTarget;
     use crate::page::interaction::{click_coordinates, click_element_by_target};
 
@@ -290,10 +327,10 @@ async fn execute_click(
     };
 
     match result {
-        Ok(()) => {
-            info!(action = "click", ref_id = ?params.ref_id, target = %target_id, "act completed");
-            build_act_response("click", params.ref_id, "completed", None, None, target_id)
-        }
+        Ok(()) => Ok(ActionSuccess {
+            action: "click".into(),
+            ref_id: params.ref_id,
+        }),
         Err(e) => {
             let code = match &e {
                 crate::error::BkError::Other(msg) if msg.contains("not found") => {
@@ -301,7 +338,7 @@ async fn execute_click(
                 }
                 _ => ErrorCode::JsError,
             };
-            Response::error_detail(code, format!("click failed: {e}"), None)
+            Err(Response::error_detail(code, format!("click failed: {e}"), None))
         }
     }
 }
@@ -313,8 +350,8 @@ async fn execute_type(
     cdp: &Arc<cdpkit::CDP>,
     session_id: &str,
     params: &ActParams,
-    target_id: &str,
-) -> Response {
+    _target_id: &str,
+) -> Result<ActionSuccess, Response> {
     use crate::page::element_ref::ElementTarget;
     use crate::page::interaction::type_text_by_target;
 
@@ -328,10 +365,10 @@ async fn execute_type(
     let result = type_text_by_target(cdp, session_id, &target, text, clear).await;
 
     match result {
-        Ok(()) => {
-            info!(action = "type", ref_id = ref_id, target = %target_id, "act completed");
-            build_act_response("type", Some(ref_id), "completed", None, None, target_id)
-        }
+        Ok(()) => Ok(ActionSuccess {
+            action: "type".into(),
+            ref_id: Some(ref_id),
+        }),
         Err(e) => {
             let code = match &e {
                 crate::error::BkError::Other(msg) if msg.contains("not found") => {
@@ -339,7 +376,7 @@ async fn execute_type(
                 }
                 _ => ErrorCode::JsError,
             };
-            Response::error_detail(code, format!("type failed: {e}"), None)
+            Err(Response::error_detail(code, format!("type failed: {e}"), None))
         }
     }
 }
@@ -351,24 +388,26 @@ async fn execute_press(
     cdp: &Arc<cdpkit::CDP>,
     session_id: &str,
     params: &ActParams,
-    target_id: &str,
-) -> Response {
+    _target_id: &str,
+) -> Result<ActionSuccess, Response> {
     use super::action::dispatch_key_combo;
 
     let session = cdp.session(session_id);
 
     for key in &params.keys {
         if let Err(e) = dispatch_key_combo(&session, key).await {
-            return Response::error_detail(
+            return Err(Response::error_detail(
                 ErrorCode::JsError,
                 format!("press '{}' failed: {e}", key),
                 None,
-            );
+            ));
         }
     }
 
-    info!(action = "press", keys = ?params.keys, target = %target_id, "act completed");
-    build_act_response("press", None, "completed", None, None, target_id)
+    Ok(ActionSuccess {
+        action: "press".into(),
+        ref_id: None,
+    })
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────
