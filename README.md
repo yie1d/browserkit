@@ -1,6 +1,6 @@
 # browserkit
 
-Browser automation CLI and daemon built on [cdpkit](https://crates.io/crates/cdpkit). Controls headless or visible Chrome instances through persistent CDP connections.
+Browser automation CLI for LLM agents, built on [cdpkit](https://crates.io/crates/cdpkit). Connects to the user's own Chrome through persistent CDP sessions. All output is JSON.
 
 ## Architecture
 
@@ -12,7 +12,7 @@ Browser automation CLI and daemon built on [cdpkit](https://crates.io/crates/cdp
 ┌──────────────────────▼──────────────────────────────┐
 │                   bk daemon                         │
 │  ┌─────────────┐  ┌──────────────┐  ┌───────────┐  │
-│  │  workspaces │  │   browsers   │  │  persist  │  │
+│  │  sessions   │  │   browsers   │  │  persist  │  │
 │  │  (DashMap)  │  │  (DashMap)   │  │  (async)  │  │
 │  └─────────────┘  └──────────────┘  └───────────┘  │
 └──────────────────────┬──────────────────────────────┘
@@ -41,329 +41,177 @@ cargo build --release
 ## Quick Start
 
 ```sh
-# Open a URL (auto-starts daemon, launches Chrome, creates workspace)
+# First time: interactive guide to enable Chrome remote debugging
+bk setup
+
+# Connect to the user's running Chrome
+bk connect
+
+# Open a new tab (inherits the user's login state)
 bk open https://example.com
 
-# See interactive elements on the page
-bk info
+# Get page state (elements + text + viewport)
+bk snapshot
 
-# Click an element by its index
-bk click --index 3
+# Interact with elements (ref comes from snapshot output)
+bk act click --ref 67
+bk act type --ref 42 --text "search query"
 
-# Type into a form field
-bk type --index 2 "hello world"
-
-# Take a screenshot
-bk shot --output page.png
-
-# One-shot fetch rendered HTML (ephemeral, no persistent workspace)
-bk fetch https://example.com > page.html
+# Close the session
+bk session close
 ```
 
-## Connecting to Your Own Chrome
+## Sessions
 
-You can attach to an already-running Chrome (with remote debugging enabled) instead of launching a new instance.
+A session is a logical connection to the user's Chrome. The default session shares the user's browser context (cookies, login state, tabs).
 
 ```sh
-# Auto-discover Chrome via DevToolsActivePort file
-bk browser discover
+# Single agent — operate on user's logged-in sites (default session)
+bk connect
+bk open https://taobao.com
+bk snapshot
+bk session close
 
-# Or connect by host:port manually
-bk browser connect localhost:9222
+# Multi-agent parallel — isolated cookies per session
+BK_SESSION=agent-a bk connect
+BK_SESSION=agent-a bk open https://shop.com
+BK_SESSION=agent-a bk snapshot
 
-# Create a workspace that shares the user's browser context (no isolation)
-bk ws new --attached
-
-# Or attach only tabs matching a pattern
-bk ws new --attached --pattern "github.com"
-
-# Attach a specific tab into an existing workspace
-bk tab attach "github.com"
+BK_SESSION=agent-b bk connect
+BK_SESSION=agent-b bk open https://shop.com
 ```
 
-Start Chrome with remote debugging:
+Session management:
+
 ```sh
-chrome --remote-debugging-port=9222
+bk session list                     # List all sessions
+bk session close                    # Close current session
+bk session cookies                  # Cookie operations
 ```
 
 ## Command Reference
 
-### Navigation
+### Primary Commands
 
-```sh
-bk goto <URL>                       # Navigate to URL
-bk goto https://example.com
-bk goto file:///tmp/test.html
+| Command | Description |
+|---------|-------------|
+| `setup` | One-time Chrome remote debugging setup (interactive) |
+| `connect` | Connect to browser (idempotent) |
+| `snapshot` | Get page state: elements + text + viewport info |
+| `act` | Execute interaction (click, type, press) |
+| `navigate` | Navigate to URL or back/forward/reload |
+| `open` | Open URL in a new tab |
+| `close` | Close the current tab |
+| `tabs` | List tabs in the session |
+| `wait` | Wait for a page condition |
+| `evaluate` | Execute JavaScript |
+| `screenshot` | Take a screenshot |
+| `session` | Session management (close/list/cookies) |
+| `status` | Connection status |
 
-bk back                             # Go back in history
-bk forward                          # Go forward in history
-bk reload                           # Reload current page
+### act
 
-bk wait                             # Wait for networkidle (default)
-bk wait --selector "#login-form"    # Wait for element to appear
-bk wait --text "Welcome back"       # Wait for text
-bk wait --text-gone "Loading..."    # Wait for text to disappear
-bk wait --url "/dashboard"          # Wait for URL match
-bk wait --fn "document.querySelectorAll('li').length > 5"
-bk wait --time 2000                 # Fixed delay (ms)
-bk wait --load-state networkidle    # Explicit load state
-```
-
-### Interaction
+Execute interactions. The `--ref` value comes from the `ref` field in `bk snapshot` output.
 
 ```sh
 # Click
-bk click --index 3                  # By element index
-bk click --ref 42                   # By backendNodeId (stable ref)
-bk click --x 100 --y 200           # By coordinates
+bk act click --ref 67
+bk act click --x 100 --y 200       # By coordinates
 
-# Type
-bk type --index 2 "hello world"
-bk type --ref 55 --clear "new value"   # Clear first, then type
-bk type --index 0 --autocomplete "react"  # Wait for autocomplete dropdown
+# Type (replaces field content by default)
+bk act type --ref 42 --text "hello world"
+bk act type --ref 42 --text "append this" --append
 
-# Fill (batch form fill)
-bk fill --set 0=John --set 1=Doe --set 2=john@example.com
-bk fill --set ref:42=hello --set ref:55=world
-
-# Select dropdown
-bk select --index 3 "United States"
-bk select --ref 77 "option-value"
-
-# Scroll
-bk scroll down                      # Default direction
-bk scroll up --amount 200           # Custom amount (px)
-bk scroll top                       # Scroll to top
-bk scroll bottom                    # Scroll to bottom
-bk scroll --index 5                 # Scroll element into view
-bk scroll --selector "#footer"      # Scroll to CSS selector
-
-# Hover
-bk hover --index 3
-bk hover --ref 42
-
-# Drag
-bk drag --from-index 2 --to-index 5
-bk drag --from-ref 10 --to-ref 20
-bk drag --from-selector ".item" --to-selector ".dropzone"
-
-# Focus
-bk focus --index 2
-bk focus --ref 42
-
-# Upload files (absolute paths required)
-bk upload --index 3 /path/to/file.pdf
-bk upload --selector "input[type=file]" /tmp/a.png /tmp/b.png
-
-# Keyboard
-bk keys Enter
-bk keys Tab Tab Tab
-bk keys Control+a
-bk keys Control+Shift+Enter
-bk keys Escape
+# Press keys
+bk act press --keys Enter
+bk act press --keys Control+a
+bk act press --keys Tab Tab Tab
 ```
 
-### Page State
+Phase 2 actions (via legacy commands, migrating to `act` in Phase 3):
+
+| Action | Command |
+|--------|---------|
+| fill | `bk fill --set ref:42=value --set ref:55=other` |
+| select | `bk select --ref 77 "option-value"` |
+| scroll | `bk scroll down`, `bk scroll top`, `bk scroll --ref 5` |
+| hover | `bk hover --ref 42` |
+| drag | `bk drag --from-ref 10 --to-ref 20` |
+| upload | `bk upload --ref 3 /path/to/file.pdf` |
+| dialog | `bk dialog accept`, `bk dialog dismiss`, `bk dialog policy accept` |
+
+### navigate
 
 ```sh
-# Interactive elements + page text + viewport info
-bk info
-bk info --no-text                   # Exclude page text
-bk info --screenshot                # Include viewport screenshot
-bk info --tree                      # Elements in tree format
-bk info --ax                        # Include accessibility info
-
-# Find elements by CSS selector
-bk find "a[href]" --attributes href,class --include-text
-bk find ".error" --max 10
-bk find "input[type=text]"
-
-# Search text in page content
-bk search "error message"
-bk search "\\d{3}-\\d{4}" --regex
-bk search "price" --scope ".product-card" --max 5
-
-# JavaScript evaluation
-bk eval "document.title"
-bk eval "await fetch('/api').then(r => r.json())"
-bk eval --sync "1 + 1"
-bk eval --file script.js
-
-# Page HTML
-bk html
-bk html --selector "#main-content"
-
-# URL and title
-bk url
-bk title
-
-# Console log buffer
-bk console
-bk console --level error
-bk console --level warn --limit 20
-
-# List <select> options
-bk options --index 3
-bk options --ref 77
+bk navigate https://example.com     # Go to URL
+bk navigate --back                  # Go back
+bk navigate --forward               # Go forward
+bk navigate --reload                # Reload
 ```
 
-### Output
+### snapshot
 
 ```sh
-# Screenshot
-bk shot                             # Viewport screenshot (base64)
-bk shot --output page.png           # Save to file
-bk shot --full-page                 # Full scrollable page
-bk shot --selector ".hero"          # Element screenshot
-bk shot --labels                    # Overlay index labels
-bk shot https://example.com -o example.png  # One-shot mode
-
-# PDF
-bk pdf --output page.pdf
-bk pdf https://example.com --output report.pdf
+bk snapshot                         # Elements + page text + viewport
+bk snapshot --no-page-text          # Exclude page text
+bk snapshot --full                  # No truncation
+bk snapshot --wait networkidle      # Wait strategy: dom-stable (default), networkidle, none
 ```
 
-### One-shot
-
-These commands create a temporary workspace, perform an action, then clean up.
+### wait
 
 ```sh
-# Open URL in new persistent workspace (becomes default)
-bk open https://example.com
-bk open https://app.local --no-headless
-
-# Fetch rendered HTML (ephemeral workspace, auto-closed)
-bk fetch https://example.com
-bk fetch https://spa-app.com/page
+bk wait --idle                      # Wait for network idle
+bk wait --selector "#login-form"    # Wait for element
+bk wait --text "Welcome back"       # Wait for text to appear
+bk wait --text-gone "Loading..."    # Wait for text to disappear
+bk wait --url "/dashboard"          # Wait for URL to match
+bk wait --fn "document.querySelectorAll('li').length > 5"
+bk wait --time 2000                 # Fixed delay (ms)
 ```
 
-### Workspaces
-
-Each workspace is an isolated browser context with independent cookies, storage, and tabs. Multiple workspaces can share one Chrome instance.
+### evaluate
 
 ```sh
-bk ws new                           # Create workspace (launches Chrome if needed)
-bk ws new --label "session-1"       # With label
-bk ws new --no-headless             # Show browser window
-bk ws new --attached                # Attached mode (share user's context)
-bk ws new --attached --pattern "github"  # Only tabs matching pattern
-
-bk ws attach                        # Attach existing tabs into new workspace
-bk ws attach --pattern "google"     # Filter by URL/title pattern
-
-bk ws list                          # List all workspaces
-bk ws info                          # Show workspace details
-bk ws use <wid>                     # Set default workspace
-bk ws default                       # Show current default workspace
-bk ws close <wid>                   # Close workspace
-
-# Aliases
-bk new                              # = bk ws new
-bk ls                               # = bk ws list
-bk rm <wid>                         # = bk ws close
+bk evaluate "document.title"
+bk evaluate "await fetch('/api').then(r => r.json())"
+bk evaluate --file script.js
 ```
 
-Workspace IDs are 16-char hex strings. Most commands accept a prefix (e.g. `a3f2` instead of `a3f2e1b09c7d4a68`).
-
-### Tabs
-
-Each workspace has one or more tabs. Tabs have short aliases (`t1`, `t2`, ...) for quick reference.
+### screenshot
 
 ```sh
-bk tab new                          # New tab (about:blank)
-bk tab new https://example.com      # New tab with URL
-bk tab attach "github.com"          # Attach existing tab by URL/title match
-bk tab list                         # List tabs in workspace
-bk tab switch t2                    # Switch active tab (alias or tid)
-bk tab close t1                     # Close a tab
+bk screenshot                       # Viewport screenshot (base64 JSON)
+bk screenshot --output page.png     # Save to file
+bk screenshot --full-page           # Full scrollable page
 ```
 
-### Browser Management
+### open / close / tabs
 
 ```sh
-bk browser discover                 # Auto-discover Chrome (DevToolsActivePort)
-bk browser discover --path /custom/path
-bk browser connect localhost:9222   # Connect to existing Chrome
-bk browser list                     # List connected browsers
-bk browser disconnect localhost:9222
-```
-
-### Storage
-
-```sh
-bk storage cookies get              # Get all cookies
-bk storage cookies set '[{"name":"k","value":"v","domain":"example.com"}]'
-bk storage cookies clear
-
-bk storage local get <key>          # Get localStorage value
-bk storage local set <key> <val>    # Set localStorage value
-
-bk storage export                   # Export all storage state
-bk storage import state.json        # Import from file
-```
-
-### Dialogs
-
-JavaScript dialog handling (alert, confirm, prompt).
-
-```sh
-bk dialog list                      # List pending dialogs
-bk dialog accept                    # Accept (confirm) pending dialog
-bk dialog dismiss                   # Dismiss (cancel) pending dialog
-
-bk dialog policy                    # View current policy
-bk dialog policy manual             # Manual handling (default)
-bk dialog policy accept             # Auto-accept all dialogs
-bk dialog policy dismiss            # Auto-dismiss all dialogs
-```
-
-### Debug
-
-```sh
-bk debug monitor                    # Stream network requests (live)
-bk debug har https://example.com    # Navigate and record HAR
-bk debug block "*.ads.com/*"        # Block URL pattern
-bk debug unblock                    # Remove all blocks
-
-bk debug cdp Page.captureScreenshot '{"format":"png"}'  # Raw CDP command
-bk debug events                     # Stream all CDP events
-bk debug events --filter "Network"  # Filter by domain
-```
-
-### Daemon
-
-```sh
-bk daemon start                     # Start in foreground
-bk daemon stop                      # Graceful shutdown
-bk daemon status                    # Show status
-```
-
-The daemon auto-starts when any command needs it.
-
-### Status
-
-```sh
-bk status                           # Daemon + browser + workspace summary
-bk status --format json
+bk open https://example.com         # Open URL in new tab
+bk close                            # Close active tab
+bk close --target <targetId>        # Close specific tab
+bk tabs                             # List all tabs in session
 ```
 
 ## Global Options
 
 | Option | Description |
 |--------|-------------|
-| `-w, --ws <ID>` | Target workspace (or `BK_WS` env var) |
-| `--format <FMT>` | Output format: `text` (default), `json`, `tsv` |
+| `--session <NAME>` | Target session (or `BK_SESSION` env var) |
+| `--target <ID>` | Target tab (targetId) |
+| `--timeout <MS>` | Timeout in milliseconds (default: 30000) |
+| `--no-state-diff` | Skip state_diff in act responses |
+| `--focus` | Bring tab to foreground |
 | `-h, --help` | Print help |
 | `--version` | Print version |
 
-## Workspace Resolution
+## Environment Variables
 
-Commands that need a workspace resolve it in this order:
-
-1. `--ws <wid>` flag (or `BK_WS` env var)
-2. Daemon default workspace (`bk ws use <wid>`)
-3. Auto-detect when exactly one workspace exists
-4. Error with a helpful message
+| Variable | Description |
+|----------|-------------|
+| `BK_SESSION` | Default session name (equivalent to `--session`) |
 
 ## Configuration
 
@@ -388,16 +236,24 @@ js_timeout_seconds = 0           # 0 = no timeout
 All daemon state is stored in a single `~/.bk/state.json` file:
 
 - Browser connections (host, managed flag, PID)
-- Workspace metadata (tabs, active tab, label, mode)
-- Default workspace ID
+- Session metadata (tabs, active tab, mode)
+- Default session ID
 
 Additional runtime files in `~/.bk/`:
 - `daemon.port` — current daemon TCP port
 - `daemon.lock` — singleton lock (prevents multiple daemons)
 
-On restart, the daemon reconnects to persisted managed browsers and re-attaches CDP sessions for each tab. Unmanaged browsers (user-connected via `discover`/`connect`) are not persisted.
-
 Writes are atomic (tmp + rename) and debounced (500ms quiet window) to avoid blocking request handlers.
+
+## Shell Completions
+
+Generate completions for your shell:
+
+```sh
+bk completions bash > ~/.local/share/bash-completion/completions/bk
+bk completions zsh > ~/.zfunc/_bk
+bk completions fish > ~/.config/fish/completions/bk.fish
+```
 
 ## Acknowledgements
 
