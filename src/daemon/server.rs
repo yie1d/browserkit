@@ -262,7 +262,7 @@ mod tests {
         let n = stream.read(&mut buf).await.unwrap();
         let resp: Response = serde_json::from_str(std::str::from_utf8(&buf[..n]).unwrap().trim()).unwrap();
         assert!(!resp.ok);
-        assert!(resp.error.unwrap().contains("invalid request"));
+        assert!(resp.error.unwrap().as_str().unwrap().contains("invalid request"));
     }
 
     #[tokio::test]
@@ -283,7 +283,7 @@ mod tests {
         let n = stream.read(&mut buf).await.unwrap();
         let resp: Response = serde_json::from_str(std::str::from_utf8(&buf[..n]).unwrap().trim()).unwrap();
         assert!(!resp.ok);
-        assert!(resp.error.unwrap().contains("unknown command: no.such"));
+        assert!(resp.error.unwrap().as_str().unwrap().contains("unknown command: no.such"));
     }
 
     #[tokio::test]

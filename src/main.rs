@@ -1333,7 +1333,7 @@ async fn dispatch(cli: &Cli, client: &mut DaemonClient) -> Result<(), String> {
                 .to_string();
             let use_resp = send_cmd(client, "ws.use", json!({"wid": wid})).await?;
             if !use_resp.ok {
-                eprintln!("warning: failed to set default workspace: {}", use_resp.error.unwrap_or_default());
+                eprintln!("warning: failed to set default workspace: {}", use_resp.error.unwrap_or(serde_json::Value::Null));
             }
             let resp = send_cmd(client, "nav.goto", json!({"wid": wid, "url": url})).await?;
             print_response(&resp, fmt);
@@ -1532,7 +1532,7 @@ fn print_response(resp: &Response, fmt: &OutputFormat) {
                     print_tsv_output(data);
                 }
             } else if let Some(err) = &resp.error {
-                eprintln!("error\t{}", err);
+                eprintln!("error\t{}", format_error_value(err));
             }
         }
         OutputFormat::Text => {
@@ -1541,9 +1541,27 @@ fn print_response(resp: &Response, fmt: &OutputFormat) {
                     print_text_output(data);
                 }
             } else if let Some(err) = &resp.error {
-                eprintln!("error: {}", err);
+                eprintln!("error: {}", format_error_value(err));
             }
         }
+    }
+}
+
+/// Extract a user-friendly error message from the response error field.
+///
+/// Handles both legacy string errors and v2 structured error objects.
+fn format_error_value(err: &serde_json::Value) -> String {
+    match err {
+        serde_json::Value::String(s) => s.clone(),
+        serde_json::Value::Object(obj) => {
+            // v2 structured: prefer "message", fall back to JSON repr
+            if let Some(msg) = obj.get("message").and_then(|v| v.as_str()) {
+                msg.to_string()
+            } else {
+                err.to_string()
+            }
+        }
+        _ => err.to_string(),
     }
 }
 

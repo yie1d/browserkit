@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, BufWriter};
 
-use crate::error::BkError;
+use crate::error::{BkError, ErrorCode};
 
 /// A command request sent from client to daemon.
 ///
@@ -18,14 +18,15 @@ pub struct Request {
 /// A response sent from daemon to client.
 ///
 /// Success: `{"ok":true,"data":{...}}`
-/// Error:   `{"ok":false,"error":"<message>"}`
+/// Error (legacy):   `{"ok":false,"error":"<message>"}`
+/// Error (v2):       `{"ok":false,"error":{"code":"...","message":"...","suggestion":"...","recoverable":bool}}`
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Response {
     pub ok: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub data: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub error: Option<String>,
+    pub error: Option<serde_json::Value>,
 }
 
 impl Response {
@@ -39,13 +40,30 @@ impl Response {
         }
     }
 
-    /// Build an error response with the given message.
+    /// Build a legacy error response with a plain string message.
     #[must_use]
     pub fn err(msg: impl Into<String>) -> Self {
         Self {
             ok: false,
             data: None,
-            error: Some(msg.into()),
+            error: Some(serde_json::Value::String(msg.into())),
+        }
+    }
+
+    /// Build a v2 structured error response with code, message, suggestion, and recoverable flag.
+    #[must_use]
+    pub fn error_detail(code: ErrorCode, message: String, suggestion: Option<String>) -> Self {
+        let suggestion = suggestion.unwrap_or_else(|| code.suggestion().to_string());
+        let recoverable = code.recoverable();
+        Self {
+            ok: false,
+            data: None,
+            error: Some(serde_json::json!({
+                "code": code,
+                "message": message,
+                "suggestion": suggestion,
+                "recoverable": recoverable,
+            })),
         }
     }
 }
@@ -155,7 +173,10 @@ mod tests {
         let r = Response::err("something broke");
         assert!(!r.ok);
         assert!(r.data.is_none());
-        assert_eq!(r.error, Some("something broke".into()));
+        assert_eq!(
+            r.error,
+            Some(serde_json::Value::String("something broke".into()))
+        );
     }
 
     #[test]
@@ -211,7 +232,10 @@ mod tests {
         let e = BkError::WorkspaceNotFound("a3f2".into());
         let resp: Response = e.into();
         assert!(!resp.ok);
-        assert_eq!(resp.error, Some("workspace not found: a3f2".into()));
+        assert_eq!(
+            resp.error,
+            Some(serde_json::Value::String("workspace not found: a3f2".into()))
+        );
     }
 
     #[tokio::test]
@@ -237,7 +261,7 @@ mod tests {
         let mut reader = BufReader::new(&input[..]);
         let err = read_request(&mut reader).await.unwrap_err();
         assert!(!err.ok);
-        assert!(err.error.unwrap().contains("invalid request"));
+        assert!(err.error.unwrap().as_str().unwrap().contains("invalid request"));
     }
 
     #[tokio::test]
@@ -247,7 +271,7 @@ mod tests {
         let mut reader = BufReader::new(&oversized[..]);
         let err = read_request(&mut reader).await.unwrap_err();
         assert!(!err.ok);
-        assert!(err.error.unwrap().contains("request too large"));
+        assert!(err.error.unwrap().as_str().unwrap().contains("request too large"));
     }
 
     #[tokio::test]
@@ -262,5 +286,46 @@ mod tests {
         assert!(output.ends_with('\n'));
         let parsed: Response = serde_json::from_str(output.trim()).unwrap();
         assert_eq!(parsed, resp);
+    }
+
+    // ── v2 error_detail tests ───────────────────────────────────────────
+
+    #[test]
+    fn response_error_detail_has_correct_structure() {
+        let resp =
+            Response::error_detail(ErrorCode::RefNotFound, "element ref 42 not found".into(), None);
+        assert!(!resp.ok);
+        let err = resp.error.unwrap();
+        assert_eq!(err["code"], "REF_NOT_FOUND");
+        assert!(err["message"].as_str().unwrap().contains("42"));
+        assert!(err["suggestion"].as_str().unwrap().contains("snapshot"));
+        assert_eq!(err["recoverable"], true);
+    }
+
+    #[test]
+    fn response_error_detail_custom_suggestion() {
+        let resp = Response::error_detail(
+            ErrorCode::Timeout,
+            "timed out".into(),
+            Some("try again with --timeout 60000".into()),
+        );
+        let err = resp.error.unwrap();
+        assert_eq!(err["suggestion"], "try again with --timeout 60000");
+    }
+
+    #[test]
+    fn response_error_detail_json_wire_format() {
+        let resp = Response::error_detail(ErrorCode::NotConnected, "no connection".into(), None);
+        let json = serde_json::to_value(&resp).unwrap();
+        assert_eq!(json["ok"], false);
+        assert_eq!(json["error"]["code"], "NOT_CONNECTED");
+        assert_eq!(json["error"]["recoverable"], true);
+    }
+
+    #[test]
+    fn response_legacy_err_unchanged() {
+        let resp = Response::err("something broke");
+        let json = serde_json::to_value(&resp).unwrap();
+        assert_eq!(json["error"], "something broke");
     }
 }

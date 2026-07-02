@@ -96,3 +96,124 @@ pub enum BkError {
     #[error("{0}")]
     Other(String),
 }
+
+// ── v2 Structured Error Codes ───────────────────────────────────────────
+
+use serde::{Deserialize, Serialize};
+
+/// Machine-readable error codes for v2 structured responses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum ErrorCode {
+    NotConnected,
+    RefNotFound,
+    RemoteDebugNotEnabled,
+    ConnectionRefused,
+    BrowserNotRunning,
+    BrowserVersionTooOld,
+    BrowserNotInstalled,
+    ChromeDisconnected,
+    SessionNotFound,
+    SessionNoTab,
+    DialogBlocking,
+    NavigateFailed,
+    Timeout,
+    ElementNotVisible,
+    ElementNotInteractable,
+    TargetNotFound,
+    TargetCrashed,
+    JsError,
+    InvalidArgument,
+    DaemonError,
+    FileNotFound,
+    SelectorNotFound,
+    SessionLimitExceeded,
+    TabLimitExceeded,
+    Unauthorized,
+}
+
+impl ErrorCode {
+    /// Returns a human-readable suggestion for how to resolve this error.
+    pub fn suggestion(&self) -> &'static str {
+        match self {
+            Self::NotConnected => "run 'bk connect' first to establish a browser connection",
+            Self::RefNotFound => "call snapshot to refresh refs -- page may have changed since last snapshot",
+            Self::RemoteDebugNotEnabled => "open chrome://inspect/#remote-debugging and enable, then retry bk connect",
+            Self::ConnectionRefused => "check if Chrome showed an authorization dialog and click Allow, then retry",
+            Self::BrowserNotRunning => "manually open Chrome/Edge, then retry bk connect",
+            Self::BrowserVersionTooOld => "upgrade Chrome/Edge to version 112 or later",
+            Self::BrowserNotInstalled => "install Google Chrome from https://www.google.com/chrome",
+            Self::ChromeDisconnected => "Chrome may have closed; run bk connect to reconnect",
+            Self::SessionNotFound => "session may have expired or been closed; create a new one",
+            Self::SessionNoTab => "use bk open to create a tab first",
+            Self::DialogBlocking => "handle the dialog first: bk act dialog accept/dismiss",
+            Self::NavigateFailed => "check URL is valid and accessible",
+            Self::Timeout => "increase --timeout or check if page is responsive",
+            Self::ElementNotVisible => "element may be hidden or overlapped; try scrolling or waiting",
+            Self::ElementNotInteractable => "element is disabled; check page state",
+            Self::TargetNotFound => "tab may have been closed; run bk tabs to see available tabs",
+            Self::TargetCrashed => "tab has crashed and cannot recover",
+            Self::JsError => "check expression syntax",
+            Self::InvalidArgument => "check command syntax",
+            Self::DaemonError => "restart daemon: bk daemon stop && bk daemon start",
+            Self::FileNotFound => "check file path exists and is absolute",
+            Self::SelectorNotFound => "selector matched no elements; check page state",
+            Self::SessionLimitExceeded => "close unused sessions with 'bk session close --session <name>'",
+            Self::TabLimitExceeded => "close unused tabs with 'bk close --target <tid>'",
+            Self::Unauthorized => "daemon token mismatch; restart daemon or check ~/.bk/daemon.token",
+        }
+    }
+
+    /// Whether this error is potentially recoverable by the caller retrying or taking action.
+    pub fn recoverable(&self) -> bool {
+        !matches!(
+            self,
+            Self::BrowserVersionTooOld
+                | Self::BrowserNotInstalled
+                | Self::TargetCrashed
+                | Self::DaemonError
+        )
+    }
+}
+
+#[cfg(test)]
+mod error_code_tests {
+    use super::*;
+
+    #[test]
+    fn error_code_serializes_as_screaming_snake() {
+        assert_eq!(
+            serde_json::to_string(&ErrorCode::NotConnected).unwrap(),
+            "\"NOT_CONNECTED\""
+        );
+        assert_eq!(
+            serde_json::to_string(&ErrorCode::RefNotFound).unwrap(),
+            "\"REF_NOT_FOUND\""
+        );
+        assert_eq!(
+            serde_json::to_string(&ErrorCode::SessionLimitExceeded).unwrap(),
+            "\"SESSION_LIMIT_EXCEEDED\""
+        );
+    }
+
+    #[test]
+    fn error_code_deserializes_from_screaming_snake() {
+        let code: ErrorCode = serde_json::from_str("\"BROWSER_NOT_RUNNING\"").unwrap();
+        assert_eq!(code, ErrorCode::BrowserNotRunning);
+    }
+
+    #[test]
+    fn error_code_suggestion_is_non_empty() {
+        assert!(!ErrorCode::RefNotFound.suggestion().is_empty());
+        assert!(ErrorCode::RefNotFound.suggestion().contains("snapshot"));
+    }
+
+    #[test]
+    fn error_code_recoverable_classification() {
+        assert!(ErrorCode::NotConnected.recoverable());
+        assert!(ErrorCode::RefNotFound.recoverable());
+        assert!(!ErrorCode::BrowserVersionTooOld.recoverable());
+        assert!(!ErrorCode::TargetCrashed.recoverable());
+        assert!(!ErrorCode::DaemonError.recoverable());
+    }
+}
