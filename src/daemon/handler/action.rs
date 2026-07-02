@@ -461,7 +461,7 @@ async fn do_act_keys(req: &Request, state: &Arc<DaemonState>) -> Result<Response
 }
 
 /// Parse a key string like "Control+Shift+Enter" and dispatch keyDown/keyUp events.
-async fn dispatch_key_combo(
+pub async fn dispatch_key_combo(
     session: &cdpkit::Session<'_>,
     key_str: &str,
 ) -> Result<(), BkError> {
