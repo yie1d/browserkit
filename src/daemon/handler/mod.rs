@@ -19,6 +19,7 @@ mod snapshot;
 mod navigate_v2;
 mod act_v2;
 mod tabs_v2;
+mod session_v2;
 
 use std::sync::Arc;
 
@@ -44,6 +45,11 @@ pub async fn handle_request(
         "act" | "v2.act" => act_v2::handle_act_v2(req, state).await,
         "tabs" | "v2.tabs" => tabs_v2::handle_tabs_v2(req, state).await,
         "close" | "v2.close" => tabs_v2::handle_close_v2(req, state).await,
+        "session.close" | "v2.session.close" => session_v2::handle_session_close(req, state).await,
+        "session.list" | "v2.session.list" => session_v2::handle_session_list(req, state).await,
+        "session.cookies.get" => session_v2::handle_session_cookies_get(req, state).await,
+        "session.cookies.set" => session_v2::handle_session_cookies_set(req, state).await,
+        "session.cookies.clear" => session_v2::handle_session_cookies_clear(req, state).await,
         "daemon.status" => daemon::handle_daemon_status(state, ctx).await,
         "daemon.stop" => daemon::handle_daemon_stop(state, ctx).await,
         "browser.connect" => browser::handle_browser_connect(req, state).await,
