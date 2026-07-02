@@ -36,7 +36,7 @@ pub struct DaemonConfig {
 }
 
 /// Resource limits to prevent runaway usage.
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct LimitsConfig {
     /// Maximum number of workspaces allowed (0 = unlimited).
@@ -45,6 +45,25 @@ pub struct LimitsConfig {
     pub max_tabs_per_workspace: usize,
     /// JavaScript execution timeout in seconds (0 = no timeout).
     pub js_timeout_seconds: u64,
+    /// Maximum number of v2 sessions allowed (0 = unlimited).
+    pub max_sessions: usize,
+    /// Maximum number of tabs per v2 session (0 = unlimited).
+    pub max_tabs_per_session: usize,
+    /// Session inactivity timeout in hours before auto-cleanup.
+    pub session_timeout_hours: u64,
+}
+
+impl Default for LimitsConfig {
+    fn default() -> Self {
+        Self {
+            max_workspaces: 0,
+            max_tabs_per_workspace: 0,
+            js_timeout_seconds: 0,
+            max_sessions: 10,
+            max_tabs_per_session: 5,
+            session_timeout_hours: 72,
+        }
+    }
 }
 
 impl Default for DaemonConfig {
@@ -96,9 +115,14 @@ mod tests {
         assert_eq!(c.daemon.cleanup_interval_seconds, 60);
         assert!(c.daemon.chrome_path.is_none());
         assert!(c.daemon.disable_security); // default true for backward compat
-        assert!(c.daemon.headless);         // default true        assert_eq!(c.limits.max_workspaces, 0);
+        assert!(c.daemon.headless);         // default true
+        assert_eq!(c.limits.max_workspaces, 0);
         assert_eq!(c.limits.max_tabs_per_workspace, 0);
         assert_eq!(c.limits.js_timeout_seconds, 0);
+        // v2 session limits
+        assert_eq!(c.limits.max_sessions, 10);
+        assert_eq!(c.limits.max_tabs_per_session, 5);
+        assert_eq!(c.limits.session_timeout_hours, 72);
     }
 
     #[test]
@@ -151,5 +175,56 @@ workspace_timeout_minutes = 45
         // load_config should not panic even if file doesn't exist
         let c = load_config();
         assert_eq!(c.daemon.workspace_timeout_minutes, 30);
+    }
+
+    #[test]
+    fn parse_v2_limits_config() {
+        let toml = r#"
+[limits]
+max_sessions = 10
+max_tabs_per_session = 5
+session_timeout_hours = 72
+"#;
+        let c: Config = toml::from_str(toml).unwrap();
+        assert_eq!(c.limits.max_sessions, 10);
+        assert_eq!(c.limits.max_tabs_per_session, 5);
+        assert_eq!(c.limits.session_timeout_hours, 72);
+    }
+
+    #[test]
+    fn parse_v2_limits_custom_values() {
+        let toml = r#"
+[limits]
+max_sessions = 20
+max_tabs_per_session = 10
+session_timeout_hours = 168
+"#;
+        let c: Config = toml::from_str(toml).unwrap();
+        assert_eq!(c.limits.max_sessions, 20);
+        assert_eq!(c.limits.max_tabs_per_session, 10);
+        assert_eq!(c.limits.session_timeout_hours, 168);
+        // Legacy fields should still be at defaults
+        assert_eq!(c.limits.max_workspaces, 0);
+        assert_eq!(c.limits.max_tabs_per_workspace, 0);
+    }
+
+    #[test]
+    fn parse_mixed_v1_v2_limits() {
+        let toml = r#"
+[limits]
+max_workspaces = 5
+max_tabs_per_workspace = 10
+js_timeout_seconds = 30
+max_sessions = 8
+max_tabs_per_session = 3
+session_timeout_hours = 48
+"#;
+        let c: Config = toml::from_str(toml).unwrap();
+        assert_eq!(c.limits.max_workspaces, 5);
+        assert_eq!(c.limits.max_tabs_per_workspace, 10);
+        assert_eq!(c.limits.js_timeout_seconds, 30);
+        assert_eq!(c.limits.max_sessions, 8);
+        assert_eq!(c.limits.max_tabs_per_session, 3);
+        assert_eq!(c.limits.session_timeout_hours, 48);
     }
 }

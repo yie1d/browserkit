@@ -12,6 +12,7 @@ use tokio_util::sync::CancellationToken;
 use crate::config::Config;
 use crate::daemon::dialog::DialogState;
 use crate::daemon::persist::PersistTx;
+use crate::daemon::session::Session;
 use crate::workspace::Workspace;
 
 /// Type alias for workspace IDs (16-character hex strings).
@@ -65,6 +66,9 @@ pub struct DaemonState {
     /// Set when a newer-version state.json is detected on disk to avoid
     /// clobbering data written by a newer binary.
     pub persist_disabled: AtomicBool,
+    /// v2 sessions: name -> Session.
+    /// Sessions coexist with workspaces during the transition period (Phase 3 removes workspaces).
+    pub sessions: DashMap<String, Session>,
 }
 
 impl DaemonState {
@@ -93,6 +97,7 @@ impl DaemonState {
             auto_attach_tasks: DashMap::new(),
             dialog_state: DialogState::new(),
             persist_disabled: AtomicBool::new(false),
+            sessions: DashMap::new(),
         }
     }
 
