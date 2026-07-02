@@ -321,8 +321,8 @@ async fn execute_click(
         let target = ElementTarget::Ref(ref_id);
         click_element_by_target(cdp, session_id, &target).await
     } else {
-        let x = params.x.unwrap();
-        let y = params.y.unwrap();
+        let x = params.x.expect("x validated above");
+        let y = params.y.expect("y validated above");
         click_coordinates(cdp, session_id, x, y).await
     };
 
@@ -355,8 +355,8 @@ async fn execute_type(
     use crate::page::element_ref::ElementTarget;
     use crate::page::interaction::type_text_by_target;
 
-    let ref_id = params.ref_id.unwrap();
-    let text = params.text.as_deref().unwrap();
+    let ref_id = params.ref_id.expect("ref_id validated above");
+    let text = params.text.as_deref().expect("text validated above");
 
     // append=false means clear first (clear=true in the existing API)
     let clear = !params.append;

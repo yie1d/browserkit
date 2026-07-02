@@ -83,11 +83,14 @@ async fn discover_and_connect(
     session_name: &str,
 ) -> Result<Response, Response> {
     // Find DevToolsActivePort
-    let port_info = finder::find_devtools_port().ok_or_else(|| {
-        let is_running = is_browser_process_running();
-        let code = determine_connection_error(is_running, false, false);
-        Response::error_detail(code, code.suggestion().into(), None)
-    })?;
+    let port_info = match finder::find_devtools_port() {
+        Some(info) => info,
+        None => {
+            let is_running = is_browser_process_running().await;
+            let code = determine_connection_error(is_running, false, false);
+            return Err(Response::error_detail(code, code.suggestion().into(), None));
+        }
+    };
 
     // Build ws URL and connect
     let ws_url = if port_info.ws_path.is_empty() {
@@ -123,10 +126,20 @@ async fn discover_and_connect(
         },
     );
 
-    // Create or re-create session
-    let session = Session::new_default(host.clone());
-    let tab_count = session.tab_count();
-    state.sessions.insert(session_name.to_string(), session);
+    // Create or update session — preserve existing tabs on reconnect
+    let tab_count = if let Some(mut existing) = state.sessions.get_mut(session_name) {
+        existing.browser_host = host.clone();
+        existing.disconnected = false;
+        existing.touch();
+        let count = existing.tab_count();
+        drop(existing);
+        count
+    } else {
+        let session = Session::new_default(host.clone());
+        let count = session.tab_count();
+        state.sessions.insert(session_name.to_string(), session);
+        count
+    };
     state.request_persist();
 
     // Spawn disconnect monitor
@@ -169,31 +182,39 @@ async fn get_browser_version(cdp: &Arc<cdpkit::CDP>) -> String {
 }
 
 /// Check if Chrome or Edge process is running (platform-specific).
-fn is_browser_process_running() -> bool {
+/// Uses spawn_blocking on Windows (tasklist is synchronous) and
+/// tokio::process::Command on Unix (pgrep).
+async fn is_browser_process_running() -> bool {
     #[cfg(target_os = "windows")]
     {
-        std::process::Command::new("tasklist")
-            .args(["/FI", "IMAGENAME eq chrome.exe", "/NH"])
-            .output()
-            .map(|o| {
-                let stdout = String::from_utf8_lossy(&o.stdout);
-                stdout.contains("chrome.exe")
-            })
-            .unwrap_or(false)
-            || std::process::Command::new("tasklist")
-                .args(["/FI", "IMAGENAME eq msedge.exe", "/NH"])
+        tokio::task::spawn_blocking(|| {
+            std::process::Command::new("tasklist")
+                .args(["/FI", "IMAGENAME eq chrome.exe", "/NH"])
                 .output()
                 .map(|o| {
                     let stdout = String::from_utf8_lossy(&o.stdout);
-                    stdout.contains("msedge.exe")
+                    stdout.contains("chrome.exe")
                 })
                 .unwrap_or(false)
+                || std::process::Command::new("tasklist")
+                    .args(["/FI", "IMAGENAME eq msedge.exe", "/NH"])
+                    .output()
+                    .map(|o| {
+                        let stdout = String::from_utf8_lossy(&o.stdout);
+                        stdout.contains("msedge.exe")
+                    })
+                    .unwrap_or(false)
+        })
+        .await
+        .unwrap_or(false)
     }
     #[cfg(not(target_os = "windows"))]
     {
-        std::process::Command::new("pgrep")
+        use tokio::process::Command;
+        Command::new("pgrep")
             .args(["-x", "chrome|Google Chrome|msedge"])
             .output()
+            .await
             .map(|o| o.status.success())
             .unwrap_or(false)
     }

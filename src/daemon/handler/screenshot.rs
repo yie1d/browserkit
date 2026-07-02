@@ -110,7 +110,7 @@ pub async fn handle_screenshot(req: &Request, state: &Arc<DaemonState>) -> Respo
                 use base64::Engine;
                 match base64::engine::general_purpose::STANDARD.decode(&base64_data) {
                     Ok(bytes) => {
-                        if let Err(e) = std::fs::write(path, &bytes) {
+                        if let Err(e) = tokio::fs::write(path, &bytes).await {
                             return Response::error_detail(
                                 ErrorCode::DaemonError,
                                 format!("failed to write screenshot: {e}"),

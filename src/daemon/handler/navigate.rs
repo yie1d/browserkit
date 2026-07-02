@@ -67,12 +67,35 @@ fn validate_navigate_params(params: &serde_json::Value) -> Result<NavigateParams
     })
 }
 
+/// Validate that a URL does not use a dangerous scheme.
+fn validate_url_scheme(url: &str) -> Result<(), Response> {
+    let lower = url.to_lowercase();
+    if lower.starts_with("javascript:") || lower.starts_with("data:text/html") {
+        return Err(Response::error_detail(
+            ErrorCode::InvalidArgument,
+            format!(
+                "URL scheme not allowed: {}",
+                &url[..url.find(':').unwrap_or(url.len())]
+            ),
+            Some("use http:// or https:// URLs".into()),
+        ));
+    }
+    Ok(())
+}
+
 /// Handle the `navigate` / `v2.navigate` command.
 pub async fn handle_navigate(req: &Request, state: &Arc<DaemonState>) -> Response {
     let params = match validate_navigate_params(&req.params) {
         Ok(p) => p,
         Err(resp) => return resp,
     };
+
+    // Validate URL scheme for goto actions
+    if let NavAction::Goto(ref url) = params.action {
+        if let Err(resp) = validate_url_scheme(url) {
+            return resp;
+        }
+    }
 
     // Resolve session
     let session = match state.sessions.get(&params.session_name) {
@@ -368,5 +391,41 @@ mod tests {
         let params = serde_json::json!({"url": "https://example.com", "back": true});
         let p = validate_navigate_params(&params).unwrap();
         assert_eq!(p.action, NavAction::Goto("https://example.com".into()));
+    }
+
+    #[test]
+    fn validate_url_scheme_allows_http() {
+        assert!(validate_url_scheme("https://example.com").is_ok());
+        assert!(validate_url_scheme("http://localhost:3000").is_ok());
+    }
+
+    #[test]
+    fn validate_url_scheme_blocks_javascript() {
+        let err = validate_url_scheme("javascript:alert(1)").unwrap_err();
+        let json = serde_json::to_value(&err).unwrap();
+        assert_eq!(json["error"]["code"], "INVALID_ARGUMENT");
+    }
+
+    #[test]
+    fn validate_url_scheme_blocks_data_text_html() {
+        assert!(validate_url_scheme("data:text/html,<h1>hi</h1>").is_err());
+    }
+
+    #[tokio::test]
+    async fn handle_navigate_rejects_javascript_url() {
+        let state = Arc::new(DaemonState::new());
+        let session = Session::new_default("localhost:9222".into());
+        state.sessions.insert("default".into(), session);
+
+        let req = Request {
+            cmd: "navigate".into(),
+            params: serde_json::json!({"url": "javascript:void(0)"}),
+            token: None,
+        };
+
+        let resp = handle_navigate(&req, &state).await;
+        let json = serde_json::to_value(&resp).unwrap();
+        assert!(!json["ok"].as_bool().unwrap());
+        assert_eq!(json["error"]["code"], "INVALID_ARGUMENT");
     }
 }

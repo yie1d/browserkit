@@ -303,6 +303,11 @@ pub async fn handle_snapshot(req: &Request, state: &Arc<DaemonState>) -> Respons
     // Collect full page state using existing logic
     match crate::page::state::get_full_page_state(&cdp, &session_tab.cdp_session_id, false).await {
         Ok(page_state) => {
+            // Get the actual page title
+            let title = crate::page::navigation::get_title(&cdp, &session_tab.cdp_session_id)
+                .await
+                .unwrap_or_default();
+
             let total_elements = page_state.elements.len();
             let max_elements = if params.full {
                 usize::MAX
@@ -346,7 +351,7 @@ pub async fn handle_snapshot(req: &Request, state: &Arc<DaemonState>) -> Respons
 
             let data = build_snapshot_data(
                 &session_tab.url,
-                "", // title comes from page_text extraction (not stored in SessionTab reliably)
+                &title,
                 &target_id,
                 page_state.page_info.viewport.width,
                 page_state.page_info.viewport.height,

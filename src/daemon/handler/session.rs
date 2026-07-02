@@ -253,7 +253,7 @@ pub async fn handle_session_cookies_set(req: &Request, state: &Arc<DaemonState>)
     // Get cookies from params — either inline array or file path
     let cookies_value = if let Some(file_path) = req.params.get("file").and_then(|v| v.as_str()) {
         // Read cookies from file
-        let content = match std::fs::read_to_string(file_path) {
+        let content = match tokio::fs::read_to_string(file_path).await {
             Ok(c) => c,
             Err(_) => {
                 return Response::error_detail(

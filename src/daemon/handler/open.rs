@@ -68,12 +68,33 @@ fn check_tab_limit(
     Ok(())
 }
 
+/// Validate that a URL does not use a dangerous scheme.
+fn validate_url_scheme(url: &str) -> Result<(), Response> {
+    let lower = url.to_lowercase();
+    if lower.starts_with("javascript:") || lower.starts_with("data:text/html") {
+        return Err(Response::error_detail(
+            ErrorCode::InvalidArgument,
+            format!(
+                "URL scheme not allowed: {}",
+                &url[..url.find(':').unwrap_or(url.len())]
+            ),
+            Some("use http:// or https:// URLs".into()),
+        ));
+    }
+    Ok(())
+}
+
 /// Handle the `open` / `v2.open` command.
 pub async fn handle_open(req: &Request, state: &Arc<DaemonState>) -> Response {
     let params = match validate_open_params(&req.params) {
         Ok(p) => p,
         Err(resp) => return resp,
     };
+
+    // Validate URL scheme
+    if let Err(resp) = validate_url_scheme(&params.url) {
+        return resp;
+    }
 
     // Check tab limit
     let max_tabs = state.config.limits.max_tabs_per_session;
@@ -345,5 +366,49 @@ mod tests {
         let json = serde_json::to_value(&resp).unwrap();
         assert_eq!(json["ok"], false);
         assert_eq!(json["error"]["code"], "TAB_LIMIT_EXCEEDED");
+    }
+
+    #[test]
+    fn validate_url_scheme_allows_http() {
+        assert!(validate_url_scheme("https://example.com").is_ok());
+        assert!(validate_url_scheme("http://example.com").is_ok());
+    }
+
+    #[test]
+    fn validate_url_scheme_blocks_javascript() {
+        let err = validate_url_scheme("javascript:alert(1)").unwrap_err();
+        let json = serde_json::to_value(&err).unwrap();
+        assert_eq!(json["error"]["code"], "INVALID_ARGUMENT");
+    }
+
+    #[test]
+    fn validate_url_scheme_blocks_javascript_case_insensitive() {
+        assert!(validate_url_scheme("JavaScript:alert(1)").is_err());
+        assert!(validate_url_scheme("JAVASCRIPT:void(0)").is_err());
+    }
+
+    #[test]
+    fn validate_url_scheme_blocks_data_text_html() {
+        let err = validate_url_scheme("data:text/html,<script>alert(1)</script>").unwrap_err();
+        let json = serde_json::to_value(&err).unwrap();
+        assert_eq!(json["error"]["code"], "INVALID_ARGUMENT");
+    }
+
+    #[tokio::test]
+    async fn handle_open_rejects_javascript_url() {
+        let state = Arc::new(DaemonState::new());
+        let session = Session::new_default("localhost:9222".into());
+        state.sessions.insert("default".into(), session);
+
+        let req = Request {
+            cmd: "open".into(),
+            params: serde_json::json!({"url": "javascript:alert(1)"}),
+            token: None,
+        };
+
+        let resp = handle_open(&req, &state).await;
+        let json = serde_json::to_value(&resp).unwrap();
+        assert_eq!(json["ok"], false);
+        assert_eq!(json["error"]["code"], "INVALID_ARGUMENT");
     }
 }
