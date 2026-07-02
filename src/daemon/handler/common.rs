@@ -33,6 +33,9 @@ pub struct HandlerContext {
     pub port: u16,
     pub pid: u32,
     pub shutdown: watch::Sender<bool>,
+    /// Daemon authentication token. When set, every request must include a
+    /// matching `token` field or be rejected with UNAUTHORIZED.
+    pub daemon_token: Option<String>,
 }
 
 /// Common context resolved from a request — shared by all page/storage commands.

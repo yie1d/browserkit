@@ -8,8 +8,9 @@ use tokio::sync::watch;
 use tracing::{error, info};
 
 use crate::daemon::handler::{handle_request, HandlerContext};
-use crate::daemon::protocol::{read_request, write_response};
+use crate::daemon::protocol::{read_request, write_response, Response};
 use crate::daemon::state::DaemonState;
+use crate::error::ErrorCode;
 
 /// The running daemon server handle.
 pub struct DaemonServer {
@@ -24,7 +25,20 @@ impl DaemonServer {
     pub async fn start(
         state: Arc<DaemonState>,
         shutdown_tx: watch::Sender<bool>,
+        shutdown_rx: watch::Receiver<bool>,
+    ) -> std::io::Result<Self> {
+        Self::start_with_token(state, shutdown_tx, shutdown_rx, None).await
+    }
+
+    /// Start the daemon TCP server with an optional authentication token.
+    ///
+    /// When `daemon_token` is `Some`, every incoming request must carry a
+    /// matching `token` field or be rejected with `UNAUTHORIZED`.
+    pub async fn start_with_token(
+        state: Arc<DaemonState>,
+        shutdown_tx: watch::Sender<bool>,
         mut shutdown_rx: watch::Receiver<bool>,
+        daemon_token: Option<String>,
     ) -> std::io::Result<Self> {
         let listener = TcpListener::bind("127.0.0.1:0").await?;
         let port = listener.local_addr()?.port();
@@ -34,6 +48,7 @@ impl DaemonServer {
             port,
             pid: std::process::id(),
             shutdown: shutdown_tx,
+            daemon_token,
         });
 
         let accept_state = Arc::clone(&state);
@@ -205,6 +220,20 @@ async fn handle_connection(
     loop {
         match read_request(&mut reader).await {
             Ok(Some(req)) => {
+                // Validate authentication token before dispatching
+                if let Some(expected_token) = &ctx.daemon_token {
+                    let provided = req.token.as_deref().unwrap_or("");
+                    if provided != expected_token.as_str() {
+                        let resp = Response::error_detail(
+                            ErrorCode::Unauthorized,
+                            "invalid or missing daemon token".into(),
+                            None,
+                        );
+                        let _ = write_response(&mut writer, &resp).await;
+                        break; // disconnect unauthorized client
+                    }
+                }
+
                 let resp = handle_request(&req, &state, &ctx).await;
                 if write_response(&mut writer, &resp).await.is_err() {
                     break;
@@ -231,6 +260,15 @@ mod tests {
         let state = Arc::new(DaemonState::new());
         let (tx, rx) = watch::channel(false);
         let server = DaemonServer::start(state, tx, rx).await.unwrap();
+        server.port
+    }
+
+    async fn start_server_with_token(token: &str) -> u16 {
+        let state = Arc::new(DaemonState::new());
+        let (tx, rx) = watch::channel(false);
+        let server = DaemonServer::start_with_token(state, tx, rx, Some(token.to_string()))
+            .await
+            .unwrap();
         server.port
     }
 
@@ -415,5 +453,62 @@ mod tests {
         state.workspaces.insert("ffff".to_string(), make_workspace("ffff", "localhost:9222", now - 30 * 60));
         cleanup_expired_workspaces(&state).await;
         assert!(state.workspaces.contains_key("ffff"), "exactly 30 min should not be expired");
+    }
+
+    // ── Token authentication tests ──────────────────────────────────────
+
+    #[tokio::test]
+    async fn server_rejects_request_without_token() {
+        let port = start_server_with_token("test-secret").await;
+        let mut stream = TcpStream::connect(format!("127.0.0.1:{port}")).await.unwrap();
+        let req = r#"{"cmd":"ping","params":{}}"#;
+        stream.write_all(format!("{req}\n").as_bytes()).await.unwrap();
+        let mut buf = vec![0u8; 4096];
+        let n = stream.read(&mut buf).await.unwrap();
+        let resp: Response =
+            serde_json::from_str(std::str::from_utf8(&buf[..n]).unwrap().trim()).unwrap();
+        assert!(!resp.ok);
+        assert!(resp.error.unwrap().to_string().contains("UNAUTHORIZED"));
+    }
+
+    #[tokio::test]
+    async fn server_accepts_request_with_valid_token() {
+        let port = start_server_with_token("test-secret").await;
+        let mut stream = TcpStream::connect(format!("127.0.0.1:{port}")).await.unwrap();
+        let req = r#"{"cmd":"ping","params":{},"token":"test-secret"}"#;
+        stream.write_all(format!("{req}\n").as_bytes()).await.unwrap();
+        let mut buf = vec![0u8; 4096];
+        let n = stream.read(&mut buf).await.unwrap();
+        let resp: Response =
+            serde_json::from_str(std::str::from_utf8(&buf[..n]).unwrap().trim()).unwrap();
+        assert!(resp.ok);
+    }
+
+    #[tokio::test]
+    async fn server_rejects_request_with_wrong_token() {
+        let port = start_server_with_token("test-secret").await;
+        let mut stream = TcpStream::connect(format!("127.0.0.1:{port}")).await.unwrap();
+        let req = r#"{"cmd":"ping","params":{},"token":"wrong-token"}"#;
+        stream.write_all(format!("{req}\n").as_bytes()).await.unwrap();
+        let mut buf = vec![0u8; 4096];
+        let n = stream.read(&mut buf).await.unwrap();
+        let resp: Response =
+            serde_json::from_str(std::str::from_utf8(&buf[..n]).unwrap().trim()).unwrap();
+        assert!(!resp.ok);
+        assert!(resp.error.unwrap().to_string().contains("UNAUTHORIZED"));
+    }
+
+    #[tokio::test]
+    async fn server_no_token_configured_allows_all() {
+        // When daemon_token is None, requests without token should be accepted
+        let port = start_server().await;
+        let mut stream = TcpStream::connect(format!("127.0.0.1:{port}")).await.unwrap();
+        let req = r#"{"cmd":"ping","params":{}}"#;
+        stream.write_all(format!("{req}\n").as_bytes()).await.unwrap();
+        let mut buf = vec![0u8; 4096];
+        let n = stream.read(&mut buf).await.unwrap();
+        let resp: Response =
+            serde_json::from_str(std::str::from_utf8(&buf[..n]).unwrap().trim()).unwrap();
+        assert!(resp.ok);
     }
 }

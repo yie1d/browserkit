@@ -13,6 +13,9 @@ pub struct Request {
     pub cmd: String,
     #[serde(default)]
     pub params: serde_json::Value,
+    /// Authentication token (required for all requests when daemon has a token set).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token: Option<String>,
 }
 
 /// A response sent from daemon to client.
@@ -184,6 +187,45 @@ mod tests {
         let req: Request = serde_json::from_str(r#"{"cmd":"ping"}"#).unwrap();
         assert_eq!(req.cmd, "ping");
         assert_eq!(req.params, serde_json::Value::Null);
+        assert_eq!(req.token, None);
+    }
+
+    #[test]
+    fn request_with_token_deserializes() {
+        let req: Request = serde_json::from_str(
+            r#"{"cmd":"ping","params":{},"token":"abc123"}"#,
+        )
+        .unwrap();
+        assert_eq!(req.cmd, "ping");
+        assert_eq!(req.token, Some("abc123".into()));
+    }
+
+    #[test]
+    fn request_without_token_field_defaults_to_none() {
+        let req: Request = serde_json::from_str(r#"{"cmd":"ping","params":{}}"#).unwrap();
+        assert_eq!(req.token, None);
+    }
+
+    #[test]
+    fn request_token_none_is_not_serialized() {
+        let req = Request {
+            cmd: "ping".into(),
+            params: json!({}),
+            token: None,
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        assert!(!json.contains("token"));
+    }
+
+    #[test]
+    fn request_token_some_is_serialized() {
+        let req = Request {
+            cmd: "ping".into(),
+            params: json!({}),
+            token: Some("secret".into()),
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        assert!(json.contains(r#""token":"secret""#));
     }
 
     #[test]
@@ -191,6 +233,7 @@ mod tests {
         let req = Request {
             cmd: "ws.new".into(),
             params: json!({"label": "test"}),
+            token: None,
         };
         let json = serde_json::to_string(&req).unwrap();
         let back: Request = serde_json::from_str(&json).unwrap();

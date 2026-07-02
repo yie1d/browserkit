@@ -7,6 +7,7 @@ pub mod persist;
 pub mod protocol;
 pub mod server;
 pub mod state;
+pub mod token;
 
 use std::fs::File;
 use std::path::PathBuf;
@@ -99,7 +100,12 @@ pub async fn check_existing_daemon() -> Option<u16> {
     let mut writer = BufWriter::new(writer);
     let mut reader = BufReader::new(reader);
 
-    let ping = r#"{"cmd":"ping","params":{}}"#;
+    // Include token if available (daemon may require it)
+    let token_field = match token::read_token_file() {
+        Some(t) => format!(r#","token":"{}""#, t),
+        None => String::new(),
+    };
+    let ping = format!(r#"{{"cmd":"ping","params":{{}}{}}}"#, token_field);
     writer
         .write_all(format!("{}\n", ping).as_bytes())
         .await
@@ -184,9 +190,16 @@ pub async fn start_daemon() -> Result<DaemonStartResult, crate::error::BkError> 
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
     // Clone a receiver for the caller (run_daemon_start) to await shutdown signal
     let caller_shutdown_rx = shutdown_rx.clone();
-    let server = server::DaemonServer::start(state.clone(), shutdown_tx, shutdown_rx)
-        .await
-        .map_err(crate::error::BkError::Io)?;
+
+    // Generate authentication token and write to file
+    let daemon_token = token::generate_daemon_token();
+    token::write_token_file(&daemon_token).map_err(crate::error::BkError::Io)?;
+
+    let server = server::DaemonServer::start_with_token(
+        state.clone(), shutdown_tx, shutdown_rx, Some(daemon_token),
+    )
+    .await
+    .map_err(crate::error::BkError::Io)?;
 
     write_port_file(server.port).map_err(crate::error::BkError::Io)?;
     tracing::info!(port = server.port, "daemon started (ready for connections)");
@@ -208,14 +221,15 @@ pub async fn start_daemon() -> Result<DaemonStartResult, crate::error::BkError> 
     })
 }
 
-/// Stop the daemon by cleaning up the port file.
+/// Stop the daemon by cleaning up the port and token files.
 ///
 /// The actual server shutdown is triggered via the `daemon.stop` command
-/// through the handler. This function handles the port file cleanup that
+/// through the handler. This function handles the file cleanup that
 /// should happen when the daemon process exits.
 pub fn stop_daemon_cleanup() {
     remove_port_file();
-    tracing::info!("daemon port file cleaned up");
+    token::remove_token_file();
+    tracing::info!("daemon port and token files cleaned up");
 }
 
 #[cfg(test)]
@@ -234,6 +248,7 @@ mod tests {
     fn cleanup_daemon_files() {
         let _ = std::fs::remove_file(lock_file_path());
         remove_port_file();
+        token::remove_token_file();
     }
 
     #[test]
@@ -438,6 +453,9 @@ mod tests {
         // Keep the lock file guard alive; drop server/lock at end via _lock_file
         let _lock_file = result._lock_file;
 
+        // Read the token that start_daemon wrote
+        let daemon_token = token::read_token_file().expect("token file should exist after start_daemon");
+
         // Send daemon.stop via TCP (same as `bk daemon stop` would)
         use tokio::io::{AsyncWriteExt, AsyncBufReadExt, BufReader};
         let stream = tokio::net::TcpStream::connect(format!("127.0.0.1:{}", port))
@@ -446,7 +464,7 @@ mod tests {
         let (reader, mut writer) = stream.into_split();
         let mut reader = BufReader::new(reader);
 
-        let req = r#"{"cmd":"daemon.stop","params":{}}"#;
+        let req = format!(r#"{{"cmd":"daemon.stop","params":{{}},"token":"{}"}}"#, daemon_token);
         writer.write_all(format!("{}\n", req).as_bytes()).await.unwrap();
         writer.flush().await.unwrap();
 
