@@ -116,6 +116,99 @@ pub fn find_devtools_port() -> Option<DevToolsPortInfo> {
     None
 }
 
+// ── Browser installation detection (v2 setup) ────────────────────────────────
+
+/// Result of detecting installed browsers.
+pub enum BrowserDetection {
+    Chrome(PathBuf),
+    Edge(PathBuf),
+    None,
+}
+
+/// Known Chrome executable paths per platform.
+pub fn chrome_install_paths() -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    #[cfg(target_os = "windows")]
+    {
+        if let Ok(pf) = std::env::var("PROGRAMFILES") {
+            paths.push(PathBuf::from(&pf).join("Google/Chrome/Application/chrome.exe"));
+        }
+        if let Ok(pf) = std::env::var("PROGRAMFILES(X86)") {
+            paths.push(PathBuf::from(&pf).join("Google/Chrome/Application/chrome.exe"));
+        }
+        if let Ok(local) = std::env::var("LOCALAPPDATA") {
+            paths.push(PathBuf::from(&local).join("Google/Chrome/Application/chrome.exe"));
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        paths.push(PathBuf::from(
+            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+        ));
+    }
+    #[cfg(target_os = "linux")]
+    {
+        paths.push(PathBuf::from("/usr/bin/google-chrome"));
+        paths.push(PathBuf::from("/usr/bin/google-chrome-stable"));
+        paths.push(PathBuf::from("/usr/bin/chromium-browser"));
+        paths.push(PathBuf::from("/usr/bin/chromium"));
+    }
+    paths
+}
+
+/// Known Edge executable paths per platform.
+pub fn edge_install_paths() -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    #[cfg(target_os = "windows")]
+    {
+        if let Ok(pf) = std::env::var("PROGRAMFILES(X86)") {
+            paths.push(PathBuf::from(&pf).join("Microsoft/Edge/Application/msedge.exe"));
+        }
+        if let Ok(pf) = std::env::var("PROGRAMFILES") {
+            paths.push(PathBuf::from(&pf).join("Microsoft/Edge/Application/msedge.exe"));
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        paths.push(PathBuf::from(
+            "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+        ));
+    }
+    #[cfg(target_os = "linux")]
+    {
+        paths.push(PathBuf::from("/usr/bin/microsoft-edge"));
+        paths.push(PathBuf::from("/usr/bin/microsoft-edge-stable"));
+    }
+    paths
+}
+
+/// Detect if Chrome or Edge is installed.
+pub fn detect_installed_browser() -> BrowserDetection {
+    for p in chrome_install_paths() {
+        if p.exists() {
+            return BrowserDetection::Chrome(p);
+        }
+    }
+    for p in edge_install_paths() {
+        if p.exists() {
+            return BrowserDetection::Edge(p);
+        }
+    }
+    BrowserDetection::None
+}
+
+/// Build the JSON success response for setup completion.
+pub fn build_setup_success_json(browser: &str) -> serde_json::Value {
+    serde_json::json!({
+        "ok": true,
+        "data": {
+            "status": "ready",
+            "browser": browser,
+            "message": format!("Remote debugging enabled. Run 'bk connect' to start.")
+        }
+    })
+}
+
 /// Discovers Chrome executables by checking well-known installation paths
 /// on macOS, Linux, and Windows (inspired by Playwright's registry).
 pub struct BrowserFinder;
@@ -213,6 +306,40 @@ impl BrowserFinder {
             }
             paths
         }
+    }
+}
+
+#[cfg(test)]
+mod setup_tests {
+    use super::*;
+
+    #[test]
+    fn chrome_install_paths_not_empty() {
+        let paths = chrome_install_paths();
+        assert!(!paths.is_empty());
+    }
+
+    #[test]
+    fn edge_install_paths_not_empty() {
+        let paths = edge_install_paths();
+        assert!(!paths.is_empty());
+    }
+
+    #[test]
+    fn detect_installed_browser_returns_result() {
+        // This test verifies the function compiles and returns a valid enum
+        let result = detect_installed_browser();
+        match result {
+            BrowserDetection::Chrome(_) | BrowserDetection::Edge(_) | BrowserDetection::None => {}
+        }
+    }
+
+    #[test]
+    fn setup_status_json_format() {
+        let json = build_setup_success_json("Chrome 136");
+        assert_eq!(json["ok"], true);
+        assert_eq!(json["data"]["status"], "ready");
+        assert!(json["data"]["browser"].as_str().unwrap().contains("Chrome"));
     }
 }
 

@@ -56,6 +56,9 @@ One-shot:
   open      Open URL in new workspace (persistent)
   fetch     Fetch rendered page HTML (ephemeral)
 
+Setup:
+  setup     One-time Chrome remote debugging setup
+
 Overview:
   status    Daemon, browser, and workspace summary
 
@@ -511,6 +514,10 @@ pub enum Command {
         wid: String,
     },
 
+    /// Interactive setup: guide user through enabling Chrome remote debugging
+    #[command(about = "Set up Chrome remote debugging (interactive, one-time)")]
+    Setup,
+
     /// Generate shell completions
     #[command(hide = true)]
     Completions {
@@ -814,6 +821,12 @@ async fn async_main() {
         return;
     }
 
+    // Setup is pure CLI-side, no daemon needed
+    if let Command::Setup = &cli.command {
+        run_setup().await;
+        return;
+    }
+
     // daemon stop / daemon status: connect-only, never auto-start a daemon
     if let Command::Daemon { action: _action @ (DaemonAction::Stop | DaemonAction::Status) } = &cli.command {
         match DaemonClient::connect_only().await {
@@ -904,6 +917,90 @@ async fn run_daemon_start() {
             std::process::exit(1);
         }
     }
+}
+
+/// Interactive setup: detect browser and guide user through enabling remote debugging.
+async fn run_setup() {
+    use browserkit::browser::finder::*;
+
+    // Step 1: Detect browser
+    let browser = detect_installed_browser();
+    let (browser_name, inspect_url) = match &browser {
+        BrowserDetection::Chrome(p) => {
+            eprintln!("Checking Chrome... found at {}", p.display());
+            ("Chrome", "chrome://inspect/#remote-debugging")
+        }
+        BrowserDetection::Edge(p) => {
+            eprintln!("Checking Edge... found at {}", p.display());
+            ("Edge", "edge://inspect/#remote-debugging")
+        }
+        BrowserDetection::None => {
+            let resp = serde_json::json!({
+                "ok": false,
+                "error": {
+                    "code": "BROWSER_NOT_INSTALLED",
+                    "message": "neither Chrome nor Edge found",
+                    "suggestion": "install Google Chrome from https://www.google.com/chrome",
+                    "recoverable": false
+                }
+            });
+            println!("{}", serde_json::to_string(&resp).unwrap());
+            return;
+        }
+    };
+
+    // Step 2: Check if already configured (DevToolsActivePort exists)
+    if find_devtools_port().is_some() {
+        eprintln!("Checking remote debugging... already enabled!");
+        let resp = build_setup_success_json(browser_name);
+        println!("{}", serde_json::to_string(&resp).unwrap());
+        return;
+    }
+
+    // Step 3: Guide user
+    eprintln!("Checking remote debugging... not enabled\n");
+    eprintln!(
+        "Remote debugging lets bk connect to your {} browser.",
+        browser_name
+    );
+    eprintln!("You only need to do this once.\n");
+    eprintln!("Steps:");
+    eprintln!("  1. Open {} (if not already open)", browser_name);
+    eprintln!("  2. In the address bar, type: {}", inspect_url);
+    eprintln!("  3. Enable remote debugging (check the box or toggle)");
+    eprintln!("  4. Come back here and press Enter\n");
+    eprintln!("Waiting... [Press Enter when done]");
+
+    // Wait for user input
+    let mut _input = String::new();
+    if std::io::stdin().read_line(&mut _input).is_err() {
+        eprintln!("error: failed to read from stdin");
+        return;
+    }
+
+    // Step 4: Poll for DevToolsActivePort (up to 30 attempts, 1s each)
+    eprintln!("Checking connection...");
+    for _ in 0..30 {
+        if find_devtools_port().is_some() {
+            eprintln!("Connected to {}!", browser_name);
+            let resp = build_setup_success_json(browser_name);
+            println!("{}", serde_json::to_string(&resp).unwrap());
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    }
+
+    // Timeout
+    let resp = serde_json::json!({
+        "ok": false,
+        "error": {
+            "code": "REMOTE_DEBUG_NOT_ENABLED",
+            "message": "could not detect remote debugging after 30s",
+            "suggestion": format!("open {} and enable remote debugging, then retry bk setup", inspect_url),
+            "recoverable": true
+        }
+    });
+    println!("{}", serde_json::to_string(&resp).unwrap());
 }
 
 // ── Workspace resolution ───────────────────────────────────────
@@ -1500,6 +1597,7 @@ async fn dispatch(cli: &Cli, client: &mut DaemonClient) -> Result<(), String> {
         }
 
         Command::Completions { .. } => unreachable!(),
+        Command::Setup => unreachable!(),
     }
 
     Ok(())
@@ -2118,5 +2216,14 @@ mod tests {
     fn wait_with_text_succeeds() {
         let result = try_parse(&["bk", "wait", "--text", "Loading"]);
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn setup_succeeds() {
+        let result = try_parse(&["bk", "setup"]);
+        assert!(result.is_ok());
+        if let Ok(cli) = result {
+            assert!(matches!(cli.command, Command::Setup));
+        }
     }
 }
