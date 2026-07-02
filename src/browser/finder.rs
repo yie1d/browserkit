@@ -5,6 +5,117 @@ use std::path::{Path, PathBuf};
 
 use crate::error::BkError;
 
+// ── DevToolsActivePort discovery (v2 connect) ──────────────────────────────
+
+/// Parsed DevToolsActivePort file content.
+#[derive(Debug, Clone)]
+pub struct DevToolsPortInfo {
+    pub port: u16,
+    pub ws_path: String,
+}
+
+/// Parse a DevToolsActivePort file (line 1 = port, line 2 = ws path).
+pub fn parse_devtools_active_port(path: &Path) -> Result<DevToolsPortInfo, String> {
+    let content = std::fs::read_to_string(path)
+        .map_err(|e| format!("cannot read DevToolsActivePort: {e}"))?;
+    let mut lines = content.lines();
+    let port: u16 = lines
+        .next()
+        .ok_or_else(|| "DevToolsActivePort file is empty".to_string())?
+        .trim()
+        .parse()
+        .map_err(|e| format!("invalid port number: {e}"))?;
+    let ws_path = lines
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    Ok(DevToolsPortInfo { port, ws_path })
+}
+
+/// Return known Chrome user data directory paths for the current OS.
+pub fn chrome_user_data_dirs() -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    #[cfg(target_os = "windows")]
+    {
+        if let Ok(local) = std::env::var("LOCALAPPDATA") {
+            dirs.push(
+                PathBuf::from(local)
+                    .join("Google")
+                    .join("Chrome")
+                    .join("User Data"),
+            );
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        if let Ok(home) = std::env::var("HOME") {
+            dirs.push(
+                PathBuf::from(home)
+                    .join("Library")
+                    .join("Application Support")
+                    .join("Google")
+                    .join("Chrome"),
+            );
+        }
+    }
+    #[cfg(target_os = "linux")]
+    {
+        if let Ok(home) = std::env::var("HOME") {
+            dirs.push(PathBuf::from(home).join(".config").join("google-chrome"));
+        }
+    }
+    dirs
+}
+
+/// Return known Edge user data directory paths for the current OS.
+pub fn edge_user_data_dirs() -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    #[cfg(target_os = "windows")]
+    {
+        if let Ok(local) = std::env::var("LOCALAPPDATA") {
+            dirs.push(
+                PathBuf::from(local)
+                    .join("Microsoft")
+                    .join("Edge")
+                    .join("User Data"),
+            );
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        if let Ok(home) = std::env::var("HOME") {
+            dirs.push(
+                PathBuf::from(home)
+                    .join("Library")
+                    .join("Application Support")
+                    .join("Microsoft Edge"),
+            );
+        }
+    }
+    #[cfg(target_os = "linux")]
+    {
+        if let Ok(home) = std::env::var("HOME") {
+            dirs.push(PathBuf::from(home).join(".config").join("microsoft-edge"));
+        }
+    }
+    dirs
+}
+
+/// Scan known data dirs for DevToolsActivePort, return first found.
+pub fn find_devtools_port() -> Option<DevToolsPortInfo> {
+    for dir in chrome_user_data_dirs()
+        .iter()
+        .chain(edge_user_data_dirs().iter())
+    {
+        let port_file = dir.join("DevToolsActivePort");
+        if let Ok(info) = parse_devtools_active_port(&port_file) {
+            return Some(info);
+        }
+    }
+    None
+}
+
 /// Discovers Chrome executables by checking well-known installation paths
 /// on macOS, Linux, and Windows (inspired by Playwright's registry).
 pub struct BrowserFinder;
@@ -102,5 +213,62 @@ impl BrowserFinder {
             }
             paths
         }
+    }
+}
+
+#[cfg(test)]
+mod discover_tests {
+    use super::*;
+    use std::fs;
+    use tempfile::TempDir;
+
+    #[test]
+    fn parse_devtools_active_port_file() {
+        let dir = TempDir::new().unwrap();
+        let port_file = dir.path().join("DevToolsActivePort");
+        fs::write(&port_file, "9222\n/devtools/browser/abc-123\n").unwrap();
+
+        let result = parse_devtools_active_port(&port_file).unwrap();
+        assert_eq!(result.port, 9222);
+        assert_eq!(result.ws_path, "/devtools/browser/abc-123");
+    }
+
+    #[test]
+    fn parse_devtools_active_port_missing_file() {
+        let result =
+            parse_devtools_active_port(Path::new("/nonexistent/DevToolsActivePort"));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_devtools_active_port_invalid_content() {
+        let dir = TempDir::new().unwrap();
+        let port_file = dir.path().join("DevToolsActivePort");
+        fs::write(&port_file, "not_a_number\n").unwrap();
+        let result = parse_devtools_active_port(&port_file);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_devtools_active_port_port_only() {
+        let dir = TempDir::new().unwrap();
+        let port_file = dir.path().join("DevToolsActivePort");
+        fs::write(&port_file, "41753\n").unwrap();
+
+        let result = parse_devtools_active_port(&port_file).unwrap();
+        assert_eq!(result.port, 41753);
+        assert_eq!(result.ws_path, "");
+    }
+
+    #[test]
+    fn known_chrome_user_data_dirs_not_empty() {
+        let dirs = chrome_user_data_dirs();
+        assert!(!dirs.is_empty());
+    }
+
+    #[test]
+    fn known_edge_user_data_dirs_not_empty() {
+        let dirs = edge_user_data_dirs();
+        assert!(!dirs.is_empty());
     }
 }
