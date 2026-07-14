@@ -23,7 +23,7 @@ Primary:
   setup       One-time Chrome remote debugging setup
   connect     Connect to browser (idempotent)
   snapshot    Get page state (elements + text + viewport)
-  act         Execute interaction (click/type/press/scroll/hover/focus/select/options)
+  act         Execute interaction (click/type/fill/press/scroll/hover/focus/select/options)
   navigate    Navigate to URL or back/forward/reload
   open        Open URL in new tab
   close       Close tab
@@ -35,7 +35,7 @@ Primary:
   status      Connection status
 
 Legacy (v1, will be removed in Phase 3):
-  click/type/fill/drag/upload/keys
+  click/type/drag/upload/keys
   find/search/html/url/title/console
   pdf/open/fetch/ws/tab/browser/daemon/storage/dialog/debug
 
@@ -45,6 +45,7 @@ Removed aliases:
   back/forward/reload -> use navigate --back/--forward/--reload
   scroll -> use act scroll    hover -> use act hover
   focus -> use act focus
+  fill -> use act fill
   select -> use act select    options -> use act options
 
 Options:
@@ -121,14 +122,17 @@ pub enum Command {
         wait: String,
     },
 
-    /// Execute interaction (click/type/press/scroll/hover/focus/select/options)
+    /// Execute interaction (click/type/fill/press/scroll/hover/focus/select/options)
     #[command(about = "Execute interaction")]
     Act {
-        /// Action kind (click, type, press, scroll, hover, focus, select, options)
+        /// Action kind (click, type, fill, press, scroll, hover, focus, select, options)
         kind: Option<String>,
         /// Element ref (backendNodeId)
         #[arg(long = "ref")]
         element_ref: Option<i64>,
+        /// Field assignment for fill action (ref:<id>=<value>)
+        #[arg(long = "set")]
+        set: Vec<String>,
         /// Text for type action
         #[arg(long)]
         text: Option<String>,
@@ -280,12 +284,6 @@ pub enum Command {
         #[arg(long)]
         autocomplete: bool,
         text: String,
-    },
-    /// Batch fill form fields
-    #[command(hide = true)]
-    Fill {
-        #[arg(long = "set", required = true)]
-        set: Vec<String>,
     },
     /// Drag element
     #[command(hide = true, group(ArgGroup::new("from_target").required(true).args(["from_ref", "from_index", "from_selector"])))]
@@ -1019,6 +1017,7 @@ async fn dispatch(cli: &Cli, client: &mut DaemonClient) -> Result<(), String> {
         Command::Act {
             kind,
             element_ref,
+            set,
             text,
             value,
             append,
@@ -1029,9 +1028,37 @@ async fn dispatch(cli: &Cli, client: &mut DaemonClient) -> Result<(), String> {
             amount,
             selector,
         } => {
+            if !set.is_empty() && kind.as_deref() != Some("fill") {
+                return Err("--set is only supported with 'bk act fill'".into());
+            }
+
             let mut params = json!({});
             if let Some(k) = kind { params["kind"] = json!(k); }
             if let Some(r) = element_ref { params["ref"] = json!(r); }
+            if !set.is_empty() {
+                use browserkit::page::interaction::parse_fill_set_target;
+
+                let mut fields = Vec::with_capacity(set.len());
+                for item in set {
+                    let field = parse_fill_set_target(item)?;
+                    let ref_id = match field.target {
+                        browserkit::page::element_ref::ElementTarget::Ref(ref_id) => ref_id,
+                        browserkit::page::element_ref::ElementTarget::Index(_) => {
+                            return Err(
+                                "bk act fill only accepts ref targets in --set (use ref:<id>=<value>)"
+                                    .into(),
+                            )
+                        }
+                        browserkit::page::element_ref::ElementTarget::Selector(_) => {
+                            return Err(
+                                "bk act fill does not accept selector targets in --set".into(),
+                            )
+                        }
+                    };
+                    fields.push(json!({"ref": ref_id, "value": field.value}));
+                }
+                params["fields"] = json!(fields);
+            }
             if let Some(t) = text { params["text"] = json!(t); }
             if let Some(v) = value { params["value"] = json!(v); }
             if *append { params["append"] = json!(true); }
@@ -1306,24 +1333,6 @@ async fn dispatch(cli: &Cli, client: &mut DaemonClient) -> Result<(), String> {
             if let Some(r) = element_ref { params["ref"] = json!(r); }
             else if let Some(i) = index { params["index"] = json!(i); }
             let resp = send_cmd(client, "act.type", params).await?;
-            print_response(&resp);
-        }
-
-        Command::Fill { set } => {
-            use browserkit::page::interaction::parse_fill_set_target;
-            let mut fields = Vec::new();
-            for s in set {
-                let field = parse_fill_set_target(s)?;
-                let mut entry = json!({"value": field.value});
-                match field.target {
-                    browserkit::page::element_ref::ElementTarget::Ref(r) => { entry["ref"] = json!(r); }
-                    browserkit::page::element_ref::ElementTarget::Index(i) => { entry["index"] = json!(i); }
-                    browserkit::page::element_ref::ElementTarget::Selector(s) => { entry["selector"] = json!(s); }
-                }
-                fields.push(entry);
-            }
-            let wid = resolve_workspace(client).await?;
-            let resp = send_cmd(client, "act.fill", json!({"wid": wid, "fields": fields})).await?;
             print_response(&resp);
         }
 
@@ -1823,6 +1832,28 @@ mod tests {
     }
 
     #[test]
+    fn cli_parses_act_fill_sets() {
+        let cli = try_parse(&[
+            "bk",
+            "act",
+            "fill",
+            "--set",
+            "ref:42=alpha",
+            "--set",
+            "ref:55=beta",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Command::Act {
+                ref kind,
+                ref set,
+                ..
+            } if kind.as_deref() == Some("fill") && set.len() == 2
+        ));
+    }
+
+    #[test]
     fn cli_parses_act_scroll_selector() {
         let cli = try_parse(&["bk", "act", "scroll", "--selector", "#main"]).unwrap();
         assert!(matches!(
@@ -2023,10 +2054,16 @@ mod tests {
     }
 
     #[test]
+    fn cli_rejects_removed_fill_command() {
+        assert_cli_commands_removed(&[&["bk", "fill", "--set", "ref:42=value"][..]]);
+    }
+
+    #[test]
     fn top_level_help_mentions_removed_scroll_hover_focus_guidance() {
         assert!(HELP_TEXT.contains("scroll -> use act scroll"));
         assert!(HELP_TEXT.contains("hover -> use act hover"));
         assert!(HELP_TEXT.contains("focus -> use act focus"));
+        assert!(HELP_TEXT.contains("fill -> use act fill"));
         assert!(HELP_TEXT.contains("select -> use act select"));
         assert!(HELP_TEXT.contains("options -> use act options"));
     }

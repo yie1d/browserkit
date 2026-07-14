@@ -81,7 +81,6 @@ pub async fn handle_request(
         "page.console" => page::handle_page_console(req, state).await,
         "act.click" => action::handle_click(req, state).await,
         "act.type" => action::handle_type(req, state).await,
-        "act.fill" => action::handle_act_fill(req, state).await,
         "act.upload" => action::handle_act_upload(req, state).await,
         "act.drag" => action::handle_act_drag(req, state).await,
         "act.keys" => action::handle_act_keys(req, state).await,
@@ -263,5 +262,10 @@ mod tests {
     #[tokio::test]
     async fn dispatch_removed_select_and_options_routes_are_unknown() {
         assert_routes_removed(&["act.select", "act.dropdown_options"]).await;
+    }
+
+    #[tokio::test]
+    async fn dispatch_removed_fill_route_is_unknown() {
+        assert_routes_removed(&["act.fill"]).await;
     }
 }

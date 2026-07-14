@@ -94,7 +94,7 @@ bk snapshot --wait none
 
 ## act
 
-执行交互动作：click、type、press、scroll、hover、focus、select、options。
+执行交互动作：click、type、fill、press、scroll、hover、focus、select、options。
 
 ```
 Usage: bk act [OPTIONS] [KIND]
@@ -102,8 +102,9 @@ Usage: bk act [OPTIONS] [KIND]
 
 | 参数 | 类型 | 说明 |
 |------|------|------|
-| `[KIND]` | positional | 动作类型：`click` \| `type` \| `press` \| `scroll` \| `hover` \| `focus` \| `select` \| `options` |
+| `[KIND]` | positional | 动作类型：`click` \| `type` \| `fill` \| `press` \| `scroll` \| `hover` \| `focus` \| `select` \| `options` |
 | `--ref <ELEMENT_REF>` | string | 元素 ref（backendNodeId，从 snapshot 获取） |
+| `--set <REF:VALUE>` | string[] | fill 动作的字段赋值，格式必须是 `ref:<id>=<value>` |
 | `--text <TEXT>` | string | type 动作的输入文本 |
 | `--value <VALUE>` | string | select 动作的目标 option 值或可见文本 |
 | `--append` | flag | type 追加模式（默认为替换） |
@@ -129,6 +130,15 @@ bk act type --ref 42 --text "追加内容" --append
 ```
 
 > type 默认为**替换**模式（清空后输入）。需要追加时加 `--append`。
+
+### fill
+
+```bash
+bk act fill --set ref:42=alpha --set ref:55=beta
+bk act fill --set ref:42=
+```
+
+> fill 只接受来自 `bk snapshot` 的稳定 `ref:<id>=<value>`；不支持 selector 或 legacy index。
 
 ### press
 
@@ -422,4 +432,4 @@ bk status
 | `bk select --ref <N> <VALUE>` | `bk act select --ref <N> --value <VALUE>` |
 | `bk options --ref <N>` | `bk act options --ref <N>` |
 
-其余 v1 legacy 命令（ws/tab/browser/daemon/storage/dialog/debug/click/type/fill/drag/upload/keys/find/search/html/console/pdf/open/fetch）仍可用但将在 Phase 3 移除。
+其余 v1 legacy 命令（ws/tab/browser/daemon/storage/dialog/debug/click/type/drag/upload/keys/find/search/html/console/pdf/open/fetch）仍可用但将在 Phase 3 移除。

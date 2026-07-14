@@ -22,12 +22,19 @@ use crate::page::state_diff::{capture_state_snapshot, compute_state_diff};
 pub enum ActKind {
     Click,
     Type,
+    Fill,
     Press,
     Scroll,
     Hover,
     Focus,
     Select,
     Options,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ActFillField {
+    ref_id: i64,
+    value: String,
 }
 
 // ── Parsed parameters ────────────────────────────────────────────────────────
@@ -50,6 +57,8 @@ struct ActParams {
     text: Option<String>,
     value: Option<String>,
     append: bool,
+    // Fill params
+    fields: Vec<ActFillField>,
     // Press params
     keys: Vec<String>,
     // Scroll params
@@ -80,7 +89,7 @@ fn parse_act_params(params: &serde_json::Value) -> Result<ActParams, Response> {
     let kind_str = params.get("kind").and_then(|v| v.as_str()).ok_or_else(|| {
         Response::error_detail(
             ErrorCode::InvalidArgument,
-            "missing required parameter: kind (click/type/press/scroll/hover/focus/select/options)"
+            "missing required parameter: kind (click/type/fill/press/scroll/hover/focus/select/options)"
                 .into(),
             None,
         )
@@ -89,6 +98,7 @@ fn parse_act_params(params: &serde_json::Value) -> Result<ActParams, Response> {
     let kind = match kind_str {
         "click" => ActKind::Click,
         "type" => ActKind::Type,
+        "fill" => ActKind::Fill,
         "press" => ActKind::Press,
         "scroll" => ActKind::Scroll,
         "hover" => ActKind::Hover,
@@ -99,7 +109,7 @@ fn parse_act_params(params: &serde_json::Value) -> Result<ActParams, Response> {
             return Err(Response::error_detail(
                 ErrorCode::InvalidArgument,
                 format!(
-                    "unsupported act kind: '{}' (supported: click, type, press, scroll, hover, focus, select, options)",
+                    "unsupported act kind: '{}' (supported: click, type, fill, press, scroll, hover, focus, select, options)",
                     kind_str
                 ),
                 None,
@@ -122,6 +132,12 @@ fn parse_act_params(params: &serde_json::Value) -> Result<ActParams, Response> {
         .get("append")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
+    let fields = params
+        .get("fields")
+        .and_then(|value| value.as_array())
+        .map(|items| parse_fill_fields(items))
+        .transpose()?
+        .unwrap_or_default();
     let keys: Vec<String> = params
         .get("keys")
         .and_then(|v| v.as_array())
@@ -158,6 +174,56 @@ fn parse_act_params(params: &serde_json::Value) -> Result<ActParams, Response> {
         Ok(())
     }
 
+    fn parse_fill_fields(items: &[serde_json::Value]) -> Result<Vec<ActFillField>, Response> {
+        let mut parsed = Vec::with_capacity(items.len());
+
+        for item in items {
+            let Some(object) = item.as_object() else {
+                return Err(Response::error_detail(
+                    ErrorCode::InvalidArgument,
+                    "fill fields must be objects with 'ref' and 'value'".into(),
+                    None,
+                ));
+            };
+
+            if object.keys().any(|key| key != "ref" && key != "value") {
+                return Err(Response::error_detail(
+                    ErrorCode::InvalidArgument,
+                    "fill fields only support 'ref' and 'value'".into(),
+                    None,
+                ));
+            }
+
+            let ref_id = object
+                .get("ref")
+                .and_then(|value| value.as_i64())
+                .ok_or_else(|| {
+                    Response::error_detail(
+                        ErrorCode::InvalidArgument,
+                        "each fill field requires 'ref' (number)".into(),
+                        None,
+                    )
+                })?;
+            let value = object
+                .get("value")
+                .and_then(|value| value.as_str())
+                .ok_or_else(|| {
+                    Response::error_detail(
+                        ErrorCode::InvalidArgument,
+                        "each fill field requires 'value' (string)".into(),
+                        None,
+                    )
+                })?;
+
+            parsed.push(ActFillField {
+                ref_id,
+                value: value.to_string(),
+            });
+        }
+
+        Ok(parsed)
+    }
+
     // Validation per kind
     match kind {
         ActKind::Click => {
@@ -181,6 +247,38 @@ fn parse_act_params(params: &serde_json::Value) -> Result<ActParams, Response> {
                 return Err(Response::error_detail(
                     ErrorCode::InvalidArgument,
                     "type requires text".into(),
+                    None,
+                ));
+            }
+        }
+        ActKind::Fill => {
+            reject_incompatible_fields(
+                params,
+                "fill",
+                &[
+                    "ref",
+                    "x",
+                    "y",
+                    "text",
+                    "value",
+                    "append",
+                    "keys",
+                    "direction",
+                    "amount",
+                    "selector",
+                ],
+            )?;
+            if params.get("fields").is_none() {
+                return Err(Response::error_detail(
+                    ErrorCode::InvalidArgument,
+                    "fill requires fields".into(),
+                    None,
+                ));
+            }
+            if fields.is_empty() {
+                return Err(Response::error_detail(
+                    ErrorCode::InvalidArgument,
+                    "fill requires at least one field".into(),
                     None,
                 ));
             }
@@ -308,6 +406,7 @@ fn parse_act_params(params: &serde_json::Value) -> Result<ActParams, Response> {
         text,
         value,
         append,
+        fields,
         keys,
         direction,
         amount,
@@ -425,6 +524,7 @@ pub async fn handle_act(req: &Request, state: &Arc<DaemonState>) -> Response {
     let action_result = match params.kind {
         ActKind::Click => execute_click(&cdp, cdp_session_id, &params, &target_id).await,
         ActKind::Type => execute_type(&cdp, cdp_session_id, &params, &target_id).await,
+        ActKind::Fill => execute_fill(&cdp, cdp_session_id, &params).await,
         ActKind::Press => execute_press(&cdp, cdp_session_id, &params, &target_id).await,
         ActKind::Scroll => execute_scroll(&cdp, cdp_session_id, &params).await,
         ActKind::Hover => {
@@ -575,6 +675,32 @@ async fn execute_type(
     result
         .map(|()| ActionSuccess::completed("type", Some(ref_id)))
         .map_err(|e| action_error("type", e))
+}
+
+async fn execute_fill(
+    cdp: &Arc<cdpkit::CDP>,
+    session_id: &str,
+    params: &ActParams,
+) -> Result<ActionSuccess, Response> {
+    use crate::page::element_ref::ElementTarget;
+    use crate::page::interaction::{fill_fields_by_target, FillFieldTarget};
+
+    let fields: Vec<FillFieldTarget> = params
+        .fields
+        .iter()
+        .map(|field| FillFieldTarget {
+            target: ElementTarget::Ref(field.ref_id),
+            value: field.value.clone(),
+        })
+        .collect();
+
+    let results = fill_fields_by_target(cdp, session_id, &fields)
+        .await
+        .map_err(|e| action_error("fill", e))?;
+
+    let mut success = ActionSuccess::completed("fill", None);
+    success.insert("results", json!(results));
+    Ok(success)
 }
 
 // ── Press execution ──────────────────────────────────────────────────────────
@@ -779,6 +905,58 @@ mod tests {
         assert!(parse_act_params(&json!({"kind": "select", "ref": 42})).is_err());
         assert!(parse_act_params(&json!({"kind": "options", "ref": 42})).is_ok());
         assert!(parse_act_params(&json!({"kind": "options"})).is_err());
+    }
+
+    #[test]
+    fn parse_act_fill_accepts_refs_and_rejects_indexes() {
+        let parsed = parse_act_params(&json!({
+            "kind": "fill",
+            "fields": [{"ref": 42, "value": "alpha"}]
+        }))
+        .unwrap();
+        assert_eq!(
+            parsed.fields,
+            vec![ActFillField {
+                ref_id: 42,
+                value: "alpha".into(),
+            }]
+        );
+        assert!(
+            parse_act_params(&json!({
+                "kind": "fill",
+                "fields": [{"index": 0, "value": "alpha"}]
+            }))
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn parse_act_fill_rejects_action_specific_fields() {
+        let base = json!({
+            "kind": "fill",
+            "fields": [{"ref": 42, "value": "alpha"}],
+            "session": "agent-a",
+            "target": "TAB123",
+            "timeout": 60000,
+            "no_state_diff": true,
+        });
+        assert!(parse_act_params(&base).is_ok());
+
+        for (field, field_value) in [
+            ("ref", json!(42)),
+            ("text", json!("hello")),
+            ("value", json!("green")),
+            ("append", json!(true)),
+            ("keys", json!(["Enter"])),
+            ("direction", json!("down")),
+            ("amount", json!(250.0)),
+            ("selector", json!("#main")),
+        ] {
+            let mut params = base.clone();
+            params[field] = field_value;
+            let value = serde_json::to_value(parse_act_params(&params).unwrap_err()).unwrap();
+            assert_eq!(value["error"]["code"], "INVALID_ARGUMENT", "{field}");
+        }
     }
 
     #[test]
@@ -1211,6 +1389,18 @@ mod tests {
             let value = serde_json::to_value(handle_act(&req, &state).await).unwrap();
             assert_eq!(value["error"]["code"], "SESSION_NOT_FOUND");
         }
+    }
+
+    #[tokio::test]
+    async fn handle_fill_uses_session_resolution() {
+        let state = Arc::new(DaemonState::new());
+        let req = Request {
+            cmd: "act".into(),
+            params: json!({"kind": "fill", "fields": [{"ref": 42, "value": "alpha"}]}),
+            token: None,
+        };
+        let value = serde_json::to_value(handle_act(&req, &state).await).unwrap();
+        assert_eq!(value["error"]["code"], "SESSION_NOT_FOUND");
     }
 
     #[test]

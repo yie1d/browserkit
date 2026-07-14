@@ -1,4 +1,4 @@
-// Legacy interaction handlers: click, type, fill, drag, upload, keys
+// Legacy interaction handlers: click, type, drag, upload, keys
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -227,49 +227,6 @@ async fn check_autocomplete(
     }
 
     is_autocomplete
-}
-
-handler!(handle_act_fill, do_act_fill(req, state));
-
-async fn do_act_fill(req: &Request, state: &Arc<DaemonState>) -> Result<Response, BkError> {
-    let ctx = resolve_context(req, state, "act.fill")?;
-
-    let fields_arr = req.params.get("fields")
-        .and_then(|v| v.as_array())
-        .ok_or_else(|| BkError::InvalidRequest("act.fill requires 'fields' array param".into()))?;
-
-    let mut fields = Vec::with_capacity(fields_arr.len());
-    for item in fields_arr {
-        let target = if let Some(r) = item.get("ref").and_then(|v| v.as_i64()) {
-            ElementTarget::Ref(r)
-        } else if let Some(i) = item.get("index").and_then(|v| v.as_u64()) {
-            ElementTarget::Index(i as usize)
-        } else {
-            return Err(BkError::InvalidRequest("each fill field requires 'ref' (number) or 'index' (number)".into()));
-        };
-        let value = item.get("value").and_then(|v| v.as_str())
-            .ok_or_else(|| BkError::InvalidRequest("each fill field requires 'value' (string)".into()))?;
-        fields.push(crate::page::interaction::FillFieldTarget {
-            target,
-            value: value.to_string(),
-        });
-    }
-
-    if fields.is_empty() {
-        return Err(BkError::InvalidRequest("act.fill requires at least one field".into()));
-    }
-
-    let results = crate::page::interaction::fill_fields_by_target(&ctx.cdp, &ctx.cdp_session_id, &fields).await?;
-    touch_workspace(state, &ctx.wid);
-
-    let has_errors = results.iter().any(|r| r.status == "error");
-    info!(wid = %ctx.wid, tid = %ctx.tid, count = fields.len(), errors = has_errors, "fill");
-
-    Ok(Response::ok(json!({
-        "wid": ctx.wid,
-        "tid": ctx.tid,
-        "results": results,
-    })))
 }
 
 handler!(handle_act_upload, do_act_upload(req, state));
