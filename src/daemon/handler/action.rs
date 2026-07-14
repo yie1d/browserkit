@@ -1,4 +1,4 @@
-// Legacy interaction handlers: click, type, drag, upload, keys
+// Legacy interaction handlers: click, type, keys
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -227,80 +227,6 @@ async fn check_autocomplete(
     }
 
     is_autocomplete
-}
-
-handler!(handle_act_upload, do_act_upload(req, state));
-
-async fn do_act_upload(req: &Request, state: &Arc<DaemonState>) -> Result<Response, BkError> {
-    let ctx = resolve_context(req, state, "act.upload")?;
-
-    let target = parse_element_target(&req.params);
-    let selector = req.params.get("selector").and_then(|v| v.as_str());
-
-    let files: Vec<String> = req.params.get("files")
-        .and_then(|v| v.as_array())
-        .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
-        .unwrap_or_default();
-
-    if files.is_empty() {
-        return Err(BkError::InvalidRequest("act.upload requires at least one file path".into()));
-    }
-
-    match (target, selector) {
-        (Some(t), _) => {
-            crate::page::interaction::upload_files_by_target(&ctx.cdp, &ctx.cdp_session_id, &t, &files).await?;
-            info!(wid = %ctx.wid, tid = %ctx.tid, count = files.len(), "upload by target");
-        }
-        (None, Some(sel)) => {
-            crate::page::interaction::upload_files_by_selector(&ctx.cdp, &ctx.cdp_session_id, sel, &files).await?;
-            info!(wid = %ctx.wid, tid = %ctx.tid, selector = %sel, count = files.len(), "upload by selector");
-        }
-        _ => return Err(BkError::InvalidRequest("act.upload requires 'ref', 'index', or 'selector' param".into())),
-    }
-
-    touch_workspace(state, &ctx.wid);
-    Ok(Response::ok(json!({ "wid": ctx.wid, "tid": ctx.tid, "status": "uploaded", "files": files })))
-}
-
-handler!(handle_act_drag, do_act_drag(req, state));
-
-async fn do_act_drag(req: &Request, state: &Arc<DaemonState>) -> Result<Response, BkError> {
-    let ctx = resolve_context(req, state, "act.drag")?;
-
-    // Parse source target
-    let from_ref = req.params.get("from_ref").and_then(|v| v.as_i64());
-    let from_index = req.params.get("from_index").and_then(|v| v.as_u64()).map(|v| v as usize);
-    let from_selector = req.params.get("from_selector").and_then(|v| v.as_str());
-
-    // Parse destination target
-    let to_ref = req.params.get("to_ref").and_then(|v| v.as_i64());
-    let to_index = req.params.get("to_index").and_then(|v| v.as_u64()).map(|v| v as usize);
-    let to_selector = req.params.get("to_selector").and_then(|v| v.as_str());
-
-    let from_target = if let Some(r) = from_ref {
-        ElementTarget::Ref(r)
-    } else if let Some(i) = from_index {
-        ElementTarget::Index(i)
-    } else if let Some(sel) = from_selector {
-        ElementTarget::Selector(sel.to_string())
-    } else {
-        return Err(BkError::InvalidRequest("act.drag requires from_ref, from_index, or from_selector".into()));
-    };
-
-    let to_target = if let Some(r) = to_ref {
-        ElementTarget::Ref(r)
-    } else if let Some(i) = to_index {
-        ElementTarget::Index(i)
-    } else if let Some(sel) = to_selector {
-        ElementTarget::Selector(sel.to_string())
-    } else {
-        return Err(BkError::InvalidRequest("act.drag requires to_ref, to_index, or to_selector".into()));
-    };
-
-    crate::page::interaction::drag_by_target(&ctx.cdp, &ctx.cdp_session_id, &from_target, &to_target).await?;
-    touch_workspace(state, &ctx.wid);
-    info!(wid = %ctx.wid, tid = %ctx.tid, "drag completed");
-    Ok(Response::ok(json!({ "wid": ctx.wid, "tid": ctx.tid, "status": "dragged" })))
 }
 
 handler!(handle_act_keys, do_act_keys(req, state));

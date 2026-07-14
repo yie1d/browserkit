@@ -1,4 +1,4 @@
-// Handler for the v2 `act` command (click/type/press/scroll/hover/focus/select/options).
+// Handler for the v2 `act` command (click/type/fill/press/scroll/hover/focus/select/options/upload/drag).
 //
 // Unified action dispatcher for the session-native interaction surface.
 // Each returns result + state_diff (before/after URL/title/element comparison).
@@ -29,6 +29,8 @@ pub enum ActKind {
     Focus,
     Select,
     Options,
+    Upload,
+    Drag,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -65,6 +67,13 @@ struct ActParams {
     direction: Option<String>,
     amount: Option<f64>,
     selector: Option<String>,
+    // Upload params
+    files: Vec<String>,
+    // Drag params
+    from_ref: Option<i64>,
+    from_selector: Option<String>,
+    to_ref: Option<i64>,
+    to_selector: Option<String>,
 }
 
 // ── Parameter parsing ────────────────────────────────────────────────────────
@@ -89,7 +98,7 @@ fn parse_act_params(params: &serde_json::Value) -> Result<ActParams, Response> {
     let kind_str = params.get("kind").and_then(|v| v.as_str()).ok_or_else(|| {
         Response::error_detail(
             ErrorCode::InvalidArgument,
-            "missing required parameter: kind (click/type/fill/press/scroll/hover/focus/select/options)"
+            "missing required parameter: kind (click/type/fill/press/scroll/hover/focus/select/options/upload/drag)"
                 .into(),
             None,
         )
@@ -105,11 +114,13 @@ fn parse_act_params(params: &serde_json::Value) -> Result<ActParams, Response> {
         "focus" => ActKind::Focus,
         "select" => ActKind::Select,
         "options" => ActKind::Options,
+        "upload" => ActKind::Upload,
+        "drag" => ActKind::Drag,
         _ => {
             return Err(Response::error_detail(
                 ErrorCode::InvalidArgument,
                 format!(
-                    "unsupported act kind: '{}' (supported: click, type, fill, press, scroll, hover, focus, select, options)",
+                    "unsupported act kind: '{}' (supported: click, type, fill, press, scroll, hover, focus, select, options, upload, drag)",
                     kind_str
                 ),
                 None,
@@ -157,6 +168,17 @@ fn parse_act_params(params: &serde_json::Value) -> Result<ActParams, Response> {
         .get("selector")
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
+    let files = parse_string_array_field(params, "files")?.unwrap_or_default();
+    let from_ref = params.get("from_ref").and_then(|v| v.as_i64());
+    let from_selector = params
+        .get("from_selector")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    let to_ref = params.get("to_ref").and_then(|v| v.as_i64());
+    let to_selector = params
+        .get("to_selector")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
 
     fn reject_incompatible_fields(
         params: &serde_json::Value,
@@ -173,6 +195,34 @@ fn parse_act_params(params: &serde_json::Value) -> Result<ActParams, Response> {
             }
         }
         Ok(())
+    }
+
+    fn parse_string_array_field(
+        params: &serde_json::Value,
+        field: &str,
+    ) -> Result<Option<Vec<String>>, Response> {
+        let Some(value) = params.get(field) else {
+            return Ok(None);
+        };
+        let Some(items) = value.as_array() else {
+            return Err(Response::error_detail(
+                ErrorCode::InvalidArgument,
+                format!("{field} must be an array"),
+                None,
+            ));
+        };
+        let mut parsed = Vec::with_capacity(items.len());
+        for item in items {
+            let Some(value) = item.as_str() else {
+                return Err(Response::error_detail(
+                    ErrorCode::InvalidArgument,
+                    format!("{field} entries must be strings"),
+                    None,
+                ));
+            };
+            parsed.push(value.to_string());
+        }
+        Ok(Some(parsed))
     }
 
     fn parse_fill_fields(items: &[serde_json::Value]) -> Result<Vec<ActFillField>, Response> {
@@ -380,6 +430,95 @@ fn parse_act_params(params: &serde_json::Value) -> Result<ActParams, Response> {
                 ));
             }
         }
+        ActKind::Upload => {
+            reject_incompatible_fields(
+                params,
+                "upload",
+                &[
+                    "x",
+                    "y",
+                    "text",
+                    "value",
+                    "append",
+                    "fields",
+                    "keys",
+                    "direction",
+                    "amount",
+                    "from_ref",
+                    "from_selector",
+                    "to_ref",
+                    "to_selector",
+                    "from_index",
+                    "to_index",
+                ],
+            )?;
+            match (ref_id.is_some(), selector.is_some()) {
+                (true, false) | (false, true) => {}
+                _ => {
+                    return Err(Response::error_detail(
+                        ErrorCode::InvalidArgument,
+                        "upload requires exactly one of ref or selector".into(),
+                        None,
+                    ))
+                }
+            }
+            if params.get("files").is_none() {
+                return Err(Response::error_detail(
+                    ErrorCode::InvalidArgument,
+                    "upload requires files".into(),
+                    None,
+                ));
+            }
+            if files.is_empty() {
+                return Err(Response::error_detail(
+                    ErrorCode::InvalidArgument,
+                    "upload requires at least one file".into(),
+                    None,
+                ));
+            }
+        }
+        ActKind::Drag => {
+            reject_incompatible_fields(
+                params,
+                "drag",
+                &[
+                    "ref",
+                    "selector",
+                    "x",
+                    "y",
+                    "text",
+                    "value",
+                    "append",
+                    "fields",
+                    "keys",
+                    "direction",
+                    "amount",
+                    "files",
+                    "from_index",
+                    "to_index",
+                ],
+            )?;
+            match (from_ref.is_some(), from_selector.is_some()) {
+                (true, false) | (false, true) => {}
+                _ => {
+                    return Err(Response::error_detail(
+                        ErrorCode::InvalidArgument,
+                        "drag requires exactly one of from_ref or from_selector".into(),
+                        None,
+                    ))
+                }
+            }
+            match (to_ref.is_some(), to_selector.is_some()) {
+                (true, false) | (false, true) => {}
+                _ => {
+                    return Err(Response::error_detail(
+                        ErrorCode::InvalidArgument,
+                        "drag requires exactly one of to_ref or to_selector".into(),
+                        None,
+                    ))
+                }
+            }
+        }
     }
 
     let direction = match kind {
@@ -419,6 +558,11 @@ fn parse_act_params(params: &serde_json::Value) -> Result<ActParams, Response> {
         direction,
         amount,
         selector,
+        files,
+        from_ref,
+        from_selector,
+        to_ref,
+        to_selector,
     })
 }
 
@@ -555,6 +699,8 @@ pub async fn handle_act(req: &Request, state: &Arc<DaemonState>) -> Response {
         }
         ActKind::Select => execute_select(&cdp, cdp_session_id, &params).await,
         ActKind::Options => execute_options(&cdp, cdp_session_id, &params).await,
+        ActKind::Upload => execute_upload(&cdp, cdp_session_id, &params).await,
+        ActKind::Drag => execute_drag(&cdp, cdp_session_id, &params).await,
     };
 
     let action_success = match action_result {
@@ -834,6 +980,72 @@ async fn execute_options(
     Ok(success)
 }
 
+async fn execute_upload(
+    cdp: &Arc<cdpkit::CDP>,
+    session_id: &str,
+    params: &ActParams,
+) -> Result<ActionSuccess, Response> {
+    use crate::page::element_ref::ElementTarget;
+    use crate::page::interaction::{upload_files_by_selector, upload_files_by_target};
+
+    if let Some(ref_id) = params.ref_id {
+        upload_files_by_target(cdp, session_id, &ElementTarget::Ref(ref_id), &params.files)
+            .await
+            .map_err(|e| action_error("upload", e))?;
+
+        let mut success = ActionSuccess::completed("upload", Some(ref_id));
+        success.insert("files", json!(params.files));
+        return Ok(success);
+    }
+
+    let selector = params
+        .selector
+        .as_deref()
+        .expect("upload selector validated above");
+    upload_files_by_selector(cdp, session_id, selector, &params.files)
+        .await
+        .map_err(|e| action_error("upload", e))?;
+
+    let mut success = ActionSuccess::completed("upload", None);
+    success.insert("files", json!(params.files));
+    Ok(success)
+}
+
+async fn execute_drag(
+    cdp: &Arc<cdpkit::CDP>,
+    session_id: &str,
+    params: &ActParams,
+) -> Result<ActionSuccess, Response> {
+    use crate::page::element_ref::ElementTarget;
+    use crate::page::interaction::drag_by_target;
+
+    let from_target = if let Some(ref_id) = params.from_ref {
+        ElementTarget::Ref(ref_id)
+    } else {
+        ElementTarget::Selector(
+            params
+                .from_selector
+                .clone()
+                .expect("drag from target validated above"),
+        )
+    };
+    let to_target = if let Some(ref_id) = params.to_ref {
+        ElementTarget::Ref(ref_id)
+    } else {
+        ElementTarget::Selector(
+            params
+                .to_selector
+                .clone()
+                .expect("drag to target validated above"),
+        )
+    };
+
+    drag_by_target(cdp, session_id, &from_target, &to_target)
+        .await
+        .map_err(|e| action_error("drag", e))?;
+    Ok(ActionSuccess::completed("drag", None))
+}
+
 // ── Tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -998,6 +1210,87 @@ mod tests {
             ("direction", json!("down")),
             ("amount", json!(250.0)),
             ("selector", json!("#main")),
+        ] {
+            let mut params = base.clone();
+            params[field] = field_value;
+            let value = serde_json::to_value(parse_act_params(&params).unwrap_err()).unwrap();
+            assert_eq!(value["error"]["code"], "INVALID_ARGUMENT", "{field}");
+        }
+    }
+
+    #[test]
+    fn parse_act_upload_and_drag_require_complete_targets() {
+        assert!(parse_act_params(&json!({"kind": "upload", "ref": 42, "files": ["a.txt"]})).is_ok());
+        assert!(parse_act_params(&json!({"kind": "upload", "files": ["a.txt"]})).is_err());
+        assert!(parse_act_params(&json!({"kind": "drag", "from_ref": 10, "to_selector": "#drop"})).is_ok());
+        assert!(parse_act_params(&json!({"kind": "drag", "from_ref": 10})).is_err());
+    }
+
+    #[test]
+    fn parse_act_upload_validates_files_shape() {
+        let non_array = parse_act_params(&json!({
+            "kind": "upload",
+            "ref": 42,
+            "files": "a.txt"
+        }))
+        .unwrap_err();
+        let value = serde_json::to_value(non_array).unwrap();
+        assert_eq!(value["error"]["code"], "INVALID_ARGUMENT");
+
+        let non_string_entry = parse_act_params(&json!({
+            "kind": "upload",
+            "ref": 42,
+            "files": ["a.txt", 5]
+        }))
+        .unwrap_err();
+        let value = serde_json::to_value(non_string_entry).unwrap();
+        assert_eq!(value["error"]["code"], "INVALID_ARGUMENT");
+    }
+
+    #[test]
+    fn parse_act_upload_rejects_incompatible_fields() {
+        let base = json!({
+            "kind": "upload",
+            "ref": 42,
+            "files": ["a.txt"],
+            "session": "agent-a",
+            "target": "TAB123",
+            "timeout": 60000,
+            "no_state_diff": true,
+        });
+        assert!(parse_act_params(&base).is_ok());
+
+        for (field, field_value) in [
+            ("text", json!("hello")),
+            ("direction", json!("down")),
+            ("from_ref", json!(10)),
+            ("to_selector", json!("#drop")),
+        ] {
+            let mut params = base.clone();
+            params[field] = field_value;
+            let value = serde_json::to_value(parse_act_params(&params).unwrap_err()).unwrap();
+            assert_eq!(value["error"]["code"], "INVALID_ARGUMENT", "{field}");
+        }
+    }
+
+    #[test]
+    fn parse_act_drag_rejects_incompatible_fields() {
+        let base = json!({
+            "kind": "drag",
+            "from_ref": 10,
+            "to_selector": "#drop",
+            "session": "agent-a",
+            "target": "TAB123",
+            "timeout": 60000,
+            "no_state_diff": true,
+        });
+        assert!(parse_act_params(&base).is_ok());
+
+        for (field, field_value) in [
+            ("ref", json!(42)),
+            ("selector", json!("#main")),
+            ("files", json!(["a.txt"])),
+            ("text", json!("hello")),
         ] {
             let mut params = base.clone();
             params[field] = field_value;
@@ -1200,14 +1493,14 @@ mod tests {
 
     #[test]
     fn parse_act_invalid_kind_is_error() {
-        let params = json!({"kind": "drag"});
+        let params = json!({"kind": "dance"});
         let err = parse_act_params(&params).unwrap_err();
         let json = serde_json::to_value(&err).unwrap();
         assert_eq!(json["error"]["code"], "INVALID_ARGUMENT");
         assert!(err.error.unwrap()["message"]
             .as_str()
             .unwrap()
-            .contains("drag"));
+            .contains("dance"));
     }
 
     #[test]
@@ -1448,6 +1741,23 @@ mod tests {
         };
         let value = serde_json::to_value(handle_act(&req, &state).await).unwrap();
         assert_eq!(value["error"]["code"], "SESSION_NOT_FOUND");
+    }
+
+    #[tokio::test]
+    async fn handle_upload_and_drag_use_session_resolution() {
+        let state = Arc::new(DaemonState::new());
+        for params in [
+            json!({"kind": "upload", "ref": 42, "files": ["a.txt"]}),
+            json!({"kind": "drag", "from_ref": 10, "to_selector": "#drop"}),
+        ] {
+            let req = Request {
+                cmd: "act".into(),
+                params,
+                token: None,
+            };
+            let value = serde_json::to_value(handle_act(&req, &state).await).unwrap();
+            assert_eq!(value["error"]["code"], "SESSION_NOT_FOUND");
+        }
     }
 
     #[test]

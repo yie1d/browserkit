@@ -23,7 +23,7 @@ Primary:
   setup       One-time Chrome remote debugging setup
   connect     Connect to browser (idempotent)
   snapshot    Get page state (elements + text + viewport)
-  act         Execute interaction (click/type/fill/press/scroll/hover/focus/select/options)
+  act         Execute interaction (click/type/fill/press/scroll/hover/focus/select/options/upload/drag)
   navigate    Navigate to URL or back/forward/reload
   open        Open URL in new tab
   close       Close tab
@@ -35,7 +35,7 @@ Primary:
   status      Connection status
 
 Legacy (v1, will be removed in Phase 3):
-  click/type/drag/upload/keys
+  click/type/keys
   find/search/html/url/title/console
   pdf/open/fetch/ws/tab/browser/daemon/storage/dialog/debug
 
@@ -47,6 +47,7 @@ Removed aliases:
   focus -> use act focus
   fill -> use act fill
   select -> use act select    options -> use act options
+  upload -> use act upload    drag -> use act drag
 
 Options:
       --session <NAME>    Target session (or BK_SESSION env var)
@@ -122,10 +123,10 @@ pub enum Command {
         wait: String,
     },
 
-    /// Execute interaction (click/type/fill/press/scroll/hover/focus/select/options)
+    /// Execute interaction (click/type/fill/press/scroll/hover/focus/select/options/upload/drag)
     #[command(about = "Execute interaction")]
     Act {
-        /// Action kind (click, type, fill, press, scroll, hover, focus, select, options)
+        /// Action kind (click, type, fill, press, scroll, hover, focus, select, options, upload, drag)
         kind: Option<String>,
         /// Element ref (backendNodeId)
         #[arg(long = "ref")]
@@ -160,6 +161,20 @@ pub enum Command {
         /// CSS selector for scroll target
         #[arg(long)]
         selector: Option<String>,
+        /// Files for upload action
+        files: Vec<String>,
+        /// Source element ref for drag
+        #[arg(long)]
+        from_ref: Option<i64>,
+        /// Source element selector for drag
+        #[arg(long)]
+        from_selector: Option<String>,
+        /// Destination element ref for drag
+        #[arg(long)]
+        to_ref: Option<i64>,
+        /// Destination element selector for drag
+        #[arg(long)]
+        to_selector: Option<String>,
     },
 
     /// Navigate to URL or back/forward/reload
@@ -284,35 +299,6 @@ pub enum Command {
         #[arg(long)]
         autocomplete: bool,
         text: String,
-    },
-    /// Drag element
-    #[command(hide = true, group(ArgGroup::new("from_target").required(true).args(["from_ref", "from_index", "from_selector"])))]
-    #[command(group(ArgGroup::new("to_target").required(true).args(["to_ref", "to_index", "to_selector"])))]
-    Drag {
-        #[arg(long)]
-        from_ref: Option<i64>,
-        #[arg(long)]
-        from_index: Option<usize>,
-        #[arg(long)]
-        from_selector: Option<String>,
-        #[arg(long)]
-        to_ref: Option<i64>,
-        #[arg(long)]
-        to_index: Option<usize>,
-        #[arg(long)]
-        to_selector: Option<String>,
-    },
-    /// Upload files
-    #[command(hide = true)]
-    Upload {
-        #[arg(short, long)]
-        index: Option<usize>,
-        #[arg(short = 'r', long = "ref")]
-        element_ref: Option<i64>,
-        #[arg(short, long)]
-        selector: Option<String>,
-        #[arg(required = true)]
-        files: Vec<String>,
     },
     /// Send keyboard keys
     #[command(hide = true)]
@@ -1027,6 +1013,11 @@ async fn dispatch(cli: &Cli, client: &mut DaemonClient) -> Result<(), String> {
             direction,
             amount,
             selector,
+            files,
+            from_ref,
+            from_selector,
+            to_ref,
+            to_selector,
         } => {
             if !set.is_empty() && kind.as_deref() != Some("fill") {
                 return Err("--set is only supported with 'bk act fill'".into());
@@ -1068,6 +1059,11 @@ async fn dispatch(cli: &Cli, client: &mut DaemonClient) -> Result<(), String> {
             if let Some(dir) = direction { params["direction"] = json!(dir); }
             if let Some(a) = amount { params["amount"] = json!(a); }
             if let Some(sel) = selector { params["selector"] = json!(sel); }
+            if !files.is_empty() { params["files"] = json!(files); }
+            if let Some(from_ref) = from_ref { params["from_ref"] = json!(from_ref); }
+            if let Some(from_selector) = from_selector { params["from_selector"] = json!(from_selector); }
+            if let Some(to_ref) = to_ref { params["to_ref"] = json!(to_ref); }
+            if let Some(to_selector) = to_selector { params["to_selector"] = json!(to_selector); }
             if let Some(s) = &cli.session { params["session"] = json!(s); }
             if let Some(t) = &cli.target { params["target"] = json!(t); }
             if let Some(to) = cli.timeout { params["timeout"] = json!(to); }
@@ -1333,29 +1329,6 @@ async fn dispatch(cli: &Cli, client: &mut DaemonClient) -> Result<(), String> {
             if let Some(r) = element_ref { params["ref"] = json!(r); }
             else if let Some(i) = index { params["index"] = json!(i); }
             let resp = send_cmd(client, "act.type", params).await?;
-            print_response(&resp);
-        }
-
-        Command::Drag { from_ref, from_index, from_selector, to_ref, to_index, to_selector } => {
-            let wid = resolve_workspace(client).await?;
-            let mut params = json!({"wid": wid});
-            if let Some(r) = from_ref { params["from_ref"] = json!(r); }
-            else if let Some(i) = from_index { params["from_index"] = json!(i); }
-            if let Some(s) = from_selector { params["from_selector"] = json!(s); }
-            if let Some(r) = to_ref { params["to_ref"] = json!(r); }
-            else if let Some(i) = to_index { params["to_index"] = json!(i); }
-            if let Some(s) = to_selector { params["to_selector"] = json!(s); }
-            let resp = send_cmd(client, "act.drag", params).await?;
-            print_response(&resp);
-        }
-
-        Command::Upload { index, element_ref, selector, files } => {
-            let wid = resolve_workspace(client).await?;
-            let mut params = json!({"wid": wid, "files": files});
-            if let Some(r) = element_ref { params["ref"] = json!(r); }
-            else if let Some(i) = index { params["index"] = json!(i); }
-            if let Some(s) = selector { params["selector"] = json!(s); }
-            let resp = send_cmd(client, "act.upload", params).await?;
             print_response(&resp);
         }
 
@@ -1854,6 +1827,40 @@ mod tests {
     }
 
     #[test]
+    fn cli_parses_act_upload_and_drag() {
+        let upload = try_parse(&["bk", "act", "upload", "--ref", "42", "a.txt", "b.txt"]).unwrap();
+        assert!(matches!(
+            upload.command,
+            Command::Act {
+                ref kind,
+                element_ref: Some(42),
+                ref files,
+                ..
+            } if kind.as_deref() == Some("upload") && files == &["a.txt", "b.txt"]
+        ));
+
+        let drag = try_parse(&[
+            "bk",
+            "act",
+            "drag",
+            "--from-ref",
+            "10",
+            "--to-selector",
+            "#drop",
+        ])
+        .unwrap();
+        assert!(matches!(
+            drag.command,
+            Command::Act {
+                ref kind,
+                from_ref: Some(10),
+                ref to_selector,
+                ..
+            } if kind.as_deref() == Some("drag") && to_selector.as_deref() == Some("#drop")
+        ));
+    }
+
+    #[test]
     fn cli_parses_act_scroll_selector() {
         let cli = try_parse(&["bk", "act", "scroll", "--selector", "#main"]).unwrap();
         assert!(matches!(
@@ -2059,6 +2066,14 @@ mod tests {
     }
 
     #[test]
+    fn cli_rejects_removed_upload_and_drag_commands() {
+        assert_cli_commands_removed(&[
+            &["bk", "upload", "--ref", "42", "a.txt"][..],
+            &["bk", "drag", "--from-ref", "10", "--to-ref", "20"][..],
+        ]);
+    }
+
+    #[test]
     fn top_level_help_mentions_removed_scroll_hover_focus_guidance() {
         assert!(HELP_TEXT.contains("scroll -> use act scroll"));
         assert!(HELP_TEXT.contains("hover -> use act hover"));
@@ -2066,6 +2081,8 @@ mod tests {
         assert!(HELP_TEXT.contains("fill -> use act fill"));
         assert!(HELP_TEXT.contains("select -> use act select"));
         assert!(HELP_TEXT.contains("options -> use act options"));
+        assert!(HELP_TEXT.contains("upload -> use act upload"));
+        assert!(HELP_TEXT.contains("drag -> use act drag"));
     }
 
     // ── Removed flags ────────────────────────────────────────────

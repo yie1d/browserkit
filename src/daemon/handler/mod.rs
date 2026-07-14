@@ -81,8 +81,6 @@ pub async fn handle_request(
         "page.console" => page::handle_page_console(req, state).await,
         "act.click" => action::handle_click(req, state).await,
         "act.type" => action::handle_type(req, state).await,
-        "act.upload" => action::handle_act_upload(req, state).await,
-        "act.drag" => action::handle_act_drag(req, state).await,
         "act.keys" => action::handle_act_keys(req, state).await,
         "storage.cookies.get" => storage::handle_storage_cookies_get(req, state).await,
         "storage.cookies.set" => storage::handle_storage_cookies_set(req, state).await,
@@ -267,5 +265,10 @@ mod tests {
     #[tokio::test]
     async fn dispatch_removed_fill_route_is_unknown() {
         assert_routes_removed(&["act.fill"]).await;
+    }
+
+    #[tokio::test]
+    async fn dispatch_removed_upload_and_drag_routes_are_unknown() {
+        assert_routes_removed(&["act.upload", "act.drag"]).await;
     }
 }

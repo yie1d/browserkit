@@ -129,7 +129,7 @@ bk session cookies                  # Cookie operations
 | `setup` | One-time Chrome remote debugging setup (interactive) |
 | `connect` | Connect to browser (idempotent) |
 | `snapshot` | Get page state: elements + text + viewport info |
-| `act` | Execute interaction (click, type, press, scroll, hover, focus) |
+| `act` | Execute interaction (click, type, fill, press, scroll, hover, focus, select, options, upload, drag) |
 | `navigate` | Navigate to URL or back/forward/reload |
 | `open` | Open URL in a new tab |
 | `close` | Close the current tab |
@@ -175,17 +175,19 @@ bk act focus --ref 42
 # Select dropdown values and inspect options
 bk act select --ref 77 --value "option-value"
 bk act options --ref 77
+
+# Upload files and drag between elements
+bk act upload --ref 3 /path/to/file.pdf
+bk act upload --selector "input[type=file]" /path/to/a.pdf /path/to/b.pdf
+bk act drag --from-ref 10 --to-ref 20
+bk act drag --from-selector "#card-a" --to-selector "#drop-zone"
 ```
 
 `bk act fill`, `bk act select`, and `bk act options` accept only stable element refs from `bk snapshot`.
 
-Phase 2 actions (via legacy commands, migrating to `act` in Phase 3):
-
 | Action | Command |
 |--------|---------|
-| drag | `bk drag --from-ref 10 --to-ref 20` |
 | keys | `bk keys Enter`, `bk keys Control+a` |
-| upload | `bk upload --ref 3 /path/to/file.pdf` |
 | dialog | `bk dialog accept`, `bk dialog dismiss`, `bk dialog policy accept` |
 
 ### navigate

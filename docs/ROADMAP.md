@@ -107,4 +107,5 @@ Status: pending
 - [x] Complete v2 act parity Batch A by moving `scroll`, `hover`, and `focus` onto `bk act` and removing their legacy daemon routes.
 - [x] Complete v2 act parity Batch B by moving `select` and `options` onto `bk act` and removing their legacy daemon routes.
 - [x] Complete v2 act parity Batch C by moving `fill` onto `bk act` and removing the legacy `fill` command and `act.fill` daemon route.
+- [x] Complete v2 act parity Batch D by moving `upload` and `drag` onto `bk act` and removing the legacy CLI commands plus `act.upload` / `act.drag` daemon routes.
 - [ ] Start deleting legacy workspace-facing surfaces after v2 parity is verified.

@@ -94,7 +94,7 @@ bk snapshot --wait none
 
 ## act
 
-执行交互动作：click、type、fill、press、scroll、hover、focus、select、options。
+执行交互动作：click、type、fill、press、scroll、hover、focus、select、options、upload、drag。
 
 ```
 Usage: bk act [OPTIONS] [KIND]
@@ -102,7 +102,7 @@ Usage: bk act [OPTIONS] [KIND]
 
 | 参数 | 类型 | 说明 |
 |------|------|------|
-| `[KIND]` | positional | 动作类型：`click` \| `type` \| `fill` \| `press` \| `scroll` \| `hover` \| `focus` \| `select` \| `options` |
+| `[KIND]` | positional | 动作类型：`click` \| `type` \| `fill` \| `press` \| `scroll` \| `hover` \| `focus` \| `select` \| `options` \| `upload` \| `drag` |
 | `--ref <ELEMENT_REF>` | string | 元素 ref（backendNodeId，从 snapshot 获取） |
 | `--set <REF:VALUE>` | string[] | fill 动作的字段赋值，格式必须是 `ref:<id>=<value>` |
 | `--text <TEXT>` | string | type 动作的输入文本 |
@@ -114,6 +114,11 @@ Usage: bk act [OPTIONS] [KIND]
 | `--direction <DIR>` | string | scroll 方向：`up` \| `down` \| `left` \| `right` \| `top` \| `bottom` |
 | `--amount <PX>` | number | scroll 像素量；仅页面滚动生效，必须大于 0 |
 | `--selector <CSS>` | string | scroll 的 CSS 目标；与 `--ref` 一样表示滚动到元素 |
+| `[FILES]...` | positional | upload 动作的文件路径列表，至少一个 |
+| `--from-ref <ELEMENT_REF>` | string | drag 源元素 ref |
+| `--from-selector <CSS>` | string | drag 源元素 selector |
+| `--to-ref <ELEMENT_REF>` | string | drag 目标元素 ref |
+| `--to-selector <CSS>` | string | drag 目标元素 selector |
 
 ### click
 
@@ -188,6 +193,25 @@ bk act options --ref 77
 ```
 
 > `select` 和 `options` 只接受来自 `bk snapshot` 的稳定 `--ref`；不支持 selector 或 legacy index。
+
+### upload
+
+```bash
+bk act upload --ref 3 /path/to/file.pdf
+bk act upload --selector "input[type=file]" /path/to/a.pdf /path/to/b.pdf
+```
+
+> `upload` 必须且只能提供一个 `--ref` 或 `--selector`，并且 `FILES` 至少一个；不支持 legacy index。
+
+### drag
+
+```bash
+bk act drag --from-ref 10 --to-ref 20
+bk act drag --from-selector "#card-a" --to-selector "#drop-zone"
+bk act drag --from-ref 10 --to-selector "#drop-zone"
+```
+
+> `drag` 必须且只能提供一个源目标（`--from-ref` 或 `--from-selector`）和一个目标位置（`--to-ref` 或 `--to-selector`）；不支持 legacy index。
 
 ---
 
@@ -431,5 +455,7 @@ bk status
 | `bk focus --ref <N>` | `bk act focus --ref <N>` |
 | `bk select --ref <N> <VALUE>` | `bk act select --ref <N> --value <VALUE>` |
 | `bk options --ref <N>` | `bk act options --ref <N>` |
+| `bk upload --ref <N> <FILES...>` | `bk act upload --ref <N> <FILES...>` |
+| `bk drag --from-ref <N> --to-ref <N>` | `bk act drag --from-ref <N> --to-ref <N>` |
 
-其余 v1 legacy 命令（ws/tab/browser/daemon/storage/dialog/debug/click/type/drag/upload/keys/find/search/html/console/pdf/open/fetch）仍可用但将在 Phase 3 移除。
+其余 v1 legacy 命令（ws/tab/browser/daemon/storage/dialog/debug/click/type/keys/find/search/html/console/pdf/open/fetch）仍可用但将在 Phase 3 移除。
