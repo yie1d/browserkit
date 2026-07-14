@@ -132,12 +132,13 @@ fn parse_act_params(params: &serde_json::Value) -> Result<ActParams, Response> {
         .get("append")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
-    let fields = params
-        .get("fields")
-        .and_then(|value| value.as_array())
-        .map(|items| parse_fill_fields(items))
-        .transpose()?
-        .unwrap_or_default();
+    let fields = match params.get("fields") {
+        Some(value) => match value.as_array() {
+            Some(items) => parse_fill_fields(items)?,
+            None => Vec::new(),
+        },
+        None => Vec::new(),
+    };
     let keys: Vec<String> = params
         .get("keys")
         .and_then(|v| v.as_array())
@@ -268,10 +269,17 @@ fn parse_act_params(params: &serde_json::Value) -> Result<ActParams, Response> {
                     "selector",
                 ],
             )?;
-            if params.get("fields").is_none() {
+            let Some(fields_value) = params.get("fields") else {
                 return Err(Response::error_detail(
                     ErrorCode::InvalidArgument,
-                    "fill requires fields".into(),
+                    "fill requires fields array".into(),
+                    None,
+                ));
+            };
+            if !fields_value.is_array() {
+                return Err(Response::error_detail(
+                    ErrorCode::InvalidArgument,
+                    "fill fields must be an array".into(),
                     None,
                 ));
             }
@@ -927,6 +935,45 @@ mod tests {
                 "fields": [{"index": 0, "value": "alpha"}]
             }))
             .is_err()
+        );
+    }
+
+    #[test]
+    fn parse_act_fill_distinguishes_fields_array_validation() {
+        let missing = serde_json::to_value(parse_act_params(&json!({"kind": "fill"})).unwrap_err())
+            .unwrap();
+        assert_eq!(missing["error"]["code"], "INVALID_ARGUMENT");
+        assert_eq!(missing["error"]["message"], "fill requires fields array");
+
+        let non_array = serde_json::to_value(
+            parse_act_params(&json!({
+                "kind": "fill",
+                "fields": {"ref": 42, "value": "x"}
+            }))
+            .unwrap_err(),
+        )
+        .unwrap();
+        assert_eq!(non_array["error"]["code"], "INVALID_ARGUMENT");
+        assert_eq!(non_array["error"]["message"], "fill fields must be an array");
+
+        let empty = serde_json::to_value(
+            parse_act_params(&json!({"kind": "fill", "fields": []})).unwrap_err(),
+        )
+        .unwrap();
+        assert_eq!(empty["error"]["code"], "INVALID_ARGUMENT");
+        assert_eq!(empty["error"]["message"], "fill requires at least one field");
+
+        let parsed = parse_act_params(&json!({
+            "kind": "fill",
+            "fields": [{"ref": 42, "value": "x"}]
+        }))
+        .unwrap();
+        assert_eq!(
+            parsed.fields,
+            vec![ActFillField {
+                ref_id: 42,
+                value: "x".into(),
+            }]
         );
     }
 
