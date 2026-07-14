@@ -1,7 +1,7 @@
 ---
 name: bk-browser
-display_name: bk 浏览器自动化
-description: 用 bk CLI 控制本地 Chrome 做浏览器自动化。连接用户已运行的浏览器（保留登录态/cookie），或启动隔离的无头浏览器，执行导航、交互、截图、数据抽取等操作。
+display_name: bk 浏览器运行时
+description: 用 bk CLI 连接 browserkit 持久浏览器运行时，控制用户已运行的 Chrome（保留登录态/cookie），执行导航、交互、截图、数据抽取等操作。
 allowed-tools: Bash(bk *) Bash(bk.exe *) Bash(tasklist*) Bash(pgrep*) Bash(test -f*)
 metadata:
   code: bk-browser
@@ -10,9 +10,9 @@ version: 0.2.0
 tags: [浏览器自动化, 网页交互, RPA, AI-Agent, 数据抽取]
 ---
 
-# 用 bk CLI 做浏览器自动化
+# 用 bk CLI 操作 browserkit 持久浏览器运行时
 
-`bk` 通过后台 daemon 维持持久 CDP 连接，每次命令约 30ms 延迟。所有输出为 JSON。
+`bk` 是 browserkit runtime 的默认 CLI client，通过后台 daemon 维持持久 CDP 连接。所有输出为 JSON。
 
 > **必须使用用户自己的浏览器（接管模式）。** bk 连接用户已运行的 Chrome，在用户可见窗口操作，复用已登录的 cookie 和会话，无需重新登录。**禁止启动隔离的无头浏览器。**
 

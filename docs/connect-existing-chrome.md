@@ -1,7 +1,12 @@
 # Connecting to an Existing Chrome Instance
 
-bk can connect to and automate your already-running Chrome browser,
-operating in your visible window and reusing your logged-in sessions.
+browserkit is a persistent browser runtime for AI agents. Its default
+client, `bk`, can connect to your already-running Chrome browser, operate
+in your visible window, and reuse your logged-in sessions.
+
+This document describes the lower-level attached-browser and legacy
+workspace commands. The current agent-facing API is session-oriented
+(`bk connect`, `bk open`, `bk snapshot`, `bk act`).
 
 ## Prerequisites
 

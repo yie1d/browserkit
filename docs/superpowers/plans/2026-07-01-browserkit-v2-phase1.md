@@ -3735,7 +3735,7 @@
 
   ```rust
   #[derive(Parser)]
-  #[command(name = "bk", about = "Browser automation CLI for LLM agents", version)]
+  #[command(name = "bk", about = "Persistent browser runtime CLI for AI agents", version)]
   pub struct Cli {
       /// Target session name (or set BK_SESSION env var)
       #[arg(long = "session", global = true, env = "BK_SESSION")]

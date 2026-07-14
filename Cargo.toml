@@ -2,7 +2,7 @@
 name = "browserkit"
 version = "0.1.0"
 edition = "2021"
-description = "Browser automation CLI and MCP server built on cdpkit-rs"
+description = "Persistent browser runtime and CLI for AI agents, built on cdpkit-rs"
 license = "MIT"
 repository = "https://github.com/yie1d/browserkit"
 

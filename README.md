@@ -1,28 +1,59 @@
 # browserkit
 
-Browser automation CLI for LLM agents, built on [cdpkit](https://crates.io/crates/cdpkit). Connects to the user's own Chrome through persistent CDP sessions. All output is JSON.
+A persistent browser runtime for AI agents that attaches to the user's existing Chrome, built on [cdpkit](https://crates.io/crates/cdpkit).
+
+browserkit connects agents to Chrome through a long-running local daemon. It keeps browser connections, tabs, isolated sessions, and page state available across CLI invocations, so agents can observe and act without relaunching or re-authenticating the browser.
+
+The `bk` CLI is the default client. Under the hood, it talks to the daemon over newline-delimited JSON on a local TCP socket.
 
 ## Architecture
 
-```
+```text
 ┌─────────────────────────────────────────────────────┐
-│  bk CLI  /  any TCP client                          │
+│ Clients                                             │
+│                                                     │
+│   bk CLI  /  any local TCP client                   │
 └──────────────────────┬──────────────────────────────┘
-                       │  newline-delimited JSON (TCP)
+                       │ newline-delimited JSON (TCP)
 ┌──────────────────────▼──────────────────────────────┐
-│                   bk daemon                         │
-│  ┌─────────────┐  ┌──────────────┐  ┌───────────┐  │
-│  │  sessions   │  │   browsers   │  │  persist  │  │
-│  │  (DashMap)  │  │  (DashMap)   │  │  (async)  │  │
-│  └─────────────┘  └──────────────┘  └───────────┘  │
+│ browserkit runtime                                  │
+│                                                     │
+│   daemon      sessions      tabs      persistence   │
+│   observe     act           browser manager         │
 └──────────────────────┬──────────────────────────────┘
-                       │  CDP WebSocket
+                       │ typed CDP commands/events
+┌──────────────────────▼──────────────────────────────┐
+│ cdpkit-rs                                           │
+│                                                     │
+│   type-safe Chrome DevTools Protocol client         │
+└──────────────────────┬──────────────────────────────┘
+                       │ CDP WebSocket
 ┌──────────────────────▼──────────────────────────────┐
 │              Chrome / Chromium                       │
 └─────────────────────────────────────────────────────┘
 ```
 
-The daemon runs in the background, maintains persistent browser connections, and serves clients over a local TCP socket. State is persisted to `~/.bk/` and restored on restart.
+The daemon is the runtime boundary: it owns persistent browser connections, session state, tab tracking, and debounced state persistence. The CLI is intentionally thin.
+
+## Why browserkit
+
+browserkit is designed for agents that need to work in a real browser over multiple tool calls.
+
+- **Attach to the user's Chrome**: use the browser and login state the user already has, instead of launching a disposable automation browser.
+- **Persistent runtime**: the daemon keeps browser connections and session state alive across commands and agent turns.
+- **Observe / Act API**: agents get compact page snapshots, then interact through stable element refs or coordinates.
+- **Session isolation**: named sessions use isolated browser contexts for parallel agents, while the default session can share the user's logged-in context.
+- **Local JSON protocol**: `bk` is a CLI client over a simple local TCP protocol, so other clients can be added without changing the runtime model.
+
+## Layering
+
+browserkit intentionally sits above cdpkit-rs.
+
+- `cdpkit-rs` is the protocol layer: typed CDP commands, sessions, events, and senders.
+- `browserkit` is the runtime layer: daemon lifecycle, browser attachment, sessions, tabs, persistence, snapshots, and actions.
+- The agent is the decision layer: it observes page state and decides the next action.
+
+Low-level CDP support belongs in cdpkit-rs. browserkit composes those capabilities into agent-friendly browser operations.
 
 ## Requirements
 
@@ -228,8 +259,13 @@ headless = true                  # set to false to show browser window
 [limits]
 max_workspaces = 0               # 0 = unlimited
 max_tabs_per_workspace = 0       # 0 = unlimited
+max_sessions = 10                # isolated sessions; default session does not count
+max_tabs_per_session = 5         # tabs per isolated session
+session_timeout_hours = 72       # idle session timeout
 js_timeout_seconds = 0           # 0 = no timeout
 ```
+
+`session` is the agent-facing isolation model. Some config and persisted fields still use `workspace` for legacy/internal state while the v2 CLI migrates toward sessions.
 
 ## State Persistence
 
