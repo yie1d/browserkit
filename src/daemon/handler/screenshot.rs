@@ -18,6 +18,8 @@ struct ScreenshotParams {
     target: Option<String>,
     full_page: bool,
     output: Option<String>,
+    selector: Option<String>,
+    labels: bool,
 }
 
 /// Validate and extract screenshot parameters from request JSON.
@@ -34,6 +36,11 @@ fn validate_screenshot_params(params: &serde_json::Value) -> ScreenshotParams {
             .and_then(|v| v.as_bool())
             .unwrap_or(false),
         output: params.get("output").and_then(|v| v.as_str()).map(|s| s.into()),
+        selector: params.get("selector").and_then(|v| v.as_str()).map(|s| s.into()),
+        labels: params
+            .get("labels")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false),
     }
 }
 
@@ -96,12 +103,35 @@ pub async fn handle_screenshot(req: &Request, state: &Arc<DaemonState>) -> Respo
         }
     };
 
-    // Capture screenshot
-    let capture_result = if params.full_page {
+    if params.labels {
+        if let Err(e) = crate::page::capture::inject_labels(
+            &cdp,
+            &session_tab.cdp_session_id,
+            params.full_page,
+        )
+        .await
+        {
+            return Response::error_detail(
+                ErrorCode::DaemonError,
+                format!("failed to inject labels: {e}"),
+                None,
+            );
+        }
+    }
+
+    let capture_result = if let Some(selector) = &params.selector {
+        crate::page::capture::capture_element(&cdp, &session_tab.cdp_session_id, selector).await
+    } else if params.full_page {
         crate::page::capture::capture_full_page(&cdp, &session_tab.cdp_session_id).await
     } else {
         crate::page::capture::capture_viewport(&cdp, &session_tab.cdp_session_id).await
     };
+
+    if params.labels {
+        if let Err(e) = crate::page::capture::remove_labels(&cdp, &session_tab.cdp_session_id).await {
+            tracing::warn!("failed to remove screenshot labels: {e}");
+        }
+    }
 
     match capture_result {
         Ok(base64_data) => {
@@ -166,13 +196,17 @@ mod tests {
             "session": "agent-a",
             "target": "TAB1",
             "full_page": true,
-            "output": "shot.png"
+            "output": "shot.png",
+            "selector": "#app",
+            "labels": true
         });
         let p = validate_screenshot_params(&params);
         assert_eq!(p.session_name, "agent-a");
         assert_eq!(p.target, Some("TAB1".into()));
         assert!(p.full_page);
         assert_eq!(p.output, Some("shot.png".into()));
+        assert_eq!(p.selector, Some("#app".into()));
+        assert!(p.labels);
     }
 
     #[tokio::test]

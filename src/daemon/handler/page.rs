@@ -1,7 +1,7 @@
 // Page handlers: screenshot, pdf, html, state, search, info, console
 
-use std::path::Path;
 use std::sync::Arc;
+use std::path::Path;
 
 use serde_json::json;
 use tracing::info;
@@ -18,7 +18,6 @@ use super::common::{handler, resolve_context, touch_workspace};
 /// - Are absolute paths outside the current directory
 fn validate_output_path(path: &str) -> Result<(), BkError> {
     let p = Path::new(path);
-    // Reject any path component that is ".."
     for component in p.components() {
         if component == std::path::Component::ParentDir {
             return Err(BkError::InvalidRequest(
@@ -26,66 +25,12 @@ fn validate_output_path(path: &str) -> Result<(), BkError> {
             ));
         }
     }
-    // Reject absolute paths
     if p.is_absolute() {
         return Err(BkError::InvalidRequest(
             format!("output path '{}' must be a relative path", path)
         ));
     }
     Ok(())
-}
-
-handler!(handle_screenshot, do_screenshot(req, state));
-
-async fn do_screenshot(req: &Request, state: &Arc<DaemonState>) -> Result<Response, BkError> {
-    let ctx = resolve_context(req, state, "screenshot")?;
-
-    let full_page = req.params.get("full_page").and_then(|v| v.as_bool()).unwrap_or(false);
-    let selector = req.params.get("selector").and_then(|v| v.as_str());
-    let output = req.params.get("output").and_then(|v| v.as_str());
-    let labels = req.params.get("labels").and_then(|v| v.as_bool()).unwrap_or(false);
-
-    // If labels requested, inject overlay labels before screenshot and remove after
-    if labels {
-        crate::page::capture::inject_labels(&ctx.cdp, &ctx.cdp_session_id, full_page).await?;
-    }
-
-    let capture_result = if let Some(sel) = selector {
-        crate::page::capture::capture_element(&ctx.cdp, &ctx.cdp_session_id, sel).await
-    } else if full_page {
-        crate::page::capture::capture_full_page(&ctx.cdp, &ctx.cdp_session_id).await
-    } else {
-        crate::page::capture::capture_viewport(&ctx.cdp, &ctx.cdp_session_id).await
-    };
-
-    // Remove labels after capture regardless of success/failure (best-effort)
-    if labels {
-        if let Err(e) = crate::page::capture::remove_labels(&ctx.cdp, &ctx.cdp_session_id).await {
-            tracing::warn!("failed to remove screenshot labels: {e}");
-        }
-    }
-
-    // Propagate capture error after cleanup
-    let data = capture_result?;
-
-    let saved_path = if let Some(path) = output {
-        validate_output_path(path)?;
-        use base64::Engine;
-        let bytes = base64::engine::general_purpose::STANDARD
-            .decode(&data)
-            .map_err(|e| BkError::Other(format!("base64 decode error: {}", e)))?;
-        tokio::fs::write(path, &bytes).await?;
-        Some(path.to_string())
-    } else {
-        None
-    };
-
-    touch_workspace(state, &ctx.wid);
-    info!(wid = %ctx.wid, tid = %ctx.tid, "screenshot captured");
-
-    let mut result = json!({ "wid": ctx.wid, "tid": ctx.tid, "data": data });
-    if let Some(file) = saved_path { result["file"] = json!(file); }
-    Ok(Response::ok(result))
 }
 
 handler!(handle_pdf, do_pdf(req, state));
@@ -128,92 +73,6 @@ async fn do_html(req: &Request, state: &Arc<DaemonState>) -> Result<Response, Bk
     Ok(Response::ok(json!({ "wid": ctx.wid, "tid": ctx.tid, "html": html })))
 }
 
-handler!(handle_page_state, do_page_state(req, state));
-
-async fn do_page_state(req: &Request, state: &Arc<DaemonState>) -> Result<Response, BkError> {
-    let ctx = resolve_context(req, state, "page.state")?;
-
-    let with_screenshot = req.params.get("screenshot").and_then(|v| v.as_bool()).unwrap_or(false);
-    let full_state = crate::page::state::get_full_page_state(&ctx.cdp, &ctx.cdp_session_id, false).await?;
-
-    let screenshot_data = if with_screenshot {
-        Some(crate::page::capture::capture_viewport(&ctx.cdp, &ctx.cdp_session_id).await?)
-    } else {
-        None
-    };
-
-    touch_workspace(state, &ctx.wid);
-    info!(wid = %ctx.wid, tid = %ctx.tid, elements = full_state.elements.len(), "page.state");
-
-    let mut result = json!({
-        "wid": ctx.wid,
-        "tid": ctx.tid,
-        "elements": full_state.elements,
-        "page_text": full_state.page_text,
-        "page_info": full_state.page_info,
-    });
-    if let Some(data) = screenshot_data { result["screenshot"] = json!(data); }
-    Ok(Response::ok(result))
-}
-
-handler!(handle_page_info, do_page_info(req, state));
-
-async fn do_page_info(req: &Request, state: &Arc<DaemonState>) -> Result<Response, BkError> {
-    let ctx = resolve_context(req, state, "page.info")?;
-
-    let no_text = req.params.get("no_text").and_then(|v| v.as_bool()).unwrap_or(false);
-    let with_screenshot = req.params.get("screenshot").and_then(|v| v.as_bool()).unwrap_or(false);
-    let tree = req.params.get("tree").and_then(|v| v.as_bool()).unwrap_or(false);
-    let ax = req.params.get("ax").and_then(|v| v.as_bool()).unwrap_or(false);
-
-    let mut full_state = crate::page::state::get_full_page_state(&ctx.cdp, &ctx.cdp_session_id, tree).await?;
-
-    if ax {
-        crate::page::state::enrich_with_ax_tree(&ctx.cdp, &ctx.cdp_session_id, &mut full_state.elements).await;
-    }
-
-    let screenshot_data = if with_screenshot {
-        Some(crate::page::capture::capture_viewport(&ctx.cdp, &ctx.cdp_session_id).await?)
-    } else {
-        None
-    };
-
-    touch_workspace(state, &ctx.wid);
-    info!(wid = %ctx.wid, tid = %ctx.tid, elements = full_state.elements.len(), "page.info");
-
-    let mut result = json!({
-        "wid": ctx.wid,
-        "tid": ctx.tid,
-        "elements": full_state.elements,
-        "page_info": full_state.page_info,
-    });
-
-    if !no_text {
-        // page.info uses 3000 char limit (vs page.state's 2000)
-        let text = &full_state.page_text.text;
-        const PAGE_INFO_TEXT_MAX: usize = 3000;
-        let (truncated_text, was_truncated) = if text.len() > PAGE_INFO_TEXT_MAX {
-            // Safe truncation at char boundary to avoid panic on multi-byte chars
-            let boundary = text
-                .char_indices()
-                .take_while(|&(i, _)| i < PAGE_INFO_TEXT_MAX)
-                .last()
-                .map(|(i, c)| i + c.len_utf8())
-                .unwrap_or(text.len().min(PAGE_INFO_TEXT_MAX));
-            (&text[..boundary], true)
-        } else {
-            (text.as_str(), full_state.page_text.truncated)
-        };
-        result["page_text"] = json!({
-            "text": truncated_text,
-            "truncated": was_truncated,
-        });
-    }
-
-    if let Some(data) = screenshot_data { result["screenshot"] = json!(data); }
-    Ok(Response::ok(result))
-}
-
 handler!(handle_page_search, do_page_search(req, state));
 
 async fn do_page_search(req: &Request, state: &Arc<DaemonState>) -> Result<Response, BkError> {
@@ -244,25 +103,6 @@ async fn do_page_search(req: &Request, state: &Arc<DaemonState>) -> Result<Respo
     info!(wid = %ctx.wid, tid = %ctx.tid, text = %text, matches = matches.len(), "page.search");
 
     Ok(Response::ok(json!({ "wid": ctx.wid, "tid": ctx.tid, "matches": matches, "count": matches.len() })))
-}
-
-handler!(handle_page_wait, do_page_wait(req, state));
-
-async fn do_page_wait(req: &Request, state: &Arc<DaemonState>) -> Result<Response, BkError> {
-    let ctx = resolve_context(req, state, "page.wait")?;
-
-    let conditions = crate::page::wait::WaitConditions::from_params(&req.params)?;
-    let result = crate::page::wait::wait_for_conditions(&ctx.cdp, &ctx.cdp_session_id, &conditions).await?;
-
-    touch_workspace(state, &ctx.wid);
-    info!(wid = %ctx.wid, tid = %ctx.tid, elapsed_ms = result.elapsed_ms, "page.wait");
-
-    Ok(Response::ok(json!({
-        "wid": ctx.wid,
-        "tid": ctx.tid,
-        "elapsed_ms": result.elapsed_ms,
-        "conditions_met": result.conditions_met,
-    })))
 }
 
 handler!(handle_page_console, do_page_console(req, state));

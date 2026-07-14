@@ -9,7 +9,6 @@ pub(crate) mod tab;
 mod nav;
 mod page;
 mod action;
-mod js;
 mod storage;
 mod network;
 mod debug;
@@ -22,6 +21,7 @@ mod tabs;
 mod session;
 mod evaluate;
 mod screenshot;
+mod wait;
 
 use std::sync::Arc;
 
@@ -54,6 +54,7 @@ pub async fn handle_request(
         "session.cookies.clear" => session::handle_session_cookies_clear(req, state).await,
         "evaluate" | "v2.evaluate" => evaluate::handle_evaluate(req, state).await,
         "screenshot" | "v2.screenshot" => screenshot::handle_screenshot(req, state).await,
+        "wait" | "v2.wait" => wait::handle_wait(req, state).await,
         "daemon.status" => daemon::handle_daemon_status(state, ctx).await,
         "daemon.stop" => daemon::handle_daemon_stop(state, ctx).await,
         "browser.connect" => browser::handle_browser_connect(req, state).await,
@@ -73,19 +74,11 @@ pub async fn handle_request(
         "tab.switch" => tab::handle_tab_switch(req, state).await,
         "tab.close" => tab::handle_tab_close(req, state).await,
         "nav.goto" => nav::handle_goto(req, state).await,
-        "nav.reload" => nav::handle_reload(req, state).await,
-        "nav.back" => nav::handle_nav_back(req, state).await,
-        "nav.forward" => nav::handle_nav_forward(req, state).await,
         "nav.url" => nav::handle_nav_url(req, state).await,
         "nav.title" => nav::handle_nav_title(req, state).await,
-        "nav.wait" => nav::handle_nav_wait(req, state).await,
-        "page.screenshot" => page::handle_screenshot(req, state).await,
         "page.pdf" => page::handle_pdf(req, state).await,
         "page.html" => page::handle_html(req, state).await,
-        "page.state" => page::handle_page_state(req, state).await,
-        "page.info" => page::handle_page_info(req, state).await,
         "page.search" => page::handle_page_search(req, state).await,
-        "page.wait" => page::handle_page_wait(req, state).await,
         "page.find_elements" => page::handle_find_elements(req, state).await,
         "page.console" => page::handle_page_console(req, state).await,
         "act.click" => action::handle_click(req, state).await,
@@ -99,7 +92,6 @@ pub async fn handle_request(
         "act.dropdown_options" => action::handle_act_dropdown_options(req, state).await,
         "act.drag" => action::handle_act_drag(req, state).await,
         "act.keys" => action::handle_act_keys(req, state).await,
-        "js.eval" | "js.await" => js::handle_eval(req, state).await,
         "storage.cookies.get" => storage::handle_storage_cookies_get(req, state).await,
         "storage.cookies.set" => storage::handle_storage_cookies_set(req, state).await,
         "storage.cookies.clear" => storage::handle_storage_cookies_clear(req, state).await,
@@ -118,5 +110,141 @@ pub async fn handle_request(
         "dialog.dismiss" => dialog::handle_dialog_dismiss(req, state).await,
         "dialog.policy" => dialog::handle_dialog_policy(req, state).await,
         _ => Response::err(format!("unknown command: {}", req.cmd)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_context() -> HandlerContext {
+        let (shutdown, _rx) = tokio::sync::watch::channel(false);
+        HandlerContext {
+            port: 0,
+            pid: 0,
+            shutdown,
+            daemon_token: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn dispatch_wait_uses_v2_session_handler() {
+        let state = Arc::new(DaemonState::new());
+        let req = Request {
+            cmd: "wait".into(),
+            params: serde_json::json!({"selector": "#app"}),
+            token: None,
+        };
+
+        let resp = handle_request(&req, &state, &test_context()).await;
+        let json = serde_json::to_value(&resp).unwrap();
+
+        assert_eq!(json["ok"], false);
+        assert_eq!(json["error"]["code"], "SESSION_NOT_FOUND");
+    }
+
+    #[tokio::test]
+    async fn dispatch_page_wait_is_removed_from_public_commands() {
+        let state = Arc::new(DaemonState::new());
+        let req = Request {
+            cmd: "page.wait".into(),
+            params: serde_json::json!({"selector": "#app"}),
+            token: None,
+        };
+
+        let resp = handle_request(&req, &state, &test_context()).await;
+        let json = serde_json::to_value(&resp).unwrap();
+
+        assert_eq!(json["ok"], false);
+        assert_eq!(json["error"], "unknown command: page.wait");
+    }
+
+    #[tokio::test]
+    async fn dispatch_nav_wait_is_removed_from_public_commands() {
+        let state = Arc::new(DaemonState::new());
+        let req = Request {
+            cmd: "nav.wait".into(),
+            params: serde_json::json!({}),
+            token: None,
+        };
+
+        let resp = handle_request(&req, &state, &test_context()).await;
+        let json = serde_json::to_value(&resp).unwrap();
+
+        assert_eq!(json["ok"], false);
+        assert_eq!(json["error"], "unknown command: nav.wait");
+    }
+
+    #[tokio::test]
+    async fn dispatch_page_state_and_info_are_removed_from_public_commands() {
+        let state = Arc::new(DaemonState::new());
+
+        for cmd in ["page.state", "page.info"] {
+            let req = Request {
+                cmd: cmd.into(),
+                params: serde_json::json!({}),
+                token: None,
+            };
+
+            let resp = handle_request(&req, &state, &test_context()).await;
+            let json = serde_json::to_value(&resp).unwrap();
+
+            assert_eq!(json["ok"], false);
+            assert_eq!(json["error"], format!("unknown command: {cmd}"));
+        }
+    }
+
+    #[tokio::test]
+    async fn dispatch_js_eval_and_await_are_removed_from_public_commands() {
+        let state = Arc::new(DaemonState::new());
+
+        for cmd in ["js.eval", "js.await"] {
+            let req = Request {
+                cmd: cmd.into(),
+                params: serde_json::json!({"expr": "document.title"}),
+                token: None,
+            };
+
+            let resp = handle_request(&req, &state, &test_context()).await;
+            let json = serde_json::to_value(&resp).unwrap();
+
+            assert_eq!(json["ok"], false);
+            assert_eq!(json["error"], format!("unknown command: {cmd}"));
+        }
+    }
+
+    #[tokio::test]
+    async fn dispatch_legacy_navigation_actions_are_removed_from_public_commands() {
+        let state = Arc::new(DaemonState::new());
+
+        for cmd in ["nav.back", "nav.forward", "nav.reload"] {
+            let req = Request {
+                cmd: cmd.into(),
+                params: serde_json::json!({}),
+                token: None,
+            };
+
+            let resp = handle_request(&req, &state, &test_context()).await;
+            let json = serde_json::to_value(&resp).unwrap();
+
+            assert_eq!(json["ok"], false);
+            assert_eq!(json["error"], format!("unknown command: {cmd}"));
+        }
+    }
+
+    #[tokio::test]
+    async fn dispatch_page_screenshot_is_removed_from_public_commands() {
+        let state = Arc::new(DaemonState::new());
+        let req = Request {
+            cmd: "page.screenshot".into(),
+            params: serde_json::json!({"full_page": false}),
+            token: None,
+        };
+
+        let resp = handle_request(&req, &state, &test_context()).await;
+        let json = serde_json::to_value(&resp).unwrap();
+
+        assert_eq!(json["ok"], false);
+        assert_eq!(json["error"], "unknown command: page.screenshot");
     }
 }

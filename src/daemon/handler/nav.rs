@@ -1,4 +1,4 @@
-// Navigation handlers: goto, reload, back, forward, url, title, wait
+// Navigation handlers: goto, url, title
 
 use std::sync::Arc;
 
@@ -35,36 +35,6 @@ async fn do_goto(req: &Request, state: &Arc<DaemonState>) -> Result<Response, Bk
     Ok(Response::ok(json!({ "wid": ctx.wid, "tid": ctx.tid, "url": nav_url })))
 }
 
-handler!(handle_reload, do_reload(req, state));
-
-async fn do_reload(req: &Request, state: &Arc<DaemonState>) -> Result<Response, BkError> {
-    let ctx = resolve_context(req, state, "reload")?;
-    crate::page::navigation::reload(&ctx.cdp, &ctx.cdp_session_id).await?;
-    touch_workspace(state, &ctx.wid);
-    info!(wid = %ctx.wid, "page reloaded");
-    Ok(Response::ok(json!({ "wid": ctx.wid, "status": "reloaded" })))
-}
-
-handler!(handle_nav_back, do_nav_back(req, state));
-
-async fn do_nav_back(req: &Request, state: &Arc<DaemonState>) -> Result<Response, BkError> {
-    let ctx = resolve_context(req, state, "nav.back")?;
-    crate::page::navigation::back(&ctx.cdp, &ctx.cdp_session_id).await?;
-    touch_workspace(state, &ctx.wid);
-    info!(wid = %ctx.wid, "navigated back");
-    Ok(Response::ok(json!({ "wid": ctx.wid, "status": "back" })))
-}
-
-handler!(handle_nav_forward, do_nav_forward(req, state));
-
-async fn do_nav_forward(req: &Request, state: &Arc<DaemonState>) -> Result<Response, BkError> {
-    let ctx = resolve_context(req, state, "nav.forward")?;
-    crate::page::navigation::forward(&ctx.cdp, &ctx.cdp_session_id).await?;
-    touch_workspace(state, &ctx.wid);
-    info!(wid = %ctx.wid, "navigated forward");
-    Ok(Response::ok(json!({ "wid": ctx.wid, "status": "forward" })))
-}
-
 handler!(handle_nav_url, do_nav_url(req, state));
 
 async fn do_nav_url(req: &Request, state: &Arc<DaemonState>) -> Result<Response, BkError> {
@@ -81,18 +51,4 @@ async fn do_nav_title(req: &Request, state: &Arc<DaemonState>) -> Result<Respons
     let title = crate::page::navigation::get_title(&ctx.cdp, &ctx.cdp_session_id).await?;
     touch_workspace(state, &ctx.wid);
     Ok(Response::ok(json!({ "title": title })))
-}
-
-handler!(handle_nav_wait, do_nav_wait(req, state));
-
-async fn do_nav_wait(req: &Request, state: &Arc<DaemonState>) -> Result<Response, BkError> {
-    let ctx = resolve_context(req, state, "nav.wait")?;
-    crate::page::navigation::wait_for_load(
-        &ctx.cdp,
-        &ctx.cdp_session_id,
-        crate::page::navigation::PAGE_LOAD_TIMEOUT,
-    ).await?;
-    touch_workspace(state, &ctx.wid);
-    info!(wid = %ctx.wid, "page load complete (nav.wait)");
-    Ok(Response::ok(json!({ "wid": ctx.wid, "status": "loaded" })))
 }

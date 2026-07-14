@@ -19,6 +19,7 @@ struct EvaluateParams {
     target: Option<String>,
     expression: String,
     timeout: u64,
+    await_promise: bool,
 }
 
 /// Validate and extract evaluate parameters from request JSON.
@@ -47,6 +48,10 @@ fn validate_evaluate_params(params: &serde_json::Value) -> Result<EvaluateParams
             .get("timeout")
             .and_then(|v| v.as_u64())
             .unwrap_or(30000),
+        await_promise: params
+            .get("await_promise")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true),
     })
 }
 
@@ -119,8 +124,10 @@ pub async fn handle_evaluate(req: &Request, state: &Arc<DaemonState>) -> Respons
     let eval_result = tokio::time::timeout(timeout_dur, async {
         let js_timeout_seconds = state.config.limits.js_timeout_seconds;
         let mut eval = cdpkit::runtime::methods::Evaluate::new(&params.expression)
-            .with_return_by_value(true)
-            .with_await_promise(true);
+            .with_return_by_value(true);
+        if params.await_promise {
+            eval = eval.with_await_promise(true);
+        }
         if js_timeout_seconds > 0 {
             eval = eval.with_timeout(js_timeout_seconds as f64 * 1000.0);
         }
@@ -183,6 +190,18 @@ mod tests {
         assert_eq!(p.session_name, "agent-a");
         assert_eq!(p.target, Some("TAB1".into()));
         assert_eq!(p.timeout, 5000);
+    }
+
+    #[test]
+    fn validate_evaluate_params_supports_disabling_await_promise() {
+        let params = serde_json::json!({
+            "expression": "Promise.resolve(1)",
+            "await_promise": false
+        });
+
+        let p = validate_evaluate_params(&params).unwrap();
+
+        assert!(!p.await_promise);
     }
 
     #[test]

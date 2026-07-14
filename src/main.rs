@@ -1,8 +1,8 @@
 // CLI entry point: clap command parsing + daemon client wiring
 //
-// Workspace resolution priority:
+// Legacy v1 workspace resolution priority:
 //   1. --ws / -w flag (explicit)
-//   2. BK_WS environment variable (scripts / MCP)
+//   2. BK_WS environment variable
 //   3. Daemon default workspace (ws.default)
 //   4. Auto-detect when only one workspace exists
 //   5. Error with helpful message
@@ -13,7 +13,9 @@ use serde_json::json;
 // ── Custom grouped help text ──────────────────────────────────
 
 const HELP_TEXT: &str = "\
-Browser automation CLI for LLM agents. All output is JSON.
+Persistent browser runtime CLI for AI agents. All output is JSON.
+
+bk is the thin CLI client for the local browserkit daemon.
 
 Usage: bk [OPTIONS] <COMMAND>
 
@@ -59,7 +61,7 @@ use browserkit::daemon::protocol::Response;
 // ── Top-level CLI ──────────────────────────────────────────────
 
 #[derive(Parser)]
-#[command(name = "bk", about = "Browser automation CLI for LLM agents", long_about = "Browser automation CLI for LLM agents.\n\nAll output is JSON. Commands communicate with the daemon over local TCP.", version)]
+#[command(name = "bk", about = "Persistent browser runtime CLI for AI agents", long_about = "Persistent browser runtime CLI for AI agents.\n\nAll output is JSON. Commands communicate with the local browserkit daemon over TCP.", version)]
 pub struct Cli {
     /// Target session name (or set BK_SESSION env var)
     #[arg(long = "session", global = true, env = "BK_SESSION")]
@@ -1094,6 +1096,70 @@ fn emit_deprecation_warning(old: &str, new: &str) {
     eprintln!("warning: '{}' is deprecated, use '{}' instead", old, new);
 }
 
+fn build_evaluate_params(js_expr: String, cli: &Cli, await_promise: bool) -> serde_json::Value {
+    let mut params = json!({
+        "expression": js_expr,
+        "await_promise": await_promise,
+    });
+    if let Some(s) = &cli.session { params["session"] = json!(s); }
+    if let Some(t) = &cli.target { params["target"] = json!(t); }
+    if let Some(to) = cli.timeout { params["timeout"] = json!(to); }
+    params
+}
+
+fn build_navigate_params(
+    url: Option<&String>,
+    back: bool,
+    forward: bool,
+    reload: bool,
+    cli: &Cli,
+) -> serde_json::Value {
+    let mut params = json!({});
+    if let Some(u) = url { params["url"] = json!(u); }
+    if back { params["back"] = json!(true); }
+    if forward { params["forward"] = json!(true); }
+    if reload { params["reload"] = json!(true); }
+    if let Some(s) = &cli.session { params["session"] = json!(s); }
+    if let Some(t) = &cli.target { params["target"] = json!(t); }
+    if let Some(to) = cli.timeout { params["timeout"] = json!(to); }
+    params
+}
+
+fn build_screenshot_params(
+    output: Option<&str>,
+    full_page: bool,
+    selector: Option<&str>,
+    labels: bool,
+    cli: &Cli,
+) -> serde_json::Value {
+    let mut params = json!({
+        "full_page": full_page,
+        "labels": labels,
+    });
+    if let Some(o) = output { params["output"] = json!(o); }
+    if let Some(s) = selector { params["selector"] = json!(s); }
+    if let Some(s) = &cli.session { params["session"] = json!(s); }
+    if let Some(t) = &cli.target { params["target"] = json!(t); }
+    params
+}
+
+fn build_oneshot_screenshot_params(
+    session: &str,
+    output: Option<&str>,
+    full_page: bool,
+    selector: Option<&str>,
+    labels: bool,
+) -> serde_json::Value {
+    let mut params = json!({
+        "session": session,
+        "full_page": full_page,
+        "labels": labels,
+    });
+    if let Some(o) = output { params["output"] = json!(o); }
+    if let Some(s) = selector { params["selector"] = json!(s); }
+    params
+}
+
 async fn dispatch(cli: &Cli, client: &mut DaemonClient) -> Result<(), String> {
     match &cli.command {
         // ══════════════════════════════════════════════════════════
@@ -1134,15 +1200,12 @@ async fn dispatch(cli: &Cli, client: &mut DaemonClient) -> Result<(), String> {
         }
 
         Command::Navigate { url, back, forward, reload } => {
-            let mut params = json!({});
-            if let Some(u) = url { params["url"] = json!(u); }
-            if *back { params["back"] = json!(true); }
-            if *forward { params["forward"] = json!(true); }
-            if *reload { params["reload"] = json!(true); }
-            if let Some(s) = &cli.session { params["session"] = json!(s); }
-            if let Some(t) = &cli.target { params["target"] = json!(t); }
-            if let Some(to) = cli.timeout { params["timeout"] = json!(to); }
-            let resp = send_cmd(client, "navigate", params).await?;
+            let resp = send_cmd(
+                client,
+                "navigate",
+                build_navigate_params(url.as_ref(), *back, *forward, *reload, cli),
+            )
+            .await?;
             print_response(&resp);
         }
 
@@ -1188,11 +1251,12 @@ async fn dispatch(cli: &Cli, client: &mut DaemonClient) -> Result<(), String> {
         }
 
         Command::ScreenshotV2 { output, full_page } => {
-            let mut params = json!({"full_page": full_page});
-            if let Some(o) = output { params["output"] = json!(o); }
-            if let Some(s) = &cli.session { params["session"] = json!(s); }
-            if let Some(t) = &cli.target { params["target"] = json!(t); }
-            let resp = send_cmd(client, "screenshot", params).await?;
+            let resp = send_cmd(
+                client,
+                "screenshot",
+                build_screenshot_params(output.as_deref(), *full_page, None, false, cli),
+            )
+            .await?;
             handle_binary_response(&resp, output.as_deref(), "screenshot.png");
         }
 
@@ -1208,11 +1272,8 @@ async fn dispatch(cli: &Cli, client: &mut DaemonClient) -> Result<(), String> {
             if let Some(s) = &cli.session { params["session"] = json!(s); }
             if let Some(t) = &cli.target { params["target"] = json!(t); }
             if let Some(to) = cli.timeout { params["timeout"] = json!(to); }
-            // Route through v1 wait handler
-            let wid = resolve_workspace(client).await.unwrap_or_default();
-            params["wid"] = json!(wid);
             if params.get("timeout").is_none() { params["timeout"] = json!(30000u64); }
-            let resp = send_cmd(client, "page.wait", params).await?;
+            let resp = send_cmd(client, "wait", params).await?;
             print_response(&resp);
         }
 
@@ -1290,9 +1351,7 @@ async fn dispatch(cli: &Cli, client: &mut DaemonClient) -> Result<(), String> {
             } else {
                 return Err("eval requires either an expression or --file".into());
             };
-            let wid = resolve_workspace(client).await.unwrap_or_default();
-            let await_promise = !sync;
-            let resp = send_cmd(client, "js.eval", json!({"wid": wid, "expr": js_expr, "await": await_promise})).await?;
+            let resp = send_cmd(client, "evaluate", build_evaluate_params(js_expr, cli, !sync)).await?;
             print_response(&resp);
         }
 
@@ -1301,11 +1360,18 @@ async fn dispatch(cli: &Cli, client: &mut DaemonClient) -> Result<(), String> {
             if let Some(target_url) = url {
                 dispatch_oneshot_shot(client, target_url, output, full_page, selector, labels).await?;
             } else {
-                let wid = resolve_workspace(client).await?;
-                let mut params = json!({"wid": wid, "full_page": full_page, "labels": labels});
-                if let Some(s) = selector { params["selector"] = json!(s); }
-                if let Some(o) = output { params["output"] = json!(o); }
-                let resp = send_cmd(client, "page.screenshot", params).await?;
+                let resp = send_cmd(
+                    client,
+                    "screenshot",
+                    build_screenshot_params(
+                        output.as_deref(),
+                        *full_page,
+                        selector.as_deref(),
+                        *labels,
+                        cli,
+                    ),
+                )
+                .await?;
                 handle_binary_response(&resp, output.as_deref(), "screenshot.png");
             }
         }
@@ -1426,13 +1492,19 @@ async fn dispatch(cli: &Cli, client: &mut DaemonClient) -> Result<(), String> {
 
         // ── Navigation (top-level, v1 legacy) ────────────────────────
         Command::Back => {
-            ws_cmd!(client, "nav.back", {});
+            emit_deprecation_warning("back", "navigate --back");
+            let resp = send_cmd(client, "navigate", build_navigate_params(None, true, false, false, cli)).await?;
+            print_response(&resp);
         }
         Command::Forward => {
-            ws_cmd!(client, "nav.forward", {});
+            emit_deprecation_warning("forward", "navigate --forward");
+            let resp = send_cmd(client, "navigate", build_navigate_params(None, false, true, false, cli)).await?;
+            print_response(&resp);
         }
         Command::Reload => {
-            ws_cmd!(client, "nav.reload", {});
+            emit_deprecation_warning("reload", "navigate --reload");
+            let resp = send_cmd(client, "navigate", build_navigate_params(None, false, false, true, cli)).await?;
+            print_response(&resp);
         }
 
         // ── Interaction (top-level) ───────────────────────
@@ -1906,7 +1978,7 @@ async fn wait_for_daemon_exit() {
 
 // ── One-shot helpers ───────────────────────────────────────────
 
-/// One-shot screenshot: create ws -> goto -> screenshot -> close ws.
+/// One-shot screenshot: create temporary session -> open -> screenshot -> close session.
 async fn dispatch_oneshot_shot(
     client: &mut DaemonClient,
     url: &str,
@@ -1915,26 +1987,40 @@ async fn dispatch_oneshot_shot(
     selector: &Option<String>,
     labels: &bool,
 ) -> Result<(), String> {
-    let resp = send_cmd(client, "ws.new", json!({})).await?;
+    let millis = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or_default();
+    let session = format!("__bk_oneshot_shot_{}_{}", std::process::id(), millis);
+
+    let resp = send_cmd(client, "connect", json!({"session": session.clone()})).await?;
     if !resp.ok {
         print_response(&resp);
         return Ok(());
     }
-    let wid = resp.data.as_ref()
-        .and_then(|d| d.get("wid"))
-        .and_then(|v| v.as_str())
-        .ok_or("failed to get wid")?
-        .to_string();
 
-    let _ = send_cmd(client, "nav.goto", json!({"wid": wid, "url": url})).await?;
+    let open_resp = send_cmd(client, "open", json!({"session": session.clone(), "url": url})).await?;
+    if !open_resp.ok {
+        print_response(&open_resp);
+        let _ = send_cmd(client, "session.close", json!({"session": session.clone()})).await;
+        return Ok(());
+    }
 
-    let mut params = json!({"wid": wid, "full_page": full_page, "labels": labels});
-    if let Some(s) = selector { params["selector"] = json!(s); }
-    if let Some(o) = output { params["output"] = json!(o); }
-    let resp = send_cmd(client, "page.screenshot", params).await?;
+    let resp = send_cmd(
+        client,
+        "screenshot",
+        build_oneshot_screenshot_params(
+            &session,
+            output.as_deref(),
+            *full_page,
+            selector.as_deref(),
+            *labels,
+        ),
+    )
+    .await?;
     handle_binary_response(&resp, output.as_deref(), "screenshot.png");
 
-    let _ = send_cmd(client, "ws.close", json!({"wid": wid})).await;
+    let _ = send_cmd(client, "session.close", json!({"session": session})).await;
     Ok(())
 }
 
@@ -2051,6 +2137,29 @@ mod tests {
     }
 
     #[test]
+    fn legacy_back_builds_v2_navigate_params() {
+        let cli = try_parse(&[
+            "bk",
+            "--session",
+            "agent-a",
+            "--target",
+            "TAB1",
+            "--timeout",
+            "5000",
+            "back",
+        ])
+        .unwrap();
+
+        let params = build_navigate_params(None, true, false, false, &cli);
+
+        assert_eq!(params["back"], true);
+        assert_eq!(params["session"], "agent-a");
+        assert_eq!(params["target"], "TAB1");
+        assert_eq!(params["timeout"], 5000);
+        assert!(params.get("wid").is_none());
+    }
+
+    #[test]
     fn cli_parses_open() {
         let cli = try_parse(&["bk", "open", "https://x.com"]).unwrap();
         if let Command::OpenV2 { url } = &cli.command {
@@ -2151,9 +2260,82 @@ mod tests {
     }
 
     #[test]
+    fn deprecated_eval_builds_v2_evaluate_params() {
+        let cli = try_parse(&[
+            "bk",
+            "--session",
+            "agent-a",
+            "--target",
+            "TAB1",
+            "--timeout",
+            "5000",
+            "eval",
+            "--sync",
+            "document.title",
+        ])
+        .unwrap();
+
+        let params = build_evaluate_params("document.title".into(), &cli, false);
+
+        assert_eq!(params["expression"], "document.title");
+        assert_eq!(params["session"], "agent-a");
+        assert_eq!(params["target"], "TAB1");
+        assert_eq!(params["timeout"], 5000);
+        assert_eq!(params["await_promise"], false);
+        assert!(params.get("wid").is_none());
+    }
+
+    #[test]
     fn cli_parses_deprecated_shot() {
         let cli = try_parse(&["bk", "shot"]).unwrap();
         assert!(matches!(cli.command, Command::DeprecatedShot { .. }));
+    }
+
+    #[test]
+    fn deprecated_shot_builds_v2_screenshot_params() {
+        let cli = try_parse(&[
+            "bk",
+            "--session",
+            "agent-a",
+            "--target",
+            "TAB1",
+            "shot",
+            "--full-page",
+            "--selector",
+            "#app",
+            "--labels",
+            "--output",
+            "shot.png",
+        ])
+        .unwrap();
+
+        let params = build_screenshot_params(Some("shot.png"), true, Some("#app"), true, &cli);
+
+        assert_eq!(params["session"], "agent-a");
+        assert_eq!(params["target"], "TAB1");
+        assert_eq!(params["full_page"], true);
+        assert_eq!(params["selector"], "#app");
+        assert_eq!(params["labels"], true);
+        assert_eq!(params["output"], "shot.png");
+        assert!(params.get("wid").is_none());
+    }
+
+    #[test]
+    fn oneshot_shot_builds_v2_screenshot_params_for_temp_session() {
+        let params = build_oneshot_screenshot_params(
+            "oneshot-1",
+            Some("shot.png"),
+            true,
+            Some("#app"),
+            true,
+        );
+
+        assert_eq!(params["session"], "oneshot-1");
+        assert_eq!(params["full_page"], true);
+        assert_eq!(params["selector"], "#app");
+        assert_eq!(params["labels"], true);
+        assert_eq!(params["output"], "shot.png");
+        assert!(params.get("wid").is_none());
     }
 
     // ── Removed flags ────────────────────────────────────────────
