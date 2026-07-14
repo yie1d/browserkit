@@ -94,7 +94,7 @@ bk snapshot --wait none
 
 ## act
 
-执行交互动作：click、type、press、scroll、hover、focus。
+执行交互动作：click、type、press、scroll、hover、focus、select、options。
 
 ```
 Usage: bk act [OPTIONS] [KIND]
@@ -102,9 +102,10 @@ Usage: bk act [OPTIONS] [KIND]
 
 | 参数 | 类型 | 说明 |
 |------|------|------|
-| `[KIND]` | positional | 动作类型：`click` \| `type` \| `press` \| `scroll` \| `hover` \| `focus` |
+| `[KIND]` | positional | 动作类型：`click` \| `type` \| `press` \| `scroll` \| `hover` \| `focus` \| `select` \| `options` |
 | `--ref <ELEMENT_REF>` | string | 元素 ref（backendNodeId，从 snapshot 获取） |
 | `--text <TEXT>` | string | type 动作的输入文本 |
+| `--value <VALUE>` | string | select 动作的目标 option 值或可见文本 |
 | `--append` | flag | type 追加模式（默认为替换） |
 | `--keys <KEYS>...` | string[] | press 动作的按键序列 |
 | `--x <X>` | integer | click 的 X 坐标（与 --ref 互斥） |
@@ -162,6 +163,21 @@ bk act hover --ref 42
 ```bash
 bk act focus --ref 42
 ```
+
+### select
+
+```bash
+bk act select --ref 77 --value "option-value"
+bk act select --ref 77 --value "Visible Label"
+```
+
+### options
+
+```bash
+bk act options --ref 77
+```
+
+> `select` 和 `options` 只接受来自 `bk snapshot` 的稳定 `--ref`；不支持 selector 或 legacy index。
 
 ---
 
@@ -403,5 +419,7 @@ bk status
 | `bk scroll ...` | `bk act scroll ...` |
 | `bk hover --ref <N>` | `bk act hover --ref <N>` |
 | `bk focus --ref <N>` | `bk act focus --ref <N>` |
+| `bk select --ref <N> <VALUE>` | `bk act select --ref <N> --value <VALUE>` |
+| `bk options --ref <N>` | `bk act options --ref <N>` |
 
-其余 v1 legacy 命令（ws/tab/browser/daemon/storage/dialog/debug/click/type/fill/select/drag/upload/keys/find/search/html/console/options/pdf/open/fetch）仍可用但将在 Phase 3 移除。
+其余 v1 legacy 命令（ws/tab/browser/daemon/storage/dialog/debug/click/type/fill/drag/upload/keys/find/search/html/console/pdf/open/fetch）仍可用但将在 Phase 3 移除。

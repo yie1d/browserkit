@@ -1,27 +1,27 @@
 // Command dispatcher: routes requests to handler functions
 
+mod act;
+mod action;
+mod browser;
 pub mod common;
 mod connect;
 mod daemon;
-mod browser;
-mod workspace;
-pub(crate) mod tab;
-mod nav;
-mod page;
-mod action;
-mod storage;
-mod network;
 mod debug;
 mod dialog;
-mod open;
-mod snapshot;
-mod navigate;
-mod act;
-mod tabs;
-mod session;
 mod evaluate;
+mod nav;
+mod navigate;
+mod network;
+mod open;
+mod page;
 mod screenshot;
+mod session;
+mod snapshot;
+mod storage;
+pub(crate) mod tab;
+mod tabs;
 mod wait;
+mod workspace;
 
 use std::sync::Arc;
 
@@ -81,10 +81,8 @@ pub async fn handle_request(
         "page.console" => page::handle_page_console(req, state).await,
         "act.click" => action::handle_click(req, state).await,
         "act.type" => action::handle_type(req, state).await,
-        "act.select" => action::handle_act_select(req, state).await,
         "act.fill" => action::handle_act_fill(req, state).await,
         "act.upload" => action::handle_act_upload(req, state).await,
-        "act.dropdown_options" => action::handle_act_dropdown_options(req, state).await,
         "act.drag" => action::handle_act_drag(req, state).await,
         "act.keys" => action::handle_act_keys(req, state).await,
         "storage.cookies.get" => storage::handle_storage_cookies_get(req, state).await,
@@ -251,8 +249,8 @@ mod tests {
                 params: serde_json::json!({}),
                 token: None,
             };
-            let value = serde_json::to_value(handle_request(&req, &state, &test_context()).await)
-                .unwrap();
+            let value =
+                serde_json::to_value(handle_request(&req, &state, &test_context()).await).unwrap();
             assert_eq!(value["error"], format!("unknown command: {cmd}"));
         }
     }
@@ -260,5 +258,10 @@ mod tests {
     #[tokio::test]
     async fn dispatch_removed_scroll_hover_focus_routes_are_unknown() {
         assert_routes_removed(&["act.scroll", "act.hover", "act.focus"]).await;
+    }
+
+    #[tokio::test]
+    async fn dispatch_removed_select_and_options_routes_are_unknown() {
+        assert_routes_removed(&["act.select", "act.dropdown_options"]).await;
     }
 }

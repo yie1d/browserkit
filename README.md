@@ -168,14 +168,19 @@ bk act scroll --selector "#main"
 # Hover and focus
 bk act hover --ref 42
 bk act focus --ref 42
+
+# Select dropdown values and inspect options
+bk act select --ref 77 --value "option-value"
+bk act options --ref 77
 ```
+
+`bk act select` and `bk act options` accept only stable element refs from `bk snapshot`.
 
 Phase 2 actions (via legacy commands, migrating to `act` in Phase 3):
 
 | Action | Command |
 |--------|---------|
 | fill | `bk fill --set ref:42=value --set ref:55=other` |
-| select | `bk select --ref 77 "option-value"` |
 | drag | `bk drag --from-ref 10 --to-ref 20` |
 | keys | `bk keys Enter`, `bk keys Control+a` |
 | upload | `bk upload --ref 3 /path/to/file.pdf` |

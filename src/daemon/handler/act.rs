@@ -26,6 +26,8 @@ pub enum ActKind {
     Scroll,
     Hover,
     Focus,
+    Select,
+    Options,
 }
 
 // ── Parsed parameters ────────────────────────────────────────────────────────
@@ -46,6 +48,7 @@ struct ActParams {
     y: Option<f64>,
     // Type params
     text: Option<String>,
+    value: Option<String>,
     append: bool,
     // Press params
     keys: Vec<String>,
@@ -74,16 +77,14 @@ fn parse_act_params(params: &serde_json::Value) -> Result<ActParams, Response> {
         }
     }
 
-    let kind_str = params
-        .get("kind")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| {
-            Response::error_detail(
-                ErrorCode::InvalidArgument,
-                "missing required parameter: kind (click/type/press/scroll/hover/focus)".into(),
-                None,
-            )
-        })?;
+    let kind_str = params.get("kind").and_then(|v| v.as_str()).ok_or_else(|| {
+        Response::error_detail(
+            ErrorCode::InvalidArgument,
+            "missing required parameter: kind (click/type/press/scroll/hover/focus/select/options)"
+                .into(),
+            None,
+        )
+    })?;
 
     let kind = match kind_str {
         "click" => ActKind::Click,
@@ -92,11 +93,13 @@ fn parse_act_params(params: &serde_json::Value) -> Result<ActParams, Response> {
         "scroll" => ActKind::Scroll,
         "hover" => ActKind::Hover,
         "focus" => ActKind::Focus,
+        "select" => ActKind::Select,
+        "options" => ActKind::Options,
         _ => {
             return Err(Response::error_detail(
                 ErrorCode::InvalidArgument,
                 format!(
-                    "unsupported act kind: '{}' (supported: click, type, press, scroll, hover, focus)",
+                    "unsupported act kind: '{}' (supported: click, type, press, scroll, hover, focus, select, options)",
                     kind_str
                 ),
                 None,
@@ -109,6 +112,10 @@ fn parse_act_params(params: &serde_json::Value) -> Result<ActParams, Response> {
     let y = params.get("y").and_then(|v| v.as_f64());
     let text = params
         .get("text")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    let value = params
+        .get("value")
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
     let append = params
@@ -205,6 +212,31 @@ fn parse_act_params(params: &serde_json::Value) -> Result<ActParams, Response> {
                 ));
             }
         }
+        ActKind::Select => {
+            if ref_id.is_none() {
+                return Err(Response::error_detail(
+                    ErrorCode::InvalidArgument,
+                    "select requires --ref".into(),
+                    None,
+                ));
+            }
+            if value.is_none() {
+                return Err(Response::error_detail(
+                    ErrorCode::InvalidArgument,
+                    "select requires value".into(),
+                    None,
+                ));
+            }
+        }
+        ActKind::Options => {
+            if ref_id.is_none() {
+                return Err(Response::error_detail(
+                    ErrorCode::InvalidArgument,
+                    "options requires --ref".into(),
+                    None,
+                ));
+            }
+        }
     }
 
     let direction = match kind {
@@ -237,6 +269,7 @@ fn parse_act_params(params: &serde_json::Value) -> Result<ActParams, Response> {
         x,
         y,
         text,
+        value,
         append,
         keys,
         direction,
@@ -255,6 +288,7 @@ fn build_act_response(
     state_diff: Option<serde_json::Value>,
     new_tab: Option<&str>,
     target: &str,
+    action_data: serde_json::Map<String, serde_json::Value>,
 ) -> Response {
     let mut data = json!({
         "action": action,
@@ -267,6 +301,11 @@ fn build_act_response(
     }
     if let Some(nt) = new_tab {
         data["new_tab"] = json!(nt);
+    }
+    if let Some(data_obj) = data.as_object_mut() {
+        for (key, value) in action_data {
+            data_obj.insert(key, value);
+        }
     }
     Response::ok(data)
 }
@@ -351,26 +390,31 @@ pub async fn handle_act(req: &Request, state: &Arc<DaemonState>) -> Response {
         ActKind::Type => execute_type(&cdp, cdp_session_id, &params, &target_id).await,
         ActKind::Press => execute_press(&cdp, cdp_session_id, &params, &target_id).await,
         ActKind::Scroll => execute_scroll(&cdp, cdp_session_id, &params).await,
-        ActKind::Hover => execute_ref_action(
-            "hover",
-            &cdp,
-            cdp_session_id,
-            params.ref_id.expect("hover ref validated above"),
-        )
-        .await,
-        ActKind::Focus => execute_ref_action(
-            "focus",
-            &cdp,
-            cdp_session_id,
-            params.ref_id.expect("focus ref validated above"),
-        )
-        .await,
+        ActKind::Hover => {
+            execute_ref_action(
+                "hover",
+                &cdp,
+                cdp_session_id,
+                params.ref_id.expect("hover ref validated above"),
+            )
+            .await
+        }
+        ActKind::Focus => {
+            execute_ref_action(
+                "focus",
+                &cdp,
+                cdp_session_id,
+                params.ref_id.expect("focus ref validated above"),
+            )
+            .await
+        }
+        ActKind::Select => execute_select(&cdp, cdp_session_id, &params).await,
+        ActKind::Options => execute_options(&cdp, cdp_session_id, &params).await,
     };
 
-    // If the action failed, return the error response directly
-    let (action_name, action_ref_id) = match &action_result {
-        Ok(success) => (success.action.clone(), success.ref_id),
-        Err(resp) => return resp.clone(),
+    let action_success = match action_result {
+        Ok(success) => success,
+        Err(resp) => return resp,
     };
 
     // Compute state_diff after action (with 500ms DOM settle window)
@@ -384,8 +428,21 @@ pub async fn handle_act(req: &Request, state: &Arc<DaemonState>) -> Response {
         None
     };
 
-    info!(action = %action_name, ref_id = ?action_ref_id, target = %target_id, "act completed");
-    build_act_response(&action_name, action_ref_id, "completed", state_diff_json, None, &target_id)
+    info!(
+        action = %action_success.action,
+        ref_id = ?action_success.ref_id,
+        target = %target_id,
+        "act completed"
+    );
+    build_act_response(
+        &action_success.action,
+        action_success.ref_id,
+        "completed",
+        state_diff_json,
+        None,
+        &target_id,
+        action_success.data,
+    )
 }
 
 // ── Action result ────────────────────────────────────────────────────────────
@@ -394,6 +451,21 @@ pub async fn handle_act(req: &Request, state: &Arc<DaemonState>) -> Response {
 struct ActionSuccess {
     action: String,
     ref_id: Option<i64>,
+    data: serde_json::Map<String, serde_json::Value>,
+}
+
+impl ActionSuccess {
+    fn completed(action: &str, ref_id: Option<i64>) -> Self {
+        Self {
+            action: action.into(),
+            ref_id,
+            data: serde_json::Map::new(),
+        }
+    }
+
+    fn insert(&mut self, key: &str, value: serde_json::Value) {
+        self.data.insert(key.into(), value);
+    }
 }
 
 fn is_element_not_found_error(error: &crate::error::BkError) -> bool {
@@ -438,10 +510,7 @@ async fn execute_click(
     };
 
     result
-        .map(|()| ActionSuccess {
-            action: "click".into(),
-            ref_id: params.ref_id,
-        })
+        .map(|()| ActionSuccess::completed("click", params.ref_id))
         .map_err(|e| action_error("click", e))
 }
 
@@ -467,10 +536,7 @@ async fn execute_type(
     let result = type_text_by_target(cdp, session_id, &target, text, clear).await;
 
     result
-        .map(|()| ActionSuccess {
-            action: "type".into(),
-            ref_id: Some(ref_id),
-        })
+        .map(|()| ActionSuccess::completed("type", Some(ref_id)))
         .map_err(|e| action_error("type", e))
 }
 
@@ -497,10 +563,7 @@ async fn execute_press(
         }
     }
 
-    Ok(ActionSuccess {
-        action: "press".into(),
-        ref_id: None,
-    })
+    Ok(ActionSuccess::completed("press", None))
 }
 
 async fn execute_scroll(
@@ -528,10 +591,7 @@ async fn execute_scroll(
     };
 
     result
-        .map(|()| ActionSuccess {
-            action: "scroll".into(),
-            ref_id: params.ref_id,
-        })
+        .map(|()| ActionSuccess::completed("scroll", params.ref_id))
         .map_err(|e| action_error("scroll", e))
 }
 
@@ -551,11 +611,56 @@ async fn execute_ref_action(
     };
 
     result
-        .map(|()| ActionSuccess {
-            action: action.into(),
-            ref_id: Some(ref_id),
-        })
+        .map(|()| ActionSuccess::completed(action, Some(ref_id)))
         .map_err(|e| action_error(action, e))
+}
+
+async fn execute_select(
+    cdp: &Arc<cdpkit::CDP>,
+    session_id: &str,
+    params: &ActParams,
+) -> Result<ActionSuccess, Response> {
+    use crate::page::element_ref::ElementTarget;
+    use crate::page::interaction::select_by_target;
+
+    let ref_id = params.ref_id.expect("select ref validated above");
+    let value = params
+        .value
+        .as_deref()
+        .expect("select value validated above");
+    let detail = select_by_target(cdp, session_id, &ElementTarget::Ref(ref_id), value)
+        .await
+        .map_err(|e| action_error("select", e))?;
+
+    let mut success = ActionSuccess::completed("select", Some(ref_id));
+    success.insert("value", json!(value));
+    success.insert("detail", detail);
+    Ok(success)
+}
+
+async fn execute_options(
+    cdp: &Arc<cdpkit::CDP>,
+    session_id: &str,
+    params: &ActParams,
+) -> Result<ActionSuccess, Response> {
+    use crate::page::element_ref::ElementTarget;
+    use crate::page::interaction::dropdown_options_by_target;
+
+    let ref_id = params.ref_id.expect("options ref validated above");
+    let result = dropdown_options_by_target(cdp, session_id, &ElementTarget::Ref(ref_id))
+        .await
+        .map_err(|e| action_error("options", e))?;
+    let options = result.get("options").cloned().ok_or_else(|| {
+        Response::error_detail(
+            ErrorCode::JsError,
+            "options failed: missing options in dropdown_options result".into(),
+            None,
+        )
+    })?;
+
+    let mut success = ActionSuccess::completed("options", Some(ref_id));
+    success.insert("options", options);
+    Ok(success)
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────
@@ -629,6 +734,14 @@ mod tests {
 
         let focus = parse_act_params(&json!({"kind": "focus", "ref": 43})).unwrap();
         assert_eq!(focus.kind, ActKind::Focus);
+    }
+
+    #[test]
+    fn parse_act_select_and_options_validate_fields() {
+        assert!(parse_act_params(&json!({"kind": "select", "ref": 42, "value": "green"})).is_ok());
+        assert!(parse_act_params(&json!({"kind": "select", "ref": 42})).is_err());
+        assert!(parse_act_params(&json!({"kind": "options", "ref": 42})).is_ok());
+        assert!(parse_act_params(&json!({"kind": "options"})).is_err());
     }
 
     #[test]
@@ -729,7 +842,10 @@ mod tests {
         let err = parse_act_params(&params).unwrap_err();
         let json = serde_json::to_value(&err).unwrap();
         assert_eq!(json["error"]["code"], "INVALID_ARGUMENT");
-        assert!(err.error.unwrap()["message"].as_str().unwrap().contains("ref"));
+        assert!(err.error.unwrap()["message"]
+            .as_str()
+            .unwrap()
+            .contains("ref"));
     }
 
     #[test]
@@ -738,7 +854,10 @@ mod tests {
         let err = parse_act_params(&params).unwrap_err();
         let json = serde_json::to_value(&err).unwrap();
         assert_eq!(json["error"]["code"], "INVALID_ARGUMENT");
-        assert!(err.error.unwrap()["message"].as_str().unwrap().contains("text"));
+        assert!(err.error.unwrap()["message"]
+            .as_str()
+            .unwrap()
+            .contains("text"));
     }
 
     #[test]
@@ -788,7 +907,15 @@ mod tests {
 
     #[test]
     fn act_response_structure_click() {
-        let resp = build_act_response("click", Some(42), "completed", None, None, "TAB1");
+        let resp = build_act_response(
+            "click",
+            Some(42),
+            "completed",
+            None,
+            None,
+            "TAB1",
+            serde_json::Map::new(),
+        );
         let json = serde_json::to_value(&resp).unwrap();
         assert_eq!(json["ok"], true);
         assert_eq!(json["data"]["action"], "click");
@@ -800,7 +927,15 @@ mod tests {
 
     #[test]
     fn act_response_structure_press_no_ref() {
-        let resp = build_act_response("press", None, "completed", None, None, "TAB2");
+        let resp = build_act_response(
+            "press",
+            None,
+            "completed",
+            None,
+            None,
+            "TAB2",
+            serde_json::Map::new(),
+        );
         let json = serde_json::to_value(&resp).unwrap();
         assert_eq!(json["ok"], true);
         assert_eq!(json["data"]["action"], "press");
@@ -811,7 +946,15 @@ mod tests {
 
     #[test]
     fn act_response_with_new_tab() {
-        let resp = build_act_response("click", Some(5), "completed", None, Some("NEW_TAB_ID"), "TAB1");
+        let resp = build_act_response(
+            "click",
+            Some(5),
+            "completed",
+            None,
+            Some("NEW_TAB_ID"),
+            "TAB1",
+            serde_json::Map::new(),
+        );
         let json = serde_json::to_value(&resp).unwrap();
         assert_eq!(json["data"]["new_tab"], "NEW_TAB_ID");
     }
@@ -819,9 +962,38 @@ mod tests {
     #[test]
     fn act_response_with_state_diff() {
         let diff = json!({"url_changed": null, "elements_added": 3});
-        let resp = build_act_response("click", Some(1), "completed", Some(diff.clone()), None, "T1");
+        let resp = build_act_response(
+            "click",
+            Some(1),
+            "completed",
+            Some(diff.clone()),
+            None,
+            "T1",
+            serde_json::Map::new(),
+        );
         let json = serde_json::to_value(&resp).unwrap();
         assert_eq!(json["data"]["state_diff"]["elements_added"], 3);
+    }
+
+    #[test]
+    fn act_response_merges_action_specific_data() {
+        let mut data = serde_json::Map::new();
+        data.insert("value".into(), json!("green"));
+        data.insert(
+            "detail".into(),
+            json!({"selected_value": "green", "selected_text": "Green"}),
+        );
+        data.insert(
+            "options".into(),
+            json!([{"value": "green", "text": "Green", "selected": true}]),
+        );
+
+        let resp = build_act_response("select", Some(77), "completed", None, None, "TAB1", data);
+        let json = serde_json::to_value(&resp).unwrap();
+
+        assert_eq!(json["data"]["value"], "green");
+        assert_eq!(json["data"]["detail"]["selected_value"], "green");
+        assert_eq!(json["data"]["options"][0]["text"], "Green");
     }
 
     #[tokio::test]
@@ -927,6 +1099,23 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn handle_select_and_options_use_session_resolution() {
+        let state = Arc::new(DaemonState::new());
+        for params in [
+            json!({"kind": "select", "ref": 42, "value": "green"}),
+            json!({"kind": "options", "ref": 42}),
+        ] {
+            let req = Request {
+                cmd: "act".into(),
+                params,
+                token: None,
+            };
+            let value = serde_json::to_value(handle_act(&req, &state).await).unwrap();
+            assert_eq!(value["error"]["code"], "SESSION_NOT_FOUND");
+        }
+    }
+
     #[test]
     fn parse_act_defaults() {
         let params = json!({"kind": "click", "ref": 1});
@@ -936,6 +1125,7 @@ mod tests {
         assert_eq!(p.timeout, 30000);
         assert!(!p.no_state_diff);
         assert!(!p.append);
+        assert_eq!(p.value, None);
         assert!(p.keys.is_empty());
     }
 }

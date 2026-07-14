@@ -105,4 +105,5 @@ Status: pending
 - [x] Remove legacy `new`, `ls`, and `rm` workspace CLI aliases.
 - [x] Remove legacy `url` and `title` CLI aliases after v2 `evaluate` parity.
 - [x] Complete v2 act parity Batch A by moving `scroll`, `hover`, and `focus` onto `bk act` and removing their legacy daemon routes.
+- [x] Complete v2 act parity Batch B by moving `select` and `options` onto `bk act` and removing their legacy daemon routes.
 - [ ] Start deleting legacy workspace-facing surfaces after v2 parity is verified.
