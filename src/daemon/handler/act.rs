@@ -1,4 +1,4 @@
-// Handler for the v2 `act` command (click/type/press/scroll/hover/focus).
+// Handler for the v2 `act` command (click/type/press/scroll/hover/focus/select/options).
 //
 // Unified action dispatcher for the session-native interaction surface.
 // Each returns result + state_diff (before/after URL/title/element comparison).
@@ -141,6 +141,23 @@ fn parse_act_params(params: &serde_json::Value) -> Result<ActParams, Response> {
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
 
+    fn reject_incompatible_fields(
+        params: &serde_json::Value,
+        kind: &str,
+        fields: &[&str],
+    ) -> Result<(), Response> {
+        for field in fields {
+            if params.get(*field).is_some() {
+                return Err(Response::error_detail(
+                    ErrorCode::InvalidArgument,
+                    format!("{kind} does not support '{field}'"),
+                    None,
+                ));
+            }
+        }
+        Ok(())
+    }
+
     // Validation per kind
     match kind {
         ActKind::Click => {
@@ -213,6 +230,11 @@ fn parse_act_params(params: &serde_json::Value) -> Result<ActParams, Response> {
             }
         }
         ActKind::Select => {
+            reject_incompatible_fields(
+                params,
+                "select",
+                &["selector", "x", "y", "text", "append", "keys", "direction", "amount"],
+            )?;
             if ref_id.is_none() {
                 return Err(Response::error_detail(
                     ErrorCode::InvalidArgument,
@@ -229,6 +251,21 @@ fn parse_act_params(params: &serde_json::Value) -> Result<ActParams, Response> {
             }
         }
         ActKind::Options => {
+            reject_incompatible_fields(
+                params,
+                "options",
+                &[
+                    "selector",
+                    "x",
+                    "y",
+                    "text",
+                    "value",
+                    "append",
+                    "keys",
+                    "direction",
+                    "amount",
+                ],
+            )?;
             if ref_id.is_none() {
                 return Err(Response::error_detail(
                     ErrorCode::InvalidArgument,
@@ -742,6 +779,66 @@ mod tests {
         assert!(parse_act_params(&json!({"kind": "select", "ref": 42})).is_err());
         assert!(parse_act_params(&json!({"kind": "options", "ref": 42})).is_ok());
         assert!(parse_act_params(&json!({"kind": "options"})).is_err());
+    }
+
+    #[test]
+    fn parse_act_select_rejects_incompatible_fields() {
+        let base = json!({
+            "kind": "select",
+            "ref": 42,
+            "value": "green",
+            "session": "agent-a",
+            "target": "TAB123",
+            "timeout": 60000,
+            "no_state_diff": true,
+        });
+        assert!(parse_act_params(&base).is_ok());
+
+        for (field, field_value) in [
+            ("selector", json!("#main")),
+            ("x", json!(10.0)),
+            ("y", json!(20.0)),
+            ("text", json!("hello")),
+            ("append", json!(true)),
+            ("keys", json!(["Enter"])),
+            ("direction", json!("down")),
+            ("amount", json!(250.0)),
+        ] {
+            let mut params = base.clone();
+            params[field] = field_value;
+            let value = serde_json::to_value(parse_act_params(&params).unwrap_err()).unwrap();
+            assert_eq!(value["error"]["code"], "INVALID_ARGUMENT", "{field}");
+        }
+    }
+
+    #[test]
+    fn parse_act_options_rejects_incompatible_fields() {
+        let base = json!({
+            "kind": "options",
+            "ref": 42,
+            "session": "agent-a",
+            "target": "TAB123",
+            "timeout": 60000,
+            "no_state_diff": true,
+        });
+        assert!(parse_act_params(&base).is_ok());
+
+        for (field, field_value) in [
+            ("selector", json!("#main")),
+            ("x", json!(10.0)),
+            ("y", json!(20.0)),
+            ("text", json!("hello")),
+            ("value", json!("green")),
+            ("append", json!(true)),
+            ("keys", json!(["Enter"])),
+            ("direction", json!("down")),
+            ("amount", json!(250.0)),
+        ] {
+            let mut params = base.clone();
+            params[field] = field_value;
+            let value = serde_json::to_value(parse_act_params(&params).unwrap_err()).unwrap();
+            assert_eq!(value["error"]["code"], "INVALID_ARGUMENT", "{field}");
+        }
     }
 
     #[test]

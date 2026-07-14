@@ -65,12 +65,7 @@ use browserkit::daemon::protocol::Response;
 // ── Top-level CLI ──────────────────────────────────────────────
 
 #[derive(Parser)]
-#[command(
-    name = "bk",
-    about = "Persistent browser runtime CLI for AI agents",
-    long_about = "Persistent browser runtime CLI for AI agents.\n\nAll output is JSON. Commands communicate with the local browserkit daemon over TCP.",
-    version
-)]
+#[command(name = "bk", about = "Persistent browser runtime CLI for AI agents", long_about = "Persistent browser runtime CLI for AI agents.\n\nAll output is JSON. Commands communicate with the local browserkit daemon over TCP.", version)]
 pub struct Cli {
     /// Target session name (or set BK_SESSION env var)
     #[arg(long = "session", global = true, env = "BK_SESSION")]
@@ -103,6 +98,7 @@ pub enum Command {
     // ══════════════════════════════════════════════════════════════
     // V2 PRIMARY COMMANDS
     // ══════════════════════════════════════════════════════════════
+
     /// Set up Chrome remote debugging (interactive, one-time, no daemon needed)
     #[command(about = "Set up Chrome remote debugging (interactive, one-time)")]
     Setup,
@@ -259,6 +255,7 @@ pub enum Command {
     // ══════════════════════════════════════════════════════════════
     // V1 LEGACY COMMANDS (preserved, removed in Phase 3)
     // ══════════════════════════════════════════════════════════════
+
     /// Click element
     #[command(hide = true, group(ArgGroup::new("click_target").required(true).args(["index", "element_ref", "x"])))]
     Click {
@@ -372,7 +369,9 @@ pub enum Command {
     },
     /// Fetch HTML from URL (one-shot)
     #[command(hide = true)]
-    Fetch { url: String },
+    Fetch {
+        url: String,
+    },
 
     // ── Management ────────────────────────────────────────────────
     /// Workspace management
@@ -418,7 +417,9 @@ pub enum Command {
 
     /// Generate shell completions
     #[command(hide = true)]
-    Completions { shell: clap_complete::Shell },
+    Completions {
+        shell: clap_complete::Shell,
+    },
 }
 
 // ── V2 Session subcommands ────────────────────────────────────────
@@ -561,6 +562,7 @@ pub enum TabAction {
         tid: String,
     },
 }
+
 
 #[derive(Subcommand)]
 pub enum StorageAction {
@@ -731,10 +733,7 @@ async fn async_main() {
     let cli = Cli::parse();
 
     // daemon start is special — runs the server in foreground
-    if let Command::Daemon {
-        action: DaemonAction::Start,
-    } = &cli.command
-    {
+    if let Command::Daemon { action: DaemonAction::Start } = &cli.command {
         run_daemon_start().await;
         return;
     }
@@ -753,10 +752,7 @@ async fn async_main() {
     }
 
     // daemon stop / daemon status: connect-only, never auto-start a daemon
-    if let Command::Daemon {
-        action: _action @ (DaemonAction::Stop | DaemonAction::Status),
-    } = &cli.command
-    {
+    if let Command::Daemon { action: _action @ (DaemonAction::Stop | DaemonAction::Status) } = &cli.command {
         match DaemonClient::connect_only().await {
             Ok(mut client) => {
                 let result = dispatch(&cli, &mut client).await;
@@ -766,20 +762,14 @@ async fn async_main() {
                 }
                 // After daemon.stop, wait for the daemon process to actually exit
                 // by polling until the port is no longer reachable.
-                if let Command::Daemon {
-                    action: DaemonAction::Stop,
-                } = &cli.command
-                {
+                if let Command::Daemon { action: DaemonAction::Stop } = &cli.command {
                     drop(client); // close our connection first
                     wait_for_daemon_exit().await;
                 }
             }
             Err(_) => {
                 // No daemon running — report cleanly and exit 0
-                println!(
-                    "{}",
-                    serde_json::json!({"ok": true, "data": {"status": "daemon not running"}})
-                );
+                println!("{}", serde_json::json!({"ok": true, "data": {"status": "daemon not running"}}));
             }
         }
         return;
@@ -976,27 +966,13 @@ fn build_navigate_params(
     cli: &Cli,
 ) -> serde_json::Value {
     let mut params = json!({});
-    if let Some(u) = url {
-        params["url"] = json!(u);
-    }
-    if back {
-        params["back"] = json!(true);
-    }
-    if forward {
-        params["forward"] = json!(true);
-    }
-    if reload {
-        params["reload"] = json!(true);
-    }
-    if let Some(s) = &cli.session {
-        params["session"] = json!(s);
-    }
-    if let Some(t) = &cli.target {
-        params["target"] = json!(t);
-    }
-    if let Some(to) = cli.timeout {
-        params["timeout"] = json!(to);
-    }
+    if let Some(u) = url { params["url"] = json!(u); }
+    if back { params["back"] = json!(true); }
+    if forward { params["forward"] = json!(true); }
+    if reload { params["reload"] = json!(true); }
+    if let Some(s) = &cli.session { params["session"] = json!(s); }
+    if let Some(t) = &cli.target { params["target"] = json!(t); }
+    if let Some(to) = cli.timeout { params["timeout"] = json!(to); }
     params
 }
 
@@ -1011,18 +987,10 @@ fn build_screenshot_params(
         "full_page": full_page,
         "labels": labels,
     });
-    if let Some(o) = output {
-        params["output"] = json!(o);
-    }
-    if let Some(s) = selector {
-        params["selector"] = json!(s);
-    }
-    if let Some(s) = &cli.session {
-        params["session"] = json!(s);
-    }
-    if let Some(t) = &cli.target {
-        params["target"] = json!(t);
-    }
+    if let Some(o) = output { params["output"] = json!(o); }
+    if let Some(s) = selector { params["selector"] = json!(s); }
+    if let Some(s) = &cli.session { params["session"] = json!(s); }
+    if let Some(t) = &cli.target { params["target"] = json!(t); }
     params
 }
 
@@ -1031,30 +999,19 @@ async fn dispatch(cli: &Cli, client: &mut DaemonClient) -> Result<(), String> {
         // ══════════════════════════════════════════════════════════
         // V2 PRIMARY COMMANDS
         // ══════════════════════════════════════════════════════════
+
         Command::Connect => {
             let mut params = json!({});
-            if let Some(s) = &cli.session {
-                params["session"] = json!(s);
-            }
+            if let Some(s) = &cli.session { params["session"] = json!(s); }
             let resp = send_cmd(client, "connect", params).await?;
             print_response(&resp);
         }
 
-        Command::Snapshot {
-            full,
-            no_page_text,
-            wait,
-        } => {
+        Command::Snapshot { full, no_page_text, wait } => {
             let mut params = json!({"full": full, "no_page_text": no_page_text, "wait": wait});
-            if let Some(s) = &cli.session {
-                params["session"] = json!(s);
-            }
-            if let Some(t) = &cli.target {
-                params["target"] = json!(t);
-            }
-            if let Some(to) = cli.timeout {
-                params["timeout"] = json!(to);
-            }
+            if let Some(s) = &cli.session { params["session"] = json!(s); }
+            if let Some(t) = &cli.target { params["target"] = json!(t); }
+            if let Some(to) = cli.timeout { params["timeout"] = json!(to); }
             let resp = send_cmd(client, "snapshot", params).await?;
             print_response(&resp);
         }
@@ -1073,61 +1030,26 @@ async fn dispatch(cli: &Cli, client: &mut DaemonClient) -> Result<(), String> {
             selector,
         } => {
             let mut params = json!({});
-            if let Some(k) = kind {
-                params["kind"] = json!(k);
-            }
-            if let Some(r) = element_ref {
-                params["ref"] = json!(r);
-            }
-            if let Some(t) = text {
-                params["text"] = json!(t);
-            }
-            if let Some(v) = value {
-                params["value"] = json!(v);
-            }
-            if *append {
-                params["append"] = json!(true);
-            }
-            if !keys.is_empty() {
-                params["keys"] = json!(keys);
-            }
-            if let Some(cx) = x {
-                params["x"] = json!(cx);
-            }
-            if let Some(cy) = y {
-                params["y"] = json!(cy);
-            }
-            if let Some(dir) = direction {
-                params["direction"] = json!(dir);
-            }
-            if let Some(a) = amount {
-                params["amount"] = json!(a);
-            }
-            if let Some(sel) = selector {
-                params["selector"] = json!(sel);
-            }
-            if let Some(s) = &cli.session {
-                params["session"] = json!(s);
-            }
-            if let Some(t) = &cli.target {
-                params["target"] = json!(t);
-            }
-            if let Some(to) = cli.timeout {
-                params["timeout"] = json!(to);
-            }
-            if cli.no_state_diff {
-                params["no_state_diff"] = json!(true);
-            }
+            if let Some(k) = kind { params["kind"] = json!(k); }
+            if let Some(r) = element_ref { params["ref"] = json!(r); }
+            if let Some(t) = text { params["text"] = json!(t); }
+            if let Some(v) = value { params["value"] = json!(v); }
+            if *append { params["append"] = json!(true); }
+            if !keys.is_empty() { params["keys"] = json!(keys); }
+            if let Some(cx) = x { params["x"] = json!(cx); }
+            if let Some(cy) = y { params["y"] = json!(cy); }
+            if let Some(dir) = direction { params["direction"] = json!(dir); }
+            if let Some(a) = amount { params["amount"] = json!(a); }
+            if let Some(sel) = selector { params["selector"] = json!(sel); }
+            if let Some(s) = &cli.session { params["session"] = json!(s); }
+            if let Some(t) = &cli.target { params["target"] = json!(t); }
+            if let Some(to) = cli.timeout { params["timeout"] = json!(to); }
+            if cli.no_state_diff { params["no_state_diff"] = json!(true); }
             let resp = send_cmd(client, "act", params).await?;
             print_response(&resp);
         }
 
-        Command::Navigate {
-            url,
-            back,
-            forward,
-            reload,
-        } => {
+        Command::Navigate { url, back, forward, reload } => {
             let resp = send_cmd(
                 client,
                 "navigate",
@@ -1139,33 +1061,23 @@ async fn dispatch(cli: &Cli, client: &mut DaemonClient) -> Result<(), String> {
 
         Command::OpenV2 { url } => {
             let mut params = json!({"url": url});
-            if let Some(s) = &cli.session {
-                params["session"] = json!(s);
-            }
-            if let Some(to) = cli.timeout {
-                params["timeout"] = json!(to);
-            }
+            if let Some(s) = &cli.session { params["session"] = json!(s); }
+            if let Some(to) = cli.timeout { params["timeout"] = json!(to); }
             let resp = send_cmd(client, "open", params).await?;
             print_response(&resp);
         }
 
         Command::CloseV2 => {
             let mut params = json!({});
-            if let Some(s) = &cli.session {
-                params["session"] = json!(s);
-            }
-            if let Some(t) = &cli.target {
-                params["target"] = json!(t);
-            }
+            if let Some(s) = &cli.session { params["session"] = json!(s); }
+            if let Some(t) = &cli.target { params["target"] = json!(t); }
             let resp = send_cmd(client, "close", params).await?;
             print_response(&resp);
         }
 
         Command::Tabs => {
             let mut params = json!({});
-            if let Some(s) = &cli.session {
-                params["session"] = json!(s);
-            }
+            if let Some(s) = &cli.session { params["session"] = json!(s); }
             let resp = send_cmd(client, "tabs", params).await?;
             print_response(&resp);
         }
@@ -1181,25 +1093,14 @@ async fn dispatch(cli: &Cli, client: &mut DaemonClient) -> Result<(), String> {
                 return Err("evaluate requires either an expression or --file".into());
             };
             let mut params = json!({"expression": js_expr});
-            if let Some(s) = &cli.session {
-                params["session"] = json!(s);
-            }
-            if let Some(t) = &cli.target {
-                params["target"] = json!(t);
-            }
-            if let Some(to) = cli.timeout {
-                params["timeout"] = json!(to);
-            }
+            if let Some(s) = &cli.session { params["session"] = json!(s); }
+            if let Some(t) = &cli.target { params["target"] = json!(t); }
+            if let Some(to) = cli.timeout { params["timeout"] = json!(to); }
             let resp = send_cmd(client, "evaluate", params).await?;
             print_response(&resp);
         }
 
-        Command::ScreenshotV2 {
-            output,
-            full_page,
-            selector,
-            labels,
-        } => {
+        Command::ScreenshotV2 { output, full_page, selector, labels } => {
             let resp = send_cmd(
                 client,
                 "screenshot",
@@ -1215,49 +1116,19 @@ async fn dispatch(cli: &Cli, client: &mut DaemonClient) -> Result<(), String> {
             handle_binary_response(&resp, output.as_deref(), "screenshot.png");
         }
 
-        Command::WaitV2 {
-            selector,
-            text,
-            text_gone,
-            url,
-            idle,
-            r#fn,
-            time,
-        } => {
+        Command::WaitV2 { selector, text, text_gone, url, idle, r#fn, time } => {
             let mut params = json!({});
-            if let Some(s) = selector {
-                params["selector"] = json!(s);
-            }
-            if let Some(t) = text {
-                params["text"] = json!(t);
-            }
-            if let Some(tg) = text_gone {
-                params["text_gone"] = json!(tg);
-            }
-            if let Some(u) = url {
-                params["url"] = json!(u);
-            }
-            if *idle {
-                params["load_state"] = json!("networkidle");
-            }
-            if let Some(f) = r#fn {
-                params["fn"] = json!(f);
-            }
-            if let Some(t) = time {
-                params["time"] = json!(t);
-            }
-            if let Some(s) = &cli.session {
-                params["session"] = json!(s);
-            }
-            if let Some(t) = &cli.target {
-                params["target"] = json!(t);
-            }
-            if let Some(to) = cli.timeout {
-                params["timeout"] = json!(to);
-            }
-            if params.get("timeout").is_none() {
-                params["timeout"] = json!(30000u64);
-            }
+            if let Some(s) = selector { params["selector"] = json!(s); }
+            if let Some(t) = text { params["text"] = json!(t); }
+            if let Some(tg) = text_gone { params["text_gone"] = json!(tg); }
+            if let Some(u) = url { params["url"] = json!(u); }
+            if *idle { params["load_state"] = json!("networkidle"); }
+            if let Some(f) = r#fn { params["fn"] = json!(f); }
+            if let Some(t) = time { params["time"] = json!(t); }
+            if let Some(s) = &cli.session { params["session"] = json!(s); }
+            if let Some(t) = &cli.target { params["target"] = json!(t); }
+            if let Some(to) = cli.timeout { params["timeout"] = json!(to); }
+            if params.get("timeout").is_none() { params["timeout"] = json!(30000u64); }
             let resp = send_cmd(client, "wait", params).await?;
             print_response(&resp);
         }
@@ -1265,9 +1136,7 @@ async fn dispatch(cli: &Cli, client: &mut DaemonClient) -> Result<(), String> {
         Command::Session { action } => match action {
             SessionAction::Close => {
                 let mut params = json!({});
-                if let Some(s) = &cli.session {
-                    params["session"] = json!(s);
-                }
+                if let Some(s) = &cli.session { params["session"] = json!(s); }
                 let resp = send_cmd(client, "session.close", params).await?;
                 print_response(&resp);
             }
@@ -1278,9 +1147,7 @@ async fn dispatch(cli: &Cli, client: &mut DaemonClient) -> Result<(), String> {
             SessionAction::Cookies { action: ca } => match ca {
                 CookiesAction::Get => {
                     let mut params = json!({});
-                    if let Some(s) = &cli.session {
-                        params["session"] = json!(s);
-                    }
+                    if let Some(s) = &cli.session { params["session"] = json!(s); }
                     let resp = send_cmd(client, "session.cookies.get", params).await?;
                     print_response(&resp);
                 }
@@ -1290,17 +1157,13 @@ async fn dispatch(cli: &Cli, client: &mut DaemonClient) -> Result<(), String> {
                     let cookies: serde_json::Value = serde_json::from_str(&content)
                         .map_err(|e| format!("invalid cookie JSON: {}", e))?;
                     let mut params = json!({"cookies": cookies});
-                    if let Some(s) = &cli.session {
-                        params["session"] = json!(s);
-                    }
+                    if let Some(s) = &cli.session { params["session"] = json!(s); }
                     let resp = send_cmd(client, "session.cookies.set", params).await?;
                     print_response(&resp);
                 }
                 CookiesAction::Clear => {
                     let mut params = json!({});
-                    if let Some(s) = &cli.session {
-                        params["session"] = json!(s);
-                    }
+                    if let Some(s) = &cli.session { params["session"] = json!(s); }
                     let resp = send_cmd(client, "session.cookies.clear", params).await?;
                     print_response(&resp);
                 }
@@ -1336,9 +1199,7 @@ async fn dispatch(cli: &Cli, client: &mut DaemonClient) -> Result<(), String> {
             }
             BrowserAction::Discover { path } => {
                 let mut params = json!({});
-                if let Some(p) = path {
-                    params["path"] = json!(p);
-                }
+                if let Some(p) = path { params["path"] = json!(p); }
                 let resp = send_cmd(client, "browser.discover", params).await?;
                 print_response(&resp);
             }
@@ -1354,47 +1215,21 @@ async fn dispatch(cli: &Cli, client: &mut DaemonClient) -> Result<(), String> {
 
         // ── Workspace ──────────────────────────────────────
         Command::Ws { action } => match action {
-            WsAction::New {
-                host,
-                label,
-                no_headless,
-                attached,
-                pattern,
-            } => {
+            WsAction::New { host, label, no_headless, attached, pattern } => {
                 let mut params = json!({});
-                if let Some(h) = host {
-                    params["host"] = json!(h);
-                }
-                if let Some(l) = label {
-                    params["label"] = json!(l);
-                }
-                if *no_headless {
-                    params["headless"] = json!(false);
-                }
-                if *attached {
-                    params["attached"] = json!(true);
-                }
-                if let Some(p) = pattern {
-                    params["pattern"] = json!(p);
-                }
+                if let Some(h) = host { params["host"] = json!(h); }
+                if let Some(l) = label { params["label"] = json!(l); }
+                if *no_headless { params["headless"] = json!(false); }
+                if *attached { params["attached"] = json!(true); }
+                if let Some(p) = pattern { params["pattern"] = json!(p); }
                 let resp = send_cmd(client, "ws.new", params).await?;
                 print_response(&resp);
             }
-            WsAction::Attach {
-                pattern,
-                host,
-                label,
-            } => {
+            WsAction::Attach { pattern, host, label } => {
                 let mut params = json!({});
-                if let Some(p) = pattern {
-                    params["pattern"] = json!(p);
-                }
-                if let Some(h) = host {
-                    params["host"] = json!(h);
-                }
-                if let Some(l) = label {
-                    params["label"] = json!(l);
-                }
+                if let Some(p) = pattern { params["pattern"] = json!(p); }
+                if let Some(h) = host { params["host"] = json!(h); }
+                if let Some(l) = label { params["label"] = json!(l); }
                 let resp = send_cmd(client, "ws.attach", params).await?;
                 print_response(&resp);
             }
@@ -1430,19 +1265,12 @@ async fn dispatch(cli: &Cli, client: &mut DaemonClient) -> Result<(), String> {
             match action {
                 TabAction::New { url } => {
                     let mut params = json!({"wid": wid});
-                    if let Some(u) = url {
-                        params["url"] = json!(u);
-                    }
+                    if let Some(u) = url { params["url"] = json!(u); }
                     let resp = send_cmd(client, "tab.new", params).await?;
                     print_response(&resp);
                 }
                 TabAction::Attach { pattern } => {
-                    let resp = send_cmd(
-                        client,
-                        "tab.attach",
-                        json!({"wid": wid, "pattern": pattern}),
-                    )
-                    .await?;
+                    let resp = send_cmd(client, "tab.attach", json!({"wid": wid, "pattern": pattern})).await?;
                     print_response(&resp);
                 }
                 TabAction::List => {
@@ -1450,57 +1278,33 @@ async fn dispatch(cli: &Cli, client: &mut DaemonClient) -> Result<(), String> {
                     print_response(&resp);
                 }
                 TabAction::Switch { tid } => {
-                    let resp =
-                        send_cmd(client, "tab.switch", json!({"wid": wid, "tid": tid})).await?;
+                    let resp = send_cmd(client, "tab.switch", json!({"wid": wid, "tid": tid})).await?;
                     print_response(&resp);
                 }
                 TabAction::Close { tid } => {
-                    let resp =
-                        send_cmd(client, "tab.close", json!({"wid": wid, "tid": tid})).await?;
+                    let resp = send_cmd(client, "tab.close", json!({"wid": wid, "tid": tid})).await?;
                     print_response(&resp);
                 }
             }
-        }
+        },
 
         // ── Interaction (top-level) ───────────────────────
-        Command::Click {
-            index,
-            element_ref,
-            x,
-            y,
-        } => {
+        Command::Click { index, element_ref, x, y } => {
             let wid = resolve_workspace(client).await?;
             let mut params = json!({"wid": wid});
-            if let Some(r) = element_ref {
-                params["ref"] = json!(r);
-            } else if let Some(i) = index {
-                params["index"] = json!(i);
-            }
-            if let Some(cx) = x {
-                params["x"] = json!(cx);
-            }
-            if let Some(cy) = y {
-                params["y"] = json!(cy);
-            }
+            if let Some(r) = element_ref { params["ref"] = json!(r); }
+            else if let Some(i) = index { params["index"] = json!(i); }
+            if let Some(cx) = x { params["x"] = json!(cx); }
+            if let Some(cy) = y { params["y"] = json!(cy); }
             let resp = send_cmd(client, "act.click", params).await?;
             print_response(&resp);
         }
 
-        Command::Type {
-            index,
-            element_ref,
-            text,
-            clear,
-            autocomplete,
-        } => {
+        Command::Type { index, element_ref, text, clear, autocomplete } => {
             let wid = resolve_workspace(client).await?;
-            let mut params =
-                json!({"wid": wid, "text": text, "clear": clear, "autocomplete": autocomplete});
-            if let Some(r) = element_ref {
-                params["ref"] = json!(r);
-            } else if let Some(i) = index {
-                params["index"] = json!(i);
-            }
+            let mut params = json!({"wid": wid, "text": text, "clear": clear, "autocomplete": autocomplete});
+            if let Some(r) = element_ref { params["ref"] = json!(r); }
+            else if let Some(i) = index { params["index"] = json!(i); }
             let resp = send_cmd(client, "act.type", params).await?;
             print_response(&resp);
         }
@@ -1512,15 +1316,9 @@ async fn dispatch(cli: &Cli, client: &mut DaemonClient) -> Result<(), String> {
                 let field = parse_fill_set_target(s)?;
                 let mut entry = json!({"value": field.value});
                 match field.target {
-                    browserkit::page::element_ref::ElementTarget::Ref(r) => {
-                        entry["ref"] = json!(r);
-                    }
-                    browserkit::page::element_ref::ElementTarget::Index(i) => {
-                        entry["index"] = json!(i);
-                    }
-                    browserkit::page::element_ref::ElementTarget::Selector(s) => {
-                        entry["selector"] = json!(s);
-                    }
+                    browserkit::page::element_ref::ElementTarget::Ref(r) => { entry["ref"] = json!(r); }
+                    browserkit::page::element_ref::ElementTarget::Index(i) => { entry["index"] = json!(i); }
+                    browserkit::page::element_ref::ElementTarget::Selector(s) => { entry["selector"] = json!(s); }
                 }
                 fields.push(entry);
             }
@@ -1529,52 +1327,25 @@ async fn dispatch(cli: &Cli, client: &mut DaemonClient) -> Result<(), String> {
             print_response(&resp);
         }
 
-        Command::Drag {
-            from_ref,
-            from_index,
-            from_selector,
-            to_ref,
-            to_index,
-            to_selector,
-        } => {
+        Command::Drag { from_ref, from_index, from_selector, to_ref, to_index, to_selector } => {
             let wid = resolve_workspace(client).await?;
             let mut params = json!({"wid": wid});
-            if let Some(r) = from_ref {
-                params["from_ref"] = json!(r);
-            } else if let Some(i) = from_index {
-                params["from_index"] = json!(i);
-            }
-            if let Some(s) = from_selector {
-                params["from_selector"] = json!(s);
-            }
-            if let Some(r) = to_ref {
-                params["to_ref"] = json!(r);
-            } else if let Some(i) = to_index {
-                params["to_index"] = json!(i);
-            }
-            if let Some(s) = to_selector {
-                params["to_selector"] = json!(s);
-            }
+            if let Some(r) = from_ref { params["from_ref"] = json!(r); }
+            else if let Some(i) = from_index { params["from_index"] = json!(i); }
+            if let Some(s) = from_selector { params["from_selector"] = json!(s); }
+            if let Some(r) = to_ref { params["to_ref"] = json!(r); }
+            else if let Some(i) = to_index { params["to_index"] = json!(i); }
+            if let Some(s) = to_selector { params["to_selector"] = json!(s); }
             let resp = send_cmd(client, "act.drag", params).await?;
             print_response(&resp);
         }
 
-        Command::Upload {
-            index,
-            element_ref,
-            selector,
-            files,
-        } => {
+        Command::Upload { index, element_ref, selector, files } => {
             let wid = resolve_workspace(client).await?;
             let mut params = json!({"wid": wid, "files": files});
-            if let Some(r) = element_ref {
-                params["ref"] = json!(r);
-            } else if let Some(i) = index {
-                params["index"] = json!(i);
-            }
-            if let Some(s) = selector {
-                params["selector"] = json!(s);
-            }
+            if let Some(r) = element_ref { params["ref"] = json!(r); }
+            else if let Some(i) = index { params["index"] = json!(i); }
+            if let Some(s) = selector { params["selector"] = json!(s); }
             let resp = send_cmd(client, "act.upload", params).await?;
             print_response(&resp);
         }
@@ -1586,44 +1357,24 @@ async fn dispatch(cli: &Cli, client: &mut DaemonClient) -> Result<(), String> {
         }
 
         // ── Page State (top-level, v1 legacy) ────────────────────────
-        Command::Find {
-            selector,
-            attributes,
-            max,
-            include_text,
-        } => {
+        Command::Find { selector, attributes, max, include_text } => {
             let wid = resolve_workspace(client).await?;
-            let mut params =
-                json!({"wid": wid, "selector": selector, "include_text": include_text});
+            let mut params = json!({"wid": wid, "selector": selector, "include_text": include_text});
             if let Some(attrs) = attributes {
                 let attr_list: Vec<&str> = attrs.split(',').map(|s| s.trim()).collect();
                 params["attributes"] = json!(attr_list);
             }
-            if let Some(m) = max {
-                params["max"] = json!(m);
-            }
+            if let Some(m) = max { params["max"] = json!(m); }
             let resp = send_cmd(client, "page.find_elements", params).await?;
             print_response(&resp);
         }
 
-        Command::Search {
-            text,
-            regex,
-            scope,
-            context,
-            max,
-        } => {
+        Command::Search { text, regex, scope, context, max } => {
             let wid = resolve_workspace(client).await?;
             let mut params = json!({"wid": wid, "text": text, "regex": regex});
-            if let Some(s) = scope {
-                params["scope"] = json!(s);
-            }
-            if let Some(c) = context {
-                params["context"] = json!(c);
-            }
-            if let Some(m) = max {
-                params["max"] = json!(m);
-            }
+            if let Some(s) = scope { params["scope"] = json!(s); }
+            if let Some(c) = context { params["context"] = json!(c); }
+            if let Some(m) = max { params["max"] = json!(m); }
             let resp = send_cmd(client, "page.search", params).await?;
             print_response(&resp);
         }
@@ -1631,9 +1382,7 @@ async fn dispatch(cli: &Cli, client: &mut DaemonClient) -> Result<(), String> {
         Command::Html { selector } => {
             let wid = resolve_workspace(client).await?;
             let mut params = json!({"wid": wid});
-            if let Some(s) = selector {
-                params["selector"] = json!(s);
-            }
+            if let Some(s) = selector { params["selector"] = json!(s); }
             let resp = send_cmd(client, "page.html", params).await?;
             print_response(&resp);
         }
@@ -1641,9 +1390,7 @@ async fn dispatch(cli: &Cli, client: &mut DaemonClient) -> Result<(), String> {
         Command::Console { level, limit } => {
             let wid = resolve_workspace(client).await?;
             let mut params = json!({"wid": wid, "level": level});
-            if let Some(n) = limit {
-                params["limit"] = json!(n);
-            }
+            if let Some(n) = limit { params["limit"] = json!(n); }
             let resp = send_cmd(client, "page.console", params).await?;
             print_response(&resp);
         }
@@ -1654,13 +1401,12 @@ async fn dispatch(cli: &Cli, client: &mut DaemonClient) -> Result<(), String> {
             } else {
                 let wid = resolve_workspace(client).await?;
                 let mut params = json!({"wid": wid});
-                if let Some(o) = output {
-                    params["output"] = json!(o);
-                }
+                if let Some(o) = output { params["output"] = json!(o); }
                 let resp = send_cmd(client, "page.pdf", params).await?;
                 handle_binary_response(&resp, output.as_deref(), "page.pdf");
             }
         }
+
 
         Command::Fetch { url } => {
             let resp = send_cmd(client, "ws.new", json!({})).await?;
@@ -1668,9 +1414,7 @@ async fn dispatch(cli: &Cli, client: &mut DaemonClient) -> Result<(), String> {
                 print_response(&resp);
                 return Ok(());
             }
-            let wid = resp
-                .data
-                .as_ref()
+            let wid = resp.data.as_ref()
                 .and_then(|d| d.get("wid"))
                 .and_then(|v| v.as_str())
                 .ok_or("failed to get wid from ws.new response")?
@@ -1681,47 +1425,34 @@ async fn dispatch(cli: &Cli, client: &mut DaemonClient) -> Result<(), String> {
             let _ = send_cmd(client, "ws.close", json!({"wid": wid})).await;
         }
 
+
         // ── Management (Storage) ──────────────────────────
         Command::Storage { action } => {
             let wid = resolve_workspace(client).await?;
             match action {
                 StorageAction::Cookies { action: ca } => match ca {
                     CookieAction::Get => {
-                        let resp =
-                            send_cmd(client, "storage.cookies.get", json!({"wid": wid})).await?;
+                        let resp = send_cmd(client, "storage.cookies.get", json!({"wid": wid})).await?;
                         print_response(&resp);
                     }
                     CookieAction::Set { json: j } => {
                         let cookies: serde_json::Value = serde_json::from_str(j)
                             .map_err(|e| format!("invalid cookie JSON: {}", e))?;
-                        let resp = send_cmd(
-                            client,
-                            "storage.cookies.set",
-                            json!({"wid": wid, "cookies": cookies}),
-                        )
-                        .await?;
+                        let resp = send_cmd(client, "storage.cookies.set", json!({"wid": wid, "cookies": cookies})).await?;
                         print_response(&resp);
                     }
                     CookieAction::Clear => {
-                        let resp =
-                            send_cmd(client, "storage.cookies.clear", json!({"wid": wid})).await?;
+                        let resp = send_cmd(client, "storage.cookies.clear", json!({"wid": wid})).await?;
                         print_response(&resp);
                     }
                 },
                 StorageAction::Local { action: la } => match la {
                     LocalAction::Get { key } => {
-                        let resp =
-                            send_cmd(client, "storage.local.get", json!({"wid": wid, "key": key}))
-                                .await?;
+                        let resp = send_cmd(client, "storage.local.get", json!({"wid": wid, "key": key})).await?;
                         print_response(&resp);
                     }
                     LocalAction::Set { key, value } => {
-                        let resp = send_cmd(
-                            client,
-                            "storage.local.set",
-                            json!({"wid": wid, "key": key, "value": value}),
-                        )
-                        .await?;
+                        let resp = send_cmd(client, "storage.local.set", json!({"wid": wid, "key": key, "value": value})).await?;
                         print_response(&resp);
                     }
                 },
@@ -1734,16 +1465,11 @@ async fn dispatch(cli: &Cli, client: &mut DaemonClient) -> Result<(), String> {
                         .map_err(|e| format!("failed to read storage file: {}", e))?;
                     let state: serde_json::Value = serde_json::from_str(&content)
                         .map_err(|e| format!("invalid storage JSON: {}", e))?;
-                    let resp = send_cmd(
-                        client,
-                        "storage.import",
-                        json!({"wid": wid, "state": state}),
-                    )
-                    .await?;
+                    let resp = send_cmd(client, "storage.import", json!({"wid": wid, "state": state})).await?;
                     print_response(&resp);
                 }
             }
-        }
+        },
 
         // ── Management (Dialog) ───────────────────────────
         Command::Dialog { action } => {
@@ -1755,33 +1481,25 @@ async fn dispatch(cli: &Cli, client: &mut DaemonClient) -> Result<(), String> {
                 }
                 DialogAction::Accept { tid, text } => {
                     let mut params = json!({"wid": wid});
-                    if let Some(t) = tid {
-                        params["tid"] = json!(t);
-                    }
-                    if let Some(txt) = text {
-                        params["text"] = json!(txt);
-                    }
+                    if let Some(t) = tid { params["tid"] = json!(t); }
+                    if let Some(txt) = text { params["text"] = json!(txt); }
                     let resp = send_cmd(client, "dialog.accept", params).await?;
                     print_response(&resp);
                 }
                 DialogAction::Dismiss { tid } => {
                     let mut params = json!({"wid": wid});
-                    if let Some(t) = tid {
-                        params["tid"] = json!(t);
-                    }
+                    if let Some(t) = tid { params["tid"] = json!(t); }
                     let resp = send_cmd(client, "dialog.dismiss", params).await?;
                     print_response(&resp);
                 }
                 DialogAction::Policy { policy } => {
                     let mut params = json!({"wid": wid});
-                    if let Some(p) = policy {
-                        params["policy"] = json!(p);
-                    }
+                    if let Some(p) = policy { params["policy"] = json!(p); }
                     let resp = send_cmd(client, "dialog.policy", params).await?;
                     print_response(&resp);
                 }
             }
-        }
+        },
 
         // ── Management (Debug) ────────────────────────────
         Command::Debug { action } => {
@@ -1793,25 +1511,17 @@ async fn dispatch(cli: &Cli, client: &mut DaemonClient) -> Result<(), String> {
                     run_streaming(client).await;
                 }
                 DebugAction::Har { url } => {
-                    let resp =
-                        send_cmd(client, "network.har", json!({"wid": wid, "url": url})).await?;
+                    let resp = send_cmd(client, "network.har", json!({"wid": wid, "url": url})).await?;
                     print_response(&resp);
                     run_streaming(client).await;
                 }
                 DebugAction::Block { pattern } => {
-                    let resp = send_cmd(
-                        client,
-                        "network.block",
-                        json!({"wid": wid, "pattern": pattern}),
-                    )
-                    .await?;
+                    let resp = send_cmd(client, "network.block", json!({"wid": wid, "pattern": pattern})).await?;
                     print_response(&resp);
                 }
                 DebugAction::Unblock { pattern } => {
                     let mut params = json!({"wid": wid});
-                    if let Some(p) = pattern {
-                        params["pattern"] = json!(p);
-                    }
+                    if let Some(p) = pattern { params["pattern"] = json!(p); }
                     let resp = send_cmd(client, "network.unblock", params).await?;
                     print_response(&resp);
                 }
@@ -1821,25 +1531,18 @@ async fn dispatch(cli: &Cli, client: &mut DaemonClient) -> Result<(), String> {
                             .map_err(|e| format!("invalid CDP params JSON: {}", e))?,
                         None => json!({}),
                     };
-                    let resp = send_cmd(
-                        client,
-                        "cdp.send",
-                        json!({"wid": wid, "method": method, "params": cdp_params}),
-                    )
-                    .await?;
+                    let resp = send_cmd(client, "cdp.send", json!({"wid": wid, "method": method, "params": cdp_params})).await?;
                     print_response(&resp);
                 }
                 DebugAction::Events { filter } => {
                     let mut params = json!({"wid": wid});
-                    if let Some(f) = filter {
-                        params["filter"] = json!(f);
-                    }
+                    if let Some(f) = filter { params["filter"] = json!(f); }
                     let resp = send_cmd(client, "cdp.events", params).await?;
                     print_response(&resp);
                     run_streaming(client).await;
                 }
             }
-        }
+        },
 
         Command::Completions { .. } => unreachable!(),
         Command::Setup => unreachable!(),
@@ -1880,7 +1583,11 @@ async fn run_streaming(client: &mut DaemonClient) {
 }
 
 /// Handle binary (base64) responses: save to file or print info.
-fn handle_binary_response(resp: &Response, output: Option<&str>, _default_name: &str) {
+fn handle_binary_response(
+    resp: &Response,
+    output: Option<&str>,
+    _default_name: &str,
+) {
     if !resp.ok {
         print_response(resp);
         return;
@@ -1895,22 +1602,10 @@ fn handle_binary_response(resp: &Response, output: Option<&str>, _default_name: 
     }
 
     // Save base64 data to file if output specified but wasn't in request
-    if let (Some(path), Some(data)) = (
-        output,
-        resp.data
-            .as_ref()
-            .and_then(|d| d.get("data"))
-            .and_then(|v| v.as_str()),
-    ) {
+    if let (Some(path), Some(data)) = (output, resp.data.as_ref().and_then(|d| d.get("data")).and_then(|v| v.as_str())) {
         match base64_decode_and_save(data, path) {
-            Ok(()) => println!(
-                "{}",
-                serde_json::json!({"ok": true, "data": {"file": path}})
-            ),
-            Err(e) => println!(
-                "{}",
-                serde_json::json!({"ok": false, "error": format!("save failed: {}", e)})
-            ),
+            Ok(()) => println!("{}", serde_json::json!({"ok": true, "data": {"file": path}})),
+            Err(e) => println!("{}", serde_json::json!({"ok": false, "error": format!("save failed: {}", e)})),
         }
     } else {
         print_response(resp);
@@ -1999,9 +1694,7 @@ async fn dispatch_oneshot_pdf(
         print_response(&resp);
         return Ok(());
     }
-    let wid = resp
-        .data
-        .as_ref()
+    let wid = resp.data.as_ref()
         .and_then(|d| d.get("wid"))
         .and_then(|v| v.as_str())
         .ok_or("failed to get wid")?
@@ -2010,9 +1703,7 @@ async fn dispatch_oneshot_pdf(
     let _ = send_cmd(client, "nav.goto", json!({"wid": wid, "url": url})).await?;
 
     let mut params = json!({"wid": wid});
-    if let Some(o) = output {
-        params["output"] = json!(o);
-    }
+    if let Some(o) = output { params["output"] = json!(o); }
     let resp = send_cmd(client, "page.pdf", params).await?;
     handle_binary_response(&resp, output.as_deref(), "page.pdf");
 
@@ -2057,41 +1748,26 @@ mod tests {
         let cli = try_parse(&["bk", "snapshot", "--full"]).unwrap();
         if let Command::Snapshot { full, .. } = cli.command {
             assert!(full);
-        } else {
-            panic!("wrong variant");
-        }
+        } else { panic!("wrong variant"); }
     }
 
     #[test]
     fn cli_parses_act_click() {
         let cli = try_parse(&["bk", "act", "click", "--ref", "42"]).unwrap();
-        if let Command::Act {
-            kind, element_ref, ..
-        } = &cli.command
-        {
+        if let Command::Act { kind, element_ref, .. } = &cli.command {
             assert_eq!(kind.as_deref(), Some("click"));
             assert_eq!(*element_ref, Some(42));
-        } else {
-            panic!("wrong variant");
-        }
+        } else { panic!("wrong variant"); }
     }
 
     #[test]
     fn cli_parses_act_type() {
         let cli = try_parse(&["bk", "act", "type", "--ref", "55", "--text", "hello"]).unwrap();
-        if let Command::Act {
-            kind,
-            element_ref,
-            text,
-            ..
-        } = &cli.command
-        {
+        if let Command::Act { kind, element_ref, text, .. } = &cli.command {
             assert_eq!(kind.as_deref(), Some("type"));
             assert_eq!(*element_ref, Some(55));
             assert_eq!(text.as_deref(), Some("hello"));
-        } else {
-            panic!("wrong variant");
-        }
+        } else { panic!("wrong variant"); }
     }
 
     #[test]
@@ -2100,23 +1776,14 @@ mod tests {
         if let Command::Act { kind, keys, .. } = &cli.command {
             assert_eq!(kind.as_deref(), Some("press"));
             assert_eq!(keys, &vec!["Enter".to_string()]);
-        } else {
-            panic!("wrong variant");
-        }
+        } else { panic!("wrong variant"); }
     }
 
     #[test]
     fn cli_parses_act_scroll_hover_and_focus() {
         let scroll = try_parse(&[
-            "bk",
-            "act",
-            "scroll",
-            "--direction",
-            "down",
-            "--amount",
-            "250",
-        ])
-        .unwrap();
+            "bk", "act", "scroll", "--direction", "down", "--amount", "250",
+        ]).unwrap();
         assert!(matches!(
             scroll.command,
             Command::Act { ref kind, ref direction, amount: Some(250.0), .. }
@@ -2140,8 +1807,7 @@ mod tests {
 
     #[test]
     fn cli_parses_act_select_and_options() {
-        let select =
-            try_parse(&["bk", "act", "select", "--ref", "42", "--value", "green"]).unwrap();
+        let select = try_parse(&["bk", "act", "select", "--ref", "42", "--value", "green"]).unwrap();
         assert!(matches!(
             select.command,
             Command::Act { ref kind, ref value, .. }
@@ -2175,9 +1841,7 @@ mod tests {
         let cli = try_parse(&["bk", "navigate", "https://example.com"]).unwrap();
         if let Command::Navigate { url, .. } = &cli.command {
             assert_eq!(url.as_deref(), Some("https://example.com"));
-        } else {
-            panic!("wrong variant");
-        }
+        } else { panic!("wrong variant"); }
     }
 
     #[test]
@@ -2185,9 +1849,7 @@ mod tests {
         let cli = try_parse(&["bk", "navigate", "--back"]).unwrap();
         if let Command::Navigate { back, .. } = &cli.command {
             assert!(*back);
-        } else {
-            panic!("wrong variant");
-        }
+        } else { panic!("wrong variant"); }
     }
 
     #[test]
@@ -2195,9 +1857,7 @@ mod tests {
         let cli = try_parse(&["bk", "open", "https://x.com"]).unwrap();
         if let Command::OpenV2 { url } = &cli.command {
             assert_eq!(url, "https://x.com");
-        } else {
-            panic!("wrong variant");
-        }
+        } else { panic!("wrong variant"); }
     }
 
     #[test]
@@ -2217,9 +1877,7 @@ mod tests {
         let cli = try_parse(&["bk", "evaluate", "document.title"]).unwrap();
         if let Command::Evaluate { expression, .. } = &cli.command {
             assert_eq!(expression.as_deref(), Some("document.title"));
-        } else {
-            panic!("wrong variant");
-        }
+        } else { panic!("wrong variant"); }
     }
 
     #[test]
@@ -2227,23 +1885,16 @@ mod tests {
         let cli = try_parse(&["bk", "screenshot", "--full-page"]).unwrap();
         if let Command::ScreenshotV2 { full_page, .. } = &cli.command {
             assert!(*full_page);
-        } else {
-            panic!("wrong variant");
-        }
+        } else { panic!("wrong variant"); }
     }
 
     #[test]
     fn cli_parses_screenshot_selector_and_labels() {
         let cli = try_parse(&["bk", "screenshot", "--selector", "#app", "--labels"]).unwrap();
-        if let Command::ScreenshotV2 {
-            selector, labels, ..
-        } = &cli.command
-        {
+        if let Command::ScreenshotV2 { selector, labels, .. } = &cli.command {
             assert_eq!(selector.as_deref(), Some("#app"));
             assert!(*labels);
-        } else {
-            panic!("wrong variant");
-        }
+        } else { panic!("wrong variant"); }
     }
 
     #[test]
@@ -2257,9 +1908,7 @@ mod tests {
         let cli = try_parse(&["bk", "session", "list"]).unwrap();
         if let Command::Session { action } = &cli.command {
             assert!(matches!(action, SessionAction::List));
-        } else {
-            panic!("wrong variant");
-        }
+        } else { panic!("wrong variant"); }
     }
 
     #[test]
@@ -2401,10 +2050,7 @@ mod tests {
     #[test]
     fn click_without_target_is_rejected() {
         let result = try_parse(&["bk", "click"]);
-        assert!(
-            result.is_err(),
-            "click without any target should be rejected"
-        );
+        assert!(result.is_err(), "click without any target should be rejected");
     }
 
     #[test]

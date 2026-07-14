@@ -7,12 +7,12 @@ use futures::StreamExt;
 use serde_json::json;
 use tracing::info;
 
-use super::common::{handler, resolve_context, touch_workspace};
 use crate::daemon::dialog::DialogPolicy;
 use crate::daemon::protocol::{Request, Response};
 use crate::daemon::state::DaemonState;
 use crate::error::BkError;
 use crate::page::element_ref::{parse_element_target, ElementTarget};
+use super::common::{handler, resolve_context, touch_workspace};
 
 handler!(handle_click, do_click(req, state));
 
@@ -24,8 +24,7 @@ async fn do_click(req: &Request, state: &Arc<DaemonState>) -> Result<Response, B
     let y = req.params.get("y").and_then(|v| v.as_f64());
 
     // Snapshot current tab list before click (for new_tab detection)
-    let tabs_before: std::collections::HashSet<String> = state
-        .workspaces
+    let tabs_before: std::collections::HashSet<String> = state.workspaces
         .get(&ctx.wid)
         .map(|ws| ws.tabs.keys().cloned().collect())
         .unwrap_or_default();
@@ -38,22 +37,16 @@ async fn do_click(req: &Request, state: &Arc<DaemonState>) -> Result<Response, B
             let t_clone = t.clone();
             Box::pin(async move {
                 crate::page::interaction::click_element_by_target(&cdp, &sid, &t_clone).await
-            })
-                as std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), BkError>> + Send>>
+            }) as std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), BkError>> + Send>>
         }
         (None, Some(cx), Some(cy)) => {
             let cdp = ctx.cdp.clone();
             let sid = ctx.cdp_session_id.clone();
             Box::pin(async move {
                 crate::page::interaction::click_coordinates(&cdp, &sid, cx, cy).await
-            })
-                as std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), BkError>> + Send>>
+            }) as std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), BkError>> + Send>>
         }
-        _ => {
-            return Err(BkError::InvalidRequest(
-                "click requires 'ref', 'index', or both 'x' and 'y' params".into(),
-            ))
-        }
+        _ => return Err(BkError::InvalidRequest("click requires 'ref', 'index', or both 'x' and 'y' params".into())),
     };
 
     // Check dialog policy to decide whether to race against dialog events
@@ -113,10 +106,7 @@ async fn do_click(req: &Request, state: &Arc<DaemonState>) -> Result<Response, B
             }
             Ok(Response::ok(resp_data))
         }
-        ClickOutcome::BlockedByDialog {
-            dialog_type,
-            message,
-        } => {
+        ClickOutcome::BlockedByDialog { dialog_type, message } => {
             info!(wid = %ctx.wid, tid = %ctx.tid, dialog_type = %dialog_type, "click blocked by dialog");
             Ok(Response::ok(json!({
                 "wid": ctx.wid,
@@ -155,9 +145,7 @@ async fn detect_new_tab(
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
     let ws = state.workspaces.get(wid)?;
-    let new_tabs: Vec<_> = ws
-        .tabs
-        .values()
+    let new_tabs: Vec<_> = ws.tabs.values()
         .filter(|t| !tabs_before.contains(&t.tid))
         .collect();
 
@@ -177,32 +165,14 @@ async fn do_type(req: &Request, state: &Arc<DaemonState>) -> Result<Response, Bk
 
     let target = parse_element_target(&req.params)
         .ok_or_else(|| BkError::InvalidRequest("type requires 'ref' or 'index' param".into()))?;
-    let text = req
-        .params
-        .get("text")
-        .and_then(|v| v.as_str())
+    let text = req.params.get("text").and_then(|v| v.as_str())
         .ok_or_else(|| BkError::InvalidRequest("type requires 'text' param".into()))?;
-    let clear = req
-        .params
-        .get("clear")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
+    let clear = req.params.get("clear").and_then(|v| v.as_bool()).unwrap_or(false);
 
-    crate::page::interaction::type_text_by_target(
-        &ctx.cdp,
-        &ctx.cdp_session_id,
-        &target,
-        text,
-        clear,
-    )
-    .await?;
+    crate::page::interaction::type_text_by_target(&ctx.cdp, &ctx.cdp_session_id, &target, text, clear).await?;
 
     // Only check autocomplete/combobox when explicitly requested (opt-in to avoid extra CDP round-trip)
-    let autocomplete_flag = req
-        .params
-        .get("autocomplete")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
+    let autocomplete_flag = req.params.get("autocomplete").and_then(|v| v.as_bool()).unwrap_or(false);
     let autocomplete_wait = if autocomplete_flag {
         check_autocomplete(&ctx.cdp, &ctx.cdp_session_id, &target).await
     } else {
@@ -211,8 +181,7 @@ async fn do_type(req: &Request, state: &Arc<DaemonState>) -> Result<Response, Bk
 
     touch_workspace(state, &ctx.wid);
     info!(wid = %ctx.wid, tid = %ctx.tid, clear = clear, "typed text");
-    let mut resp_data =
-        json!({ "wid": ctx.wid, "tid": ctx.tid, "status": "typed", "clear": clear });
+    let mut resp_data = json!({ "wid": ctx.wid, "tid": ctx.tid, "status": "typed", "clear": clear });
     if autocomplete_wait {
         resp_data["autocomplete_wait"] = json!(true);
     }
@@ -248,9 +217,7 @@ async fn check_autocomplete(
         Err(_) => return false,
     };
 
-    let is_autocomplete = resp
-        .result
-        .value
+    let is_autocomplete = resp.result.value
         .as_ref()
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
@@ -267,9 +234,7 @@ handler!(handle_act_fill, do_act_fill(req, state));
 async fn do_act_fill(req: &Request, state: &Arc<DaemonState>) -> Result<Response, BkError> {
     let ctx = resolve_context(req, state, "act.fill")?;
 
-    let fields_arr = req
-        .params
-        .get("fields")
+    let fields_arr = req.params.get("fields")
         .and_then(|v| v.as_array())
         .ok_or_else(|| BkError::InvalidRequest("act.fill requires 'fields' array param".into()))?;
 
@@ -280,13 +245,10 @@ async fn do_act_fill(req: &Request, state: &Arc<DaemonState>) -> Result<Response
         } else if let Some(i) = item.get("index").and_then(|v| v.as_u64()) {
             ElementTarget::Index(i as usize)
         } else {
-            return Err(BkError::InvalidRequest(
-                "each fill field requires 'ref' (number) or 'index' (number)".into(),
-            ));
+            return Err(BkError::InvalidRequest("each fill field requires 'ref' (number) or 'index' (number)".into()));
         };
-        let value = item.get("value").and_then(|v| v.as_str()).ok_or_else(|| {
-            BkError::InvalidRequest("each fill field requires 'value' (string)".into())
-        })?;
+        let value = item.get("value").and_then(|v| v.as_str())
+            .ok_or_else(|| BkError::InvalidRequest("each fill field requires 'value' (string)".into()))?;
         fields.push(crate::page::interaction::FillFieldTarget {
             target,
             value: value.to_string(),
@@ -294,14 +256,10 @@ async fn do_act_fill(req: &Request, state: &Arc<DaemonState>) -> Result<Response
     }
 
     if fields.is_empty() {
-        return Err(BkError::InvalidRequest(
-            "act.fill requires at least one field".into(),
-        ));
+        return Err(BkError::InvalidRequest("act.fill requires at least one field".into()));
     }
 
-    let results =
-        crate::page::interaction::fill_fields_by_target(&ctx.cdp, &ctx.cdp_session_id, &fields)
-            .await?;
+    let results = crate::page::interaction::fill_fields_by_target(&ctx.cdp, &ctx.cdp_session_id, &fields).await?;
     touch_workspace(state, &ctx.wid);
 
     let has_errors = results.iter().any(|r| r.status == "error");
@@ -322,55 +280,29 @@ async fn do_act_upload(req: &Request, state: &Arc<DaemonState>) -> Result<Respon
     let target = parse_element_target(&req.params);
     let selector = req.params.get("selector").and_then(|v| v.as_str());
 
-    let files: Vec<String> = req
-        .params
-        .get("files")
+    let files: Vec<String> = req.params.get("files")
         .and_then(|v| v.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|v| v.as_str().map(String::from))
-                .collect()
-        })
+        .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
         .unwrap_or_default();
 
     if files.is_empty() {
-        return Err(BkError::InvalidRequest(
-            "act.upload requires at least one file path".into(),
-        ));
+        return Err(BkError::InvalidRequest("act.upload requires at least one file path".into()));
     }
 
     match (target, selector) {
         (Some(t), _) => {
-            crate::page::interaction::upload_files_by_target(
-                &ctx.cdp,
-                &ctx.cdp_session_id,
-                &t,
-                &files,
-            )
-            .await?;
+            crate::page::interaction::upload_files_by_target(&ctx.cdp, &ctx.cdp_session_id, &t, &files).await?;
             info!(wid = %ctx.wid, tid = %ctx.tid, count = files.len(), "upload by target");
         }
         (None, Some(sel)) => {
-            crate::page::interaction::upload_files_by_selector(
-                &ctx.cdp,
-                &ctx.cdp_session_id,
-                sel,
-                &files,
-            )
-            .await?;
+            crate::page::interaction::upload_files_by_selector(&ctx.cdp, &ctx.cdp_session_id, sel, &files).await?;
             info!(wid = %ctx.wid, tid = %ctx.tid, selector = %sel, count = files.len(), "upload by selector");
         }
-        _ => {
-            return Err(BkError::InvalidRequest(
-                "act.upload requires 'ref', 'index', or 'selector' param".into(),
-            ))
-        }
+        _ => return Err(BkError::InvalidRequest("act.upload requires 'ref', 'index', or 'selector' param".into())),
     }
 
     touch_workspace(state, &ctx.wid);
-    Ok(Response::ok(
-        json!({ "wid": ctx.wid, "tid": ctx.tid, "status": "uploaded", "files": files }),
-    ))
+    Ok(Response::ok(json!({ "wid": ctx.wid, "tid": ctx.tid, "status": "uploaded", "files": files })))
 }
 
 handler!(handle_act_drag, do_act_drag(req, state));
@@ -380,20 +312,12 @@ async fn do_act_drag(req: &Request, state: &Arc<DaemonState>) -> Result<Response
 
     // Parse source target
     let from_ref = req.params.get("from_ref").and_then(|v| v.as_i64());
-    let from_index = req
-        .params
-        .get("from_index")
-        .and_then(|v| v.as_u64())
-        .map(|v| v as usize);
+    let from_index = req.params.get("from_index").and_then(|v| v.as_u64()).map(|v| v as usize);
     let from_selector = req.params.get("from_selector").and_then(|v| v.as_str());
 
     // Parse destination target
     let to_ref = req.params.get("to_ref").and_then(|v| v.as_i64());
-    let to_index = req
-        .params
-        .get("to_index")
-        .and_then(|v| v.as_u64())
-        .map(|v| v as usize);
+    let to_index = req.params.get("to_index").and_then(|v| v.as_u64()).map(|v| v as usize);
     let to_selector = req.params.get("to_selector").and_then(|v| v.as_str());
 
     let from_target = if let Some(r) = from_ref {
@@ -403,9 +327,7 @@ async fn do_act_drag(req: &Request, state: &Arc<DaemonState>) -> Result<Response
     } else if let Some(sel) = from_selector {
         ElementTarget::Selector(sel.to_string())
     } else {
-        return Err(BkError::InvalidRequest(
-            "act.drag requires from_ref, from_index, or from_selector".into(),
-        ));
+        return Err(BkError::InvalidRequest("act.drag requires from_ref, from_index, or from_selector".into()));
     };
 
     let to_target = if let Some(r) = to_ref {
@@ -415,23 +337,13 @@ async fn do_act_drag(req: &Request, state: &Arc<DaemonState>) -> Result<Response
     } else if let Some(sel) = to_selector {
         ElementTarget::Selector(sel.to_string())
     } else {
-        return Err(BkError::InvalidRequest(
-            "act.drag requires to_ref, to_index, or to_selector".into(),
-        ));
+        return Err(BkError::InvalidRequest("act.drag requires to_ref, to_index, or to_selector".into()));
     };
 
-    crate::page::interaction::drag_by_target(
-        &ctx.cdp,
-        &ctx.cdp_session_id,
-        &from_target,
-        &to_target,
-    )
-    .await?;
+    crate::page::interaction::drag_by_target(&ctx.cdp, &ctx.cdp_session_id, &from_target, &to_target).await?;
     touch_workspace(state, &ctx.wid);
     info!(wid = %ctx.wid, tid = %ctx.tid, "drag completed");
-    Ok(Response::ok(
-        json!({ "wid": ctx.wid, "tid": ctx.tid, "status": "dragged" }),
-    ))
+    Ok(Response::ok(json!({ "wid": ctx.wid, "tid": ctx.tid, "status": "dragged" })))
 }
 
 handler!(handle_act_keys, do_act_keys(req, state));
@@ -439,21 +351,13 @@ handler!(handle_act_keys, do_act_keys(req, state));
 async fn do_act_keys(req: &Request, state: &Arc<DaemonState>) -> Result<Response, BkError> {
     let ctx = resolve_context(req, state, "act.keys")?;
 
-    let keys: Vec<String> = req
-        .params
-        .get("keys")
+    let keys: Vec<String> = req.params.get("keys")
         .and_then(|v| v.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|v| v.as_str().map(String::from))
-                .collect()
-        })
+        .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
         .unwrap_or_default();
 
     if keys.is_empty() {
-        return Err(BkError::InvalidRequest(
-            "act.keys requires at least one key".into(),
-        ));
+        return Err(BkError::InvalidRequest("act.keys requires at least one key".into()));
     }
 
     let session = ctx.cdp.session(&ctx.cdp_session_id);
@@ -464,9 +368,7 @@ async fn do_act_keys(req: &Request, state: &Arc<DaemonState>) -> Result<Response
 
     touch_workspace(state, &ctx.wid);
     info!(wid = %ctx.wid, tid = %ctx.tid, count = keys.len(), "keys dispatched");
-    Ok(Response::ok(
-        json!({ "wid": ctx.wid, "tid": ctx.tid, "status": "keys_sent", "count": keys.len() }),
-    ))
+    Ok(Response::ok(json!({ "wid": ctx.wid, "tid": ctx.tid, "status": "keys_sent", "count": keys.len() })))
 }
 
 /// Parse a key string like "Control+Shift+Enter" and dispatch keyDown/keyUp events.
@@ -498,48 +400,17 @@ pub async fn dispatch_key_combo(
         send_key_event(session, "rawKeyDown", "Alt", "AltLeft", 18, None, modifiers).await?;
     }
     if modifiers & 2 != 0 {
-        send_key_event(
-            session,
-            "rawKeyDown",
-            "Control",
-            "ControlLeft",
-            17,
-            None,
-            modifiers,
-        )
-        .await?;
+        send_key_event(session, "rawKeyDown", "Control", "ControlLeft", 17, None, modifiers).await?;
     }
     if modifiers & 4 != 0 {
-        send_key_event(
-            session,
-            "rawKeyDown",
-            "Meta",
-            "MetaLeft",
-            91,
-            None,
-            modifiers,
-        )
-        .await?;
+        send_key_event(session, "rawKeyDown", "Meta", "MetaLeft", 91, None, modifiers).await?;
     }
     if modifiers & 8 != 0 {
-        send_key_event(
-            session,
-            "rawKeyDown",
-            "Shift",
-            "ShiftLeft",
-            16,
-            None,
-            modifiers,
-        )
-        .await?;
+        send_key_event(session, "rawKeyDown", "Shift", "ShiftLeft", 16, None, modifiers).await?;
     }
 
     // Press the main key
-    let event_type = if key_def.text.is_some() {
-        "keyDown"
-    } else {
-        "rawKeyDown"
-    };
+    let event_type = if key_def.text.is_some() { "keyDown" } else { "rawKeyDown" };
     send_key_event(
         session,
         event_type,
@@ -548,20 +419,10 @@ pub async fn dispatch_key_combo(
         key_def.key_code,
         key_def.text,
         modifiers,
-    )
-    .await?;
+    ).await?;
 
     // Release the main key
-    send_key_event(
-        session,
-        "keyUp",
-        key_def.key,
-        key_def.code,
-        key_def.key_code,
-        None,
-        modifiers,
-    )
-    .await?;
+    send_key_event(session, "keyUp", key_def.key, key_def.code, key_def.key_code, None, modifiers).await?;
 
     // Release modifiers in reverse order
     if modifiers & 8 != 0 {
@@ -617,168 +478,33 @@ struct KeyDef {
 
 fn resolve_key(name: &str) -> KeyDef {
     match name {
-        "Enter" | "Return" => KeyDef {
-            key: "Enter",
-            code: "Enter",
-            key_code: 13,
-            text: Some("\r"),
-        },
-        "Tab" => KeyDef {
-            key: "Tab",
-            code: "Tab",
-            key_code: 9,
-            text: Some("\t"),
-        },
-        "Escape" | "Esc" => KeyDef {
-            key: "Escape",
-            code: "Escape",
-            key_code: 27,
-            text: None,
-        },
-        "Backspace" => KeyDef {
-            key: "Backspace",
-            code: "Backspace",
-            key_code: 8,
-            text: None,
-        },
-        "Delete" | "Del" => KeyDef {
-            key: "Delete",
-            code: "Delete",
-            key_code: 46,
-            text: None,
-        },
-        "ArrowUp" | "Up" => KeyDef {
-            key: "ArrowUp",
-            code: "ArrowUp",
-            key_code: 38,
-            text: None,
-        },
-        "ArrowDown" | "Down" => KeyDef {
-            key: "ArrowDown",
-            code: "ArrowDown",
-            key_code: 40,
-            text: None,
-        },
-        "ArrowLeft" | "Left" => KeyDef {
-            key: "ArrowLeft",
-            code: "ArrowLeft",
-            key_code: 37,
-            text: None,
-        },
-        "ArrowRight" | "Right" => KeyDef {
-            key: "ArrowRight",
-            code: "ArrowRight",
-            key_code: 39,
-            text: None,
-        },
-        "Home" => KeyDef {
-            key: "Home",
-            code: "Home",
-            key_code: 36,
-            text: None,
-        },
-        "End" => KeyDef {
-            key: "End",
-            code: "End",
-            key_code: 35,
-            text: None,
-        },
-        "PageUp" => KeyDef {
-            key: "PageUp",
-            code: "PageUp",
-            key_code: 33,
-            text: None,
-        },
-        "PageDown" => KeyDef {
-            key: "PageDown",
-            code: "PageDown",
-            key_code: 34,
-            text: None,
-        },
-        "Space" => KeyDef {
-            key: " ",
-            code: "Space",
-            key_code: 32,
-            text: Some(" "),
-        },
-        "Insert" => KeyDef {
-            key: "Insert",
-            code: "Insert",
-            key_code: 45,
-            text: None,
-        },
-        "F1" => KeyDef {
-            key: "F1",
-            code: "F1",
-            key_code: 112,
-            text: None,
-        },
-        "F2" => KeyDef {
-            key: "F2",
-            code: "F2",
-            key_code: 113,
-            text: None,
-        },
-        "F3" => KeyDef {
-            key: "F3",
-            code: "F3",
-            key_code: 114,
-            text: None,
-        },
-        "F4" => KeyDef {
-            key: "F4",
-            code: "F4",
-            key_code: 115,
-            text: None,
-        },
-        "F5" => KeyDef {
-            key: "F5",
-            code: "F5",
-            key_code: 116,
-            text: None,
-        },
-        "F6" => KeyDef {
-            key: "F6",
-            code: "F6",
-            key_code: 117,
-            text: None,
-        },
-        "F7" => KeyDef {
-            key: "F7",
-            code: "F7",
-            key_code: 118,
-            text: None,
-        },
-        "F8" => KeyDef {
-            key: "F8",
-            code: "F8",
-            key_code: 119,
-            text: None,
-        },
-        "F9" => KeyDef {
-            key: "F9",
-            code: "F9",
-            key_code: 120,
-            text: None,
-        },
-        "F10" => KeyDef {
-            key: "F10",
-            code: "F10",
-            key_code: 121,
-            text: None,
-        },
-        "F11" => KeyDef {
-            key: "F11",
-            code: "F11",
-            key_code: 122,
-            text: None,
-        },
-        "F12" => KeyDef {
-            key: "F12",
-            code: "F12",
-            key_code: 123,
-            text: None,
-        },
+        "Enter" | "Return" => KeyDef { key: "Enter", code: "Enter", key_code: 13, text: Some("\r") },
+        "Tab" => KeyDef { key: "Tab", code: "Tab", key_code: 9, text: Some("\t") },
+        "Escape" | "Esc" => KeyDef { key: "Escape", code: "Escape", key_code: 27, text: None },
+        "Backspace" => KeyDef { key: "Backspace", code: "Backspace", key_code: 8, text: None },
+        "Delete" | "Del" => KeyDef { key: "Delete", code: "Delete", key_code: 46, text: None },
+        "ArrowUp" | "Up" => KeyDef { key: "ArrowUp", code: "ArrowUp", key_code: 38, text: None },
+        "ArrowDown" | "Down" => KeyDef { key: "ArrowDown", code: "ArrowDown", key_code: 40, text: None },
+        "ArrowLeft" | "Left" => KeyDef { key: "ArrowLeft", code: "ArrowLeft", key_code: 37, text: None },
+        "ArrowRight" | "Right" => KeyDef { key: "ArrowRight", code: "ArrowRight", key_code: 39, text: None },
+        "Home" => KeyDef { key: "Home", code: "Home", key_code: 36, text: None },
+        "End" => KeyDef { key: "End", code: "End", key_code: 35, text: None },
+        "PageUp" => KeyDef { key: "PageUp", code: "PageUp", key_code: 33, text: None },
+        "PageDown" => KeyDef { key: "PageDown", code: "PageDown", key_code: 34, text: None },
+        "Space" => KeyDef { key: " ", code: "Space", key_code: 32, text: Some(" ") },
+        "Insert" => KeyDef { key: "Insert", code: "Insert", key_code: 45, text: None },
+        "F1" => KeyDef { key: "F1", code: "F1", key_code: 112, text: None },
+        "F2" => KeyDef { key: "F2", code: "F2", key_code: 113, text: None },
+        "F3" => KeyDef { key: "F3", code: "F3", key_code: 114, text: None },
+        "F4" => KeyDef { key: "F4", code: "F4", key_code: 115, text: None },
+        "F5" => KeyDef { key: "F5", code: "F5", key_code: 116, text: None },
+        "F6" => KeyDef { key: "F6", code: "F6", key_code: 117, text: None },
+        "F7" => KeyDef { key: "F7", code: "F7", key_code: 118, text: None },
+        "F8" => KeyDef { key: "F8", code: "F8", key_code: 119, text: None },
+        "F9" => KeyDef { key: "F9", code: "F9", key_code: 120, text: None },
+        "F10" => KeyDef { key: "F10", code: "F10", key_code: 121, text: None },
+        "F11" => KeyDef { key: "F11", code: "F11", key_code: 122, text: None },
+        "F12" => KeyDef { key: "F12", code: "F12", key_code: 123, text: None },
         // Single character keys
         other => {
             if other.len() == 1 {
@@ -795,21 +521,11 @@ fn resolve_key(name: &str) -> KeyDef {
                 } else {
                     key_str
                 };
-                KeyDef {
-                    key: key_str,
-                    code: code_str,
-                    key_code,
-                    text: Some(text_str),
-                }
+                KeyDef { key: key_str, code: code_str, key_code, text: Some(text_str) }
             } else {
                 // Unknown key name — pass through as-is
                 let key_str: &'static str = Box::leak(other.to_string().into_boxed_str());
-                KeyDef {
-                    key: key_str,
-                    code: key_str,
-                    key_code: 0,
-                    text: None,
-                }
+                KeyDef { key: key_str, code: key_str, key_code: 0, text: None }
             }
         }
     }
@@ -834,10 +550,7 @@ mod tests {
             ClickOutcome::Normal => {
                 json!({ "wid": "w1", "tid": "t1", "status": "clicked" })
             }
-            ClickOutcome::BlockedByDialog {
-                dialog_type,
-                message,
-            } => {
+            ClickOutcome::BlockedByDialog { dialog_type, message } => {
                 json!({
                     "wid": "w1",
                     "tid": "t1",
@@ -862,10 +575,7 @@ mod tests {
             ClickOutcome::Normal => {
                 json!({ "wid": "w1", "tid": "t1", "status": "clicked" })
             }
-            ClickOutcome::BlockedByDialog {
-                dialog_type,
-                message,
-            } => {
+            ClickOutcome::BlockedByDialog { dialog_type, message } => {
                 json!({
                     "wid": "w1",
                     "tid": "t1",
@@ -926,10 +636,7 @@ mod tests {
         assert_eq!(resp_data["status"].as_str(), Some("blocked_by_dialog"));
         assert!(resp_data["dialog"].is_object());
         assert_eq!(resp_data["dialog"]["type"].as_str(), Some("alert"));
-        assert_eq!(
-            resp_data["dialog"]["message"].as_str(),
-            Some("Something happened!")
-        );
+        assert_eq!(resp_data["dialog"]["message"].as_str(), Some("Something happened!"));
         // wid and tid still present for context
         assert!(resp_data["wid"].as_str().is_some());
         assert!(resp_data["tid"].as_str().is_some());
