@@ -103,4 +103,5 @@ Status: pending
 - [x] Remove deprecated `goto`, `info`, `eval`, and `shot` CLI aliases after v2 parity.
 - [x] Remove legacy `back`, `forward`, and `reload` CLI aliases after v2 `navigate` parity.
 - [x] Remove legacy `new`, `ls`, and `rm` workspace CLI aliases.
+- [x] Remove legacy `url` and `title` CLI aliases after v2 `evaluate` parity.
 - [ ] Start deleting legacy workspace-facing surfaces after v2 parity is verified.

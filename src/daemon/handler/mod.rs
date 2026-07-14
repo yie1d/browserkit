@@ -74,8 +74,6 @@ pub async fn handle_request(
         "tab.switch" => tab::handle_tab_switch(req, state).await,
         "tab.close" => tab::handle_tab_close(req, state).await,
         "nav.goto" => nav::handle_goto(req, state).await,
-        "nav.url" => nav::handle_nav_url(req, state).await,
-        "nav.title" => nav::handle_nav_title(req, state).await,
         "page.pdf" => page::handle_pdf(req, state).await,
         "page.html" => page::handle_html(req, state).await,
         "page.search" => page::handle_page_search(req, state).await,

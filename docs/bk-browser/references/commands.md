@@ -371,5 +371,7 @@ bk status
 | `bk new` | `bk ws new` (legacy) |
 | `bk ls` | `bk ws list` (legacy) |
 | `bk rm <wid>` | `bk ws close <wid>` (legacy) |
+| `bk url` | `bk evaluate "location.href"` |
+| `bk title` | `bk evaluate "document.title"` |
 
-其余 v1 legacy 命令（ws/tab/browser/daemon/storage/dialog/debug/click/type/fill/select/scroll/hover/drag/focus/upload/keys/find/search/html/url/title/console/options/pdf/open/fetch）仍可用但将在 Phase 3 移除。
+其余 v1 legacy 命令（ws/tab/browser/daemon/storage/dialog/debug/click/type/fill/select/scroll/hover/drag/focus/upload/keys/find/search/html/console/options/pdf/open/fetch）仍可用但将在 Phase 3 移除。

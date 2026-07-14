@@ -375,12 +375,6 @@ pub enum Command {
         #[arg(short, long)]
         selector: Option<String>,
     },
-    /// Get current page URL
-    #[command(hide = true)]
-    Url,
-    /// Get current page title
-    #[command(hide = true)]
-    Title,
     /// Show console log buffer
     #[command(hide = true)]
     Console {
@@ -995,19 +989,6 @@ async fn resolve_workspace(client: &mut DaemonClient) -> Result<String, String> 
 
 // ── Command dispatch ───────────────────────────────────────────
 
-/// Macro to reduce boilerplate for v1 commands that follow the pattern:
-/// resolve workspace → send daemon command → print response.
-macro_rules! ws_cmd {
-    ($client:expr, $cmd:expr, { $($key:expr => $val:expr),* $(,)? }) => {{
-        let wid = resolve_workspace($client).await?;
-        #[allow(unused_mut)]
-        let mut params = json!({"wid": wid});
-        $( params[$key] = json!($val); )*
-        let resp = send_cmd($client, $cmd, params).await?;
-        print_response(&resp);
-    }};
-}
-
 fn build_navigate_params(
     url: Option<&String>,
     back: bool,
@@ -1458,14 +1439,6 @@ async fn dispatch(cli: &Cli, client: &mut DaemonClient) -> Result<(), String> {
             if let Some(s) = selector { params["selector"] = json!(s); }
             let resp = send_cmd(client, "page.html", params).await?;
             print_response(&resp);
-        }
-
-        Command::Url => {
-            ws_cmd!(client, "nav.url", {});
-        }
-
-        Command::Title => {
-            ws_cmd!(client, "nav.title", {});
         }
 
         Command::Console { level, limit } => {
@@ -2019,6 +1992,14 @@ mod tests {
             &["bk", "ls"][..],
             &["bk", "rm", "ws1"][..],
         ] {
+            let result = try_parse(args);
+            assert!(result.is_err(), "{args:?} should be removed");
+        }
+    }
+
+    #[test]
+    fn cli_rejects_removed_url_title_aliases() {
+        for args in [&["bk", "url"][..], &["bk", "title"][..]] {
             let result = try_parse(args);
             assert!(result.is_err(), "{args:?} should be removed");
         }

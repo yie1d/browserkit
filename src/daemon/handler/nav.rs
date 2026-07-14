@@ -1,4 +1,4 @@
-// Navigation handlers: goto, url, title
+// Navigation handlers: goto
 
 use std::sync::Arc;
 
@@ -8,7 +8,7 @@ use tracing::info;
 use crate::daemon::protocol::{Request, Response};
 use crate::daemon::state::DaemonState;
 use crate::error::BkError;
-use super::common::{handler, now_ts, resolve_context, touch_workspace};
+use super::common::{handler, now_ts, resolve_context};
 
 handler!(handle_goto, do_goto(req, state));
 
@@ -33,22 +33,4 @@ async fn do_goto(req: &Request, state: &Arc<DaemonState>) -> Result<Response, Bk
     state.request_persist();
     info!(wid = %ctx.wid, tid = %ctx.tid, url = %url, "navigated");
     Ok(Response::ok(json!({ "wid": ctx.wid, "tid": ctx.tid, "url": nav_url })))
-}
-
-handler!(handle_nav_url, do_nav_url(req, state));
-
-async fn do_nav_url(req: &Request, state: &Arc<DaemonState>) -> Result<Response, BkError> {
-    let ctx = resolve_context(req, state, "nav.url")?;
-    let url = crate::page::navigation::get_url(&ctx.cdp, &ctx.cdp_session_id).await?;
-    touch_workspace(state, &ctx.wid);
-    Ok(Response::ok(json!({ "url": url })))
-}
-
-handler!(handle_nav_title, do_nav_title(req, state));
-
-async fn do_nav_title(req: &Request, state: &Arc<DaemonState>) -> Result<Response, BkError> {
-    let ctx = resolve_context(req, state, "nav.title")?;
-    let title = crate::page::navigation::get_title(&ctx.cdp, &ctx.cdp_session_id).await?;
-    touch_workspace(state, &ctx.wid);
-    Ok(Response::ok(json!({ "title": title })))
 }
