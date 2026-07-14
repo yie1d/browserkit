@@ -94,7 +94,7 @@ bk snapshot --wait none
 
 ## act
 
-执行交互动作：click、type、press。
+执行交互动作：click、type、press、scroll、hover、focus。
 
 ```
 Usage: bk act [OPTIONS] [KIND]
@@ -102,13 +102,16 @@ Usage: bk act [OPTIONS] [KIND]
 
 | 参数 | 类型 | 说明 |
 |------|------|------|
-| `[KIND]` | positional | 动作类型：`click` \| `type` \| `press` |
+| `[KIND]` | positional | 动作类型：`click` \| `type` \| `press` \| `scroll` \| `hover` \| `focus` |
 | `--ref <ELEMENT_REF>` | string | 元素 ref（backendNodeId，从 snapshot 获取） |
 | `--text <TEXT>` | string | type 动作的输入文本 |
 | `--append` | flag | type 追加模式（默认为替换） |
 | `--keys <KEYS>...` | string[] | press 动作的按键序列 |
 | `--x <X>` | integer | click 的 X 坐标（与 --ref 互斥） |
 | `--y <Y>` | integer | click 的 Y 坐标（与 --ref 互斥） |
+| `--direction <DIR>` | string | scroll 方向：`up` \| `down` \| `left` \| `right` \| `top` \| `bottom` |
+| `--amount <PX>` | number | scroll 像素量；仅页面滚动生效，必须大于 0 |
+| `--selector <CSS>` | string | scroll 的 CSS 目标；与 `--ref` 一样表示滚动到元素 |
 
 ### click
 
@@ -134,6 +137,30 @@ bk act press --keys Tab
 bk act press --keys Control+a
 bk act press --keys Shift+Enter
 bk act press --keys ArrowDown
+```
+
+### scroll
+
+```bash
+bk act scroll --direction down
+bk act scroll --direction top
+bk act scroll --amount 250
+bk act scroll --ref 42
+bk act scroll --selector "#main"
+```
+
+> 未提供 `--ref` 或 `--selector` 时，scroll 默认为页面向下滚动。提供 `--ref` 或 `--selector` 时会滚动到对应元素。
+
+### hover
+
+```bash
+bk act hover --ref 42
+```
+
+### focus
+
+```bash
+bk act focus --ref 42
 ```
 
 ---
@@ -373,5 +400,8 @@ bk status
 | `bk rm <wid>` | `bk ws close <wid>` (legacy) |
 | `bk url` | `bk evaluate "location.href"` |
 | `bk title` | `bk evaluate "document.title"` |
+| `bk scroll ...` | `bk act scroll ...` |
+| `bk hover --ref <N>` | `bk act hover --ref <N>` |
+| `bk focus --ref <N>` | `bk act focus --ref <N>` |
 
-其余 v1 legacy 命令（ws/tab/browser/daemon/storage/dialog/debug/click/type/fill/select/scroll/hover/drag/focus/upload/keys/find/search/html/console/options/pdf/open/fetch）仍可用但将在 Phase 3 移除。
+其余 v1 legacy 命令（ws/tab/browser/daemon/storage/dialog/debug/click/type/fill/select/drag/upload/keys/find/search/html/console/options/pdf/open/fetch）仍可用但将在 Phase 3 移除。

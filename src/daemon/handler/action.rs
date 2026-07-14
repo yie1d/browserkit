@@ -1,4 +1,4 @@
-// Interaction handlers: click, type, scroll, select, hover, focus, drag
+// Interaction handlers: click, type, select, drag, upload, dropdown_options, keys
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -229,35 +229,6 @@ async fn check_autocomplete(
     is_autocomplete
 }
 
-handler!(handle_scroll, do_scroll(req, state));
-
-async fn do_scroll(req: &Request, state: &Arc<DaemonState>) -> Result<Response, BkError> {
-    let ctx = resolve_context(req, state, "scroll")?;
-
-    let direction = req.params.get("direction").and_then(|v| v.as_str()).unwrap_or("down");
-    let amount = req.params.get("amount").and_then(|v| v.as_f64());
-    let selector = req.params.get("selector").and_then(|v| v.as_str());
-    let target = parse_element_target(&req.params);
-
-    // Priority: selector > ref/index (scroll to element) > direction (+amount)
-    if let Some(sel) = selector {
-        crate::page::interaction::scroll_to_element_by_selector(&ctx.cdp, &ctx.cdp_session_id, sel).await?;
-        touch_workspace(state, &ctx.wid);
-        info!(wid = %ctx.wid, tid = %ctx.tid, selector = %sel, "scrolled to selector");
-        Ok(Response::ok(json!({ "wid": ctx.wid, "tid": ctx.tid, "status": "scrolled", "target": "selector", "selector": sel })))
-    } else if let Some(t) = target {
-        crate::page::interaction::scroll_to_element_by_target(&ctx.cdp, &ctx.cdp_session_id, &t).await?;
-        touch_workspace(state, &ctx.wid);
-        info!(wid = %ctx.wid, tid = %ctx.tid, "scrolled to element by target");
-        Ok(Response::ok(json!({ "wid": ctx.wid, "tid": ctx.tid, "status": "scrolled", "target": "element" })))
-    } else {
-        crate::page::interaction::scroll_page(&ctx.cdp, &ctx.cdp_session_id, direction, amount).await?;
-        touch_workspace(state, &ctx.wid);
-        info!(wid = %ctx.wid, tid = %ctx.tid, direction = %direction, "scrolled");
-        Ok(Response::ok(json!({ "wid": ctx.wid, "tid": ctx.tid, "status": "scrolled", "direction": direction })))
-    }
-}
-
 handler!(handle_act_select, do_act_select(req, state));
 
 async fn do_act_select(req: &Request, state: &Arc<DaemonState>) -> Result<Response, BkError> {
@@ -272,34 +243,6 @@ async fn do_act_select(req: &Request, state: &Arc<DaemonState>) -> Result<Respon
     touch_workspace(state, &ctx.wid);
     info!(wid = %ctx.wid, tid = %ctx.tid, value = %value, "selected option");
     Ok(Response::ok(json!({ "wid": ctx.wid, "tid": ctx.tid, "status": "selected", "value": value, "detail": result })))
-}
-
-handler!(handle_act_hover, do_act_hover(req, state));
-
-async fn do_act_hover(req: &Request, state: &Arc<DaemonState>) -> Result<Response, BkError> {
-    let ctx = resolve_context(req, state, "act.hover")?;
-
-    let target = parse_element_target(&req.params)
-        .ok_or_else(|| BkError::InvalidRequest("act.hover requires 'ref' or 'index' param".into()))?;
-
-    crate::page::interaction::hover_by_target(&ctx.cdp, &ctx.cdp_session_id, &target).await?;
-    touch_workspace(state, &ctx.wid);
-    info!(wid = %ctx.wid, tid = %ctx.tid, "hovered");
-    Ok(Response::ok(json!({ "wid": ctx.wid, "tid": ctx.tid, "status": "hovered" })))
-}
-
-handler!(handle_act_focus, do_act_focus(req, state));
-
-async fn do_act_focus(req: &Request, state: &Arc<DaemonState>) -> Result<Response, BkError> {
-    let ctx = resolve_context(req, state, "act.focus")?;
-
-    let target = parse_element_target(&req.params)
-        .ok_or_else(|| BkError::InvalidRequest("act.focus requires 'ref' or 'index' param".into()))?;
-
-    crate::page::interaction::focus_by_target(&ctx.cdp, &ctx.cdp_session_id, &target).await?;
-    touch_workspace(state, &ctx.wid);
-    info!(wid = %ctx.wid, tid = %ctx.tid, "focused");
-    Ok(Response::ok(json!({ "wid": ctx.wid, "tid": ctx.tid, "status": "focused" })))
 }
 
 handler!(handle_act_dropdown_options, do_act_dropdown_options(req, state));

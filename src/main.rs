@@ -23,7 +23,7 @@ Primary:
   setup       One-time Chrome remote debugging setup
   connect     Connect to browser (idempotent)
   snapshot    Get page state (elements + text + viewport)
-  act         Execute interaction (click/type/press)
+  act         Execute interaction (click/type/press/scroll/hover/focus)
   navigate    Navigate to URL or back/forward/reload
   open        Open URL in new tab
   close       Close tab
@@ -35,7 +35,7 @@ Primary:
   status      Connection status
 
 Legacy (v1, will be removed in Phase 3):
-  click/type/fill/select/scroll/hover/drag/focus/upload/keys
+  click/type/fill/select/drag/upload/keys
   find/search/html/url/title/console/options
   pdf/open/fetch/ws/tab/browser/daemon/storage/dialog/debug
 
@@ -118,10 +118,10 @@ pub enum Command {
         wait: String,
     },
 
-    /// Execute interaction (click/type/press)
+    /// Execute interaction (click/type/press/scroll/hover/focus)
     #[command(about = "Execute interaction")]
     Act {
-        /// Action kind (click, type, press)
+        /// Action kind (click, type, press, scroll, hover, focus)
         kind: Option<String>,
         /// Element ref (backendNodeId)
         #[arg(long = "ref")]
@@ -141,6 +141,15 @@ pub enum Command {
         /// Y coordinate for click
         #[arg(long)]
         y: Option<f64>,
+        /// Scroll direction
+        #[arg(long)]
+        direction: Option<String>,
+        /// Scroll amount in pixels
+        #[arg(long)]
+        amount: Option<f64>,
+        /// CSS selector for scroll target
+        #[arg(long)]
+        selector: Option<String>,
     },
 
     /// Navigate to URL or back/forward/reload
@@ -281,27 +290,6 @@ pub enum Command {
         element_ref: Option<i64>,
         value: String,
     },
-    /// Scroll page or to element
-    #[command(hide = true)]
-    Scroll {
-        direction: Option<String>,
-        #[arg(long)]
-        amount: Option<f64>,
-        #[arg(short, long)]
-        index: Option<usize>,
-        #[arg(short = 'r', long = "ref")]
-        element_ref: Option<i64>,
-        #[arg(short, long)]
-        selector: Option<String>,
-    },
-    /// Hover over element
-    #[command(hide = true, group(ArgGroup::new("hover_target").required(true).args(["index", "element_ref"])))]
-    Hover {
-        #[arg(short, long)]
-        index: Option<usize>,
-        #[arg(short = 'r', long = "ref")]
-        element_ref: Option<i64>,
-    },
     /// Drag element
     #[command(hide = true, group(ArgGroup::new("from_target").required(true).args(["from_ref", "from_index", "from_selector"])))]
     #[command(group(ArgGroup::new("to_target").required(true).args(["to_ref", "to_index", "to_selector"])))]
@@ -318,14 +306,6 @@ pub enum Command {
         to_index: Option<usize>,
         #[arg(long)]
         to_selector: Option<String>,
-    },
-    /// Focus element
-    #[command(hide = true, group(ArgGroup::new("focus_target").required(true).args(["index", "element_ref"])))]
-    Focus {
-        #[arg(short, long)]
-        index: Option<usize>,
-        #[arg(short = 'r', long = "ref")]
-        element_ref: Option<i64>,
     },
     /// Upload files
     #[command(hide = true)]
@@ -1047,7 +1027,18 @@ async fn dispatch(cli: &Cli, client: &mut DaemonClient) -> Result<(), String> {
             print_response(&resp);
         }
 
-        Command::Act { kind, element_ref, text, append, keys, x, y } => {
+        Command::Act {
+            kind,
+            element_ref,
+            text,
+            append,
+            keys,
+            x,
+            y,
+            direction,
+            amount,
+            selector,
+        } => {
             let mut params = json!({});
             if let Some(k) = kind { params["kind"] = json!(k); }
             if let Some(r) = element_ref { params["ref"] = json!(r); }
@@ -1056,6 +1047,9 @@ async fn dispatch(cli: &Cli, client: &mut DaemonClient) -> Result<(), String> {
             if !keys.is_empty() { params["keys"] = json!(keys); }
             if let Some(cx) = x { params["x"] = json!(cx); }
             if let Some(cy) = y { params["y"] = json!(cy); }
+            if let Some(dir) = direction { params["direction"] = json!(dir); }
+            if let Some(a) = amount { params["amount"] = json!(a); }
+            if let Some(sel) = selector { params["selector"] = json!(sel); }
             if let Some(s) = &cli.session { params["session"] = json!(s); }
             if let Some(t) = &cli.target { params["target"] = json!(t); }
             if let Some(to) = cli.timeout { params["timeout"] = json!(to); }
@@ -1351,27 +1345,6 @@ async fn dispatch(cli: &Cli, client: &mut DaemonClient) -> Result<(), String> {
             print_response(&resp);
         }
 
-        Command::Scroll { direction, amount, index, element_ref, selector } => {
-            let wid = resolve_workspace(client).await?;
-            let dir = direction.as_deref().unwrap_or("down");
-            let mut params = json!({"wid": wid, "direction": dir});
-            if let Some(a) = amount { params["amount"] = json!(a); }
-            if let Some(r) = element_ref { params["ref"] = json!(r); }
-            else if let Some(i) = index { params["index"] = json!(i); }
-            if let Some(s) = selector { params["selector"] = json!(s); }
-            let resp = send_cmd(client, "act.scroll", params).await?;
-            print_response(&resp);
-        }
-
-        Command::Hover { index, element_ref } => {
-            let wid = resolve_workspace(client).await?;
-            let mut params = json!({"wid": wid});
-            if let Some(r) = element_ref { params["ref"] = json!(r); }
-            else if let Some(i) = index { params["index"] = json!(i); }
-            let resp = send_cmd(client, "act.hover", params).await?;
-            print_response(&resp);
-        }
-
         Command::Drag { from_ref, from_index, from_selector, to_ref, to_index, to_selector } => {
             let wid = resolve_workspace(client).await?;
             let mut params = json!({"wid": wid});
@@ -1382,15 +1355,6 @@ async fn dispatch(cli: &Cli, client: &mut DaemonClient) -> Result<(), String> {
             else if let Some(i) = to_index { params["to_index"] = json!(i); }
             if let Some(s) = to_selector { params["to_selector"] = json!(s); }
             let resp = send_cmd(client, "act.drag", params).await?;
-            print_response(&resp);
-        }
-
-        Command::Focus { index, element_ref } => {
-            let wid = resolve_workspace(client).await?;
-            let mut params = json!({"wid": wid});
-            if let Some(r) = element_ref { params["ref"] = json!(r); }
-            else if let Some(i) = index { params["index"] = json!(i); }
-            let resp = send_cmd(client, "act.focus", params).await?;
             print_response(&resp);
         }
 
@@ -1843,6 +1807,32 @@ mod tests {
     }
 
     #[test]
+    fn cli_parses_act_scroll_hover_and_focus() {
+        let scroll = try_parse(&[
+            "bk", "act", "scroll", "--direction", "down", "--amount", "250",
+        ]).unwrap();
+        assert!(matches!(
+            scroll.command,
+            Command::Act { ref kind, ref direction, amount: Some(250.0), .. }
+                if kind.as_deref() == Some("scroll") && direction.as_deref() == Some("down")
+        ));
+
+        let hover = try_parse(&["bk", "act", "hover", "--ref", "42"]).unwrap();
+        assert!(matches!(
+            hover.command,
+            Command::Act { ref kind, element_ref: Some(42), .. }
+                if kind.as_deref() == Some("hover")
+        ));
+
+        let focus = try_parse(&["bk", "act", "focus", "--ref", "43"]).unwrap();
+        assert!(matches!(
+            focus.command,
+            Command::Act { ref kind, element_ref: Some(43), .. }
+                if kind.as_deref() == Some("focus")
+        ));
+    }
+
+    #[test]
     fn cli_parses_navigate_url() {
         let cli = try_parse(&["bk", "navigate", "https://example.com"]).unwrap();
         if let Command::Navigate { url, .. } = &cli.command {
@@ -2005,6 +1995,21 @@ mod tests {
         }
     }
 
+    fn assert_cli_commands_removed(cases: &[&[&str]]) {
+        for args in cases {
+            assert!(try_parse(args).is_err(), "{args:?} should be removed");
+        }
+    }
+
+    #[test]
+    fn cli_rejects_removed_scroll_hover_focus_commands() {
+        assert_cli_commands_removed(&[
+            &["bk", "scroll", "down"][..],
+            &["bk", "hover", "--ref", "42"][..],
+            &["bk", "focus", "--ref", "43"][..],
+        ]);
+    }
+
     // ── Removed flags ────────────────────────────────────────────
 
     #[test]
@@ -2060,30 +2065,6 @@ mod tests {
     #[test]
     fn type_with_ref_succeeds() {
         let result = try_parse(&["bk", "type", "--ref", "42", "hello"]);
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn hover_without_target_is_rejected() {
-        let result = try_parse(&["bk", "hover"]);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn hover_with_ref_succeeds() {
-        let result = try_parse(&["bk", "hover", "--ref", "100"]);
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn focus_without_target_is_rejected() {
-        let result = try_parse(&["bk", "focus"]);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn focus_with_index_succeeds() {
-        let result = try_parse(&["bk", "focus", "--index", "5"]);
         assert!(result.is_ok());
     }
 

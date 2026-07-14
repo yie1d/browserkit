@@ -1,6 +1,6 @@
-// Handler for the v2 `act` command (click/type/press).
+// Handler for the v2 `act` command (click/type/press/scroll/hover/focus).
 //
-// Unified action dispatcher for the three most common interactions.
+// Unified action dispatcher for the session-native interaction surface.
 // Each returns result + state_diff (before/after URL/title/element comparison).
 //
 // Session/target resolution follows the same pattern as snapshot/navigate.
@@ -23,7 +23,9 @@ pub enum ActKind {
     Click,
     Type,
     Press,
-    // Phase 2: Scroll, Select, Fill, Hover, Focus, Drag, Upload, Dialog
+    Scroll,
+    Hover,
+    Focus,
 }
 
 // ── Parsed parameters ────────────────────────────────────────────────────────
@@ -47,6 +49,10 @@ struct ActParams {
     append: bool,
     // Press params
     keys: Vec<String>,
+    // Scroll params
+    direction: Option<String>,
+    amount: Option<f64>,
+    selector: Option<String>,
 }
 
 // ── Parameter parsing ────────────────────────────────────────────────────────
@@ -55,13 +61,26 @@ struct ActParams {
 ///
 /// Returns `Err(Response)` with structured error on validation failure.
 fn parse_act_params(params: &serde_json::Value) -> Result<ActParams, Response> {
+    for legacy_field in ["wid", "tid", "index"] {
+        if params.get(legacy_field).is_some() {
+            return Err(Response::error_detail(
+                ErrorCode::InvalidArgument,
+                format!(
+                    "legacy workspace field '{}' is not supported by act; use --session/--target and element ref instead",
+                    legacy_field
+                ),
+                None,
+            ));
+        }
+    }
+
     let kind_str = params
         .get("kind")
         .and_then(|v| v.as_str())
         .ok_or_else(|| {
             Response::error_detail(
                 ErrorCode::InvalidArgument,
-                "missing required parameter: kind (click/type/press)".into(),
+                "missing required parameter: kind (click/type/press/scroll/hover/focus)".into(),
                 None,
             )
         })?;
@@ -70,11 +89,14 @@ fn parse_act_params(params: &serde_json::Value) -> Result<ActParams, Response> {
         "click" => ActKind::Click,
         "type" => ActKind::Type,
         "press" => ActKind::Press,
+        "scroll" => ActKind::Scroll,
+        "hover" => ActKind::Hover,
+        "focus" => ActKind::Focus,
         _ => {
             return Err(Response::error_detail(
                 ErrorCode::InvalidArgument,
                 format!(
-                    "unsupported act kind: '{}' (supported: click, type, press)",
+                    "unsupported act kind: '{}' (supported: click, type, press, scroll, hover, focus)",
                     kind_str
                 ),
                 None,
@@ -102,6 +124,15 @@ fn parse_act_params(params: &serde_json::Value) -> Result<ActParams, Response> {
                 .collect()
         })
         .unwrap_or_default();
+    let direction = params
+        .get("direction")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    let amount = params.get("amount").and_then(|v| v.as_f64());
+    let selector = params
+        .get("selector")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
 
     // Validation per kind
     match kind {
@@ -139,7 +170,49 @@ fn parse_act_params(params: &serde_json::Value) -> Result<ActParams, Response> {
                 ));
             }
         }
+        ActKind::Scroll => {
+            if let Some(direction) = direction.as_deref() {
+                if !matches!(
+                    direction,
+                    "up" | "down" | "left" | "right" | "top" | "bottom"
+                ) {
+                    return Err(Response::error_detail(
+                        ErrorCode::InvalidArgument,
+                        format!(
+                            "scroll direction must be one of up/down/left/right/top/bottom, got '{}'",
+                            direction
+                        ),
+                        None,
+                    ));
+                }
+            }
+            if let Some(amount) = amount {
+                if amount <= 0.0 {
+                    return Err(Response::error_detail(
+                        ErrorCode::InvalidArgument,
+                        "scroll amount must be positive".into(),
+                        None,
+                    ));
+                }
+            }
+        }
+        ActKind::Hover | ActKind::Focus => {
+            if ref_id.is_none() {
+                return Err(Response::error_detail(
+                    ErrorCode::InvalidArgument,
+                    format!("{kind_str} requires --ref"),
+                    None,
+                ));
+            }
+        }
     }
+
+    let direction = match kind {
+        ActKind::Scroll if ref_id.is_none() && selector.is_none() && direction.is_none() => {
+            Some("down".to_string())
+        }
+        _ => direction,
+    };
 
     Ok(ActParams {
         kind,
@@ -166,6 +239,9 @@ fn parse_act_params(params: &serde_json::Value) -> Result<ActParams, Response> {
         text,
         append,
         keys,
+        direction,
+        amount,
+        selector,
     })
 }
 
@@ -274,6 +350,21 @@ pub async fn handle_act(req: &Request, state: &Arc<DaemonState>) -> Response {
         ActKind::Click => execute_click(&cdp, cdp_session_id, &params, &target_id).await,
         ActKind::Type => execute_type(&cdp, cdp_session_id, &params, &target_id).await,
         ActKind::Press => execute_press(&cdp, cdp_session_id, &params, &target_id).await,
+        ActKind::Scroll => execute_scroll(&cdp, cdp_session_id, &params).await,
+        ActKind::Hover => execute_ref_action(
+            "hover",
+            &cdp,
+            cdp_session_id,
+            params.ref_id.expect("hover ref validated above"),
+        )
+        .await,
+        ActKind::Focus => execute_ref_action(
+            "focus",
+            &cdp,
+            cdp_session_id,
+            params.ref_id.expect("focus ref validated above"),
+        )
+        .await,
     };
 
     // If the action failed, return the error response directly
@@ -305,6 +396,26 @@ struct ActionSuccess {
     ref_id: Option<i64>,
 }
 
+fn is_element_not_found_error(error: &crate::error::BkError) -> bool {
+    match error {
+        crate::error::BkError::Other(message) => {
+            message.contains("not found")
+                || message.contains("no element found")
+                || message.contains("no longer present")
+        }
+        _ => false,
+    }
+}
+
+fn action_error(action: &str, error: crate::error::BkError) -> Response {
+    let code = if is_element_not_found_error(&error) {
+        ErrorCode::RefNotFound
+    } else {
+        ErrorCode::JsError
+    };
+    Response::error_detail(code, format!("{action} failed: {error}"), None)
+}
+
 // ── Click execution ──────────────────────────────────────────────────────────
 
 /// Execute a click action via ref (backendNodeId) or raw coordinates.
@@ -326,21 +437,12 @@ async fn execute_click(
         click_coordinates(cdp, session_id, x, y).await
     };
 
-    match result {
-        Ok(()) => Ok(ActionSuccess {
+    result
+        .map(|()| ActionSuccess {
             action: "click".into(),
             ref_id: params.ref_id,
-        }),
-        Err(e) => {
-            let code = match &e {
-                crate::error::BkError::Other(msg) if msg.contains("not found") => {
-                    ErrorCode::RefNotFound
-                }
-                _ => ErrorCode::JsError,
-            };
-            Err(Response::error_detail(code, format!("click failed: {e}"), None))
-        }
-    }
+        })
+        .map_err(|e| action_error("click", e))
 }
 
 // ── Type execution ───────────────────────────────────────────────────────────
@@ -364,21 +466,12 @@ async fn execute_type(
     let target = ElementTarget::Ref(ref_id);
     let result = type_text_by_target(cdp, session_id, &target, text, clear).await;
 
-    match result {
-        Ok(()) => Ok(ActionSuccess {
+    result
+        .map(|()| ActionSuccess {
             action: "type".into(),
             ref_id: Some(ref_id),
-        }),
-        Err(e) => {
-            let code = match &e {
-                crate::error::BkError::Other(msg) if msg.contains("not found") => {
-                    ErrorCode::RefNotFound
-                }
-                _ => ErrorCode::JsError,
-            };
-            Err(Response::error_detail(code, format!("type failed: {e}"), None))
-        }
-    }
+        })
+        .map_err(|e| action_error("type", e))
 }
 
 // ── Press execution ──────────────────────────────────────────────────────────
@@ -408,6 +501,61 @@ async fn execute_press(
         action: "press".into(),
         ref_id: None,
     })
+}
+
+async fn execute_scroll(
+    cdp: &Arc<cdpkit::CDP>,
+    session_id: &str,
+    params: &ActParams,
+) -> Result<ActionSuccess, Response> {
+    use crate::page::element_ref::ElementTarget;
+    use crate::page::interaction::{
+        scroll_page, scroll_to_element_by_selector, scroll_to_element_by_target,
+    };
+
+    let result = if let Some(selector) = params.selector.as_deref() {
+        scroll_to_element_by_selector(cdp, session_id, selector).await
+    } else if let Some(ref_id) = params.ref_id {
+        scroll_to_element_by_target(cdp, session_id, &ElementTarget::Ref(ref_id)).await
+    } else {
+        scroll_page(
+            cdp,
+            session_id,
+            params.direction.as_deref().unwrap_or("down"),
+            params.amount,
+        )
+        .await
+    };
+
+    result
+        .map(|()| ActionSuccess {
+            action: "scroll".into(),
+            ref_id: params.ref_id,
+        })
+        .map_err(|e| action_error("scroll", e))
+}
+
+async fn execute_ref_action(
+    action: &'static str,
+    cdp: &Arc<cdpkit::CDP>,
+    session_id: &str,
+    ref_id: i64,
+) -> Result<ActionSuccess, Response> {
+    use crate::page::element_ref::ElementTarget;
+
+    let target = ElementTarget::Ref(ref_id);
+    let result = match action {
+        "hover" => crate::page::interaction::hover_by_target(cdp, session_id, &target).await,
+        "focus" => crate::page::interaction::focus_by_target(cdp, session_id, &target).await,
+        _ => unreachable!("validated ref action"),
+    };
+
+    result
+        .map(|()| ActionSuccess {
+            action: action.into(),
+            ref_id: Some(ref_id),
+        })
+        .map_err(|e| action_error(action, e))
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────
@@ -465,6 +613,41 @@ mod tests {
         let params = json!({"kind": "press", "keys": ["Control+a", "Backspace"]});
         let p = parse_act_params(&params).unwrap();
         assert_eq!(p.keys, vec!["Control+a", "Backspace"]);
+    }
+
+    #[test]
+    fn parse_act_scroll_hover_and_focus() {
+        let scroll =
+            parse_act_params(&json!({"kind": "scroll", "direction": "down", "amount": 250.0}))
+                .unwrap();
+        assert_eq!(scroll.kind, ActKind::Scroll);
+        assert_eq!(scroll.direction.as_deref(), Some("down"));
+        assert_eq!(scroll.amount, Some(250.0));
+
+        let hover = parse_act_params(&json!({"kind": "hover", "ref": 42})).unwrap();
+        assert_eq!(hover.kind, ActKind::Hover);
+
+        let focus = parse_act_params(&json!({"kind": "focus", "ref": 43})).unwrap();
+        assert_eq!(focus.kind, ActKind::Focus);
+    }
+
+    #[test]
+    fn parse_act_hover_and_focus_require_ref() {
+        for kind in ["hover", "focus"] {
+            let response = parse_act_params(&json!({"kind": kind})).unwrap_err();
+            let value = serde_json::to_value(response).unwrap();
+            assert_eq!(value["error"]["code"], "INVALID_ARGUMENT");
+        }
+    }
+
+    #[test]
+    fn parse_act_rejects_workspace_fields() {
+        for legacy_field in ["wid", "tid", "index"] {
+            let mut params = json!({"kind": "click", "ref": 42});
+            params[legacy_field] = json!(1);
+            let value = serde_json::to_value(parse_act_params(&params).unwrap_err()).unwrap();
+            assert_eq!(value["error"]["code"], "INVALID_ARGUMENT");
+        }
     }
 
     #[test]
@@ -676,6 +859,24 @@ mod tests {
         let json = serde_json::to_value(&resp).unwrap();
         assert_eq!(json["ok"], false);
         assert_eq!(json["error"]["code"], "CHROME_DISCONNECTED");
+    }
+
+    #[tokio::test]
+    async fn handle_new_simple_actions_use_session_resolution() {
+        let state = Arc::new(DaemonState::new());
+        for params in [
+            json!({"kind": "scroll", "direction": "down"}),
+            json!({"kind": "hover", "ref": 42}),
+            json!({"kind": "focus", "ref": 42}),
+        ] {
+            let req = Request {
+                cmd: "act".into(),
+                params,
+                token: None,
+            };
+            let value = serde_json::to_value(handle_act(&req, &state).await).unwrap();
+            assert_eq!(value["error"]["code"], "SESSION_NOT_FOUND");
+        }
     }
 
     #[test]

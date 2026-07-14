@@ -129,7 +129,7 @@ bk session cookies                  # Cookie operations
 | `setup` | One-time Chrome remote debugging setup (interactive) |
 | `connect` | Connect to browser (idempotent) |
 | `snapshot` | Get page state: elements + text + viewport info |
-| `act` | Execute interaction (click, type, press) |
+| `act` | Execute interaction (click, type, press, scroll, hover, focus) |
 | `navigate` | Navigate to URL or back/forward/reload |
 | `open` | Open URL in a new tab |
 | `close` | Close the current tab |
@@ -157,6 +157,17 @@ bk act type --ref 42 --text "append this" --append
 bk act press --keys Enter
 bk act press --keys Control+a
 bk act press --keys Tab Tab Tab
+
+# Scroll page or bring an element into view
+bk act scroll --direction down
+bk act scroll --direction top
+bk act scroll --amount 250
+bk act scroll --ref 5
+bk act scroll --selector "#main"
+
+# Hover and focus
+bk act hover --ref 42
+bk act focus --ref 42
 ```
 
 Phase 2 actions (via legacy commands, migrating to `act` in Phase 3):
@@ -165,9 +176,8 @@ Phase 2 actions (via legacy commands, migrating to `act` in Phase 3):
 |--------|---------|
 | fill | `bk fill --set ref:42=value --set ref:55=other` |
 | select | `bk select --ref 77 "option-value"` |
-| scroll | `bk scroll down`, `bk scroll top`, `bk scroll --ref 5` |
-| hover | `bk hover --ref 42` |
 | drag | `bk drag --from-ref 10 --to-ref 20` |
+| keys | `bk keys Enter`, `bk keys Control+a` |
 | upload | `bk upload --ref 3 /path/to/file.pdf` |
 | dialog | `bk dialog accept`, `bk dialog dismiss`, `bk dialog policy accept` |
 
