@@ -365,5 +365,8 @@ bk status
 | `bk info` | `bk snapshot` |
 | `bk eval <expr>` | `bk evaluate <expr>` |
 | `bk shot` | `bk screenshot` |
+| `bk back` | `bk navigate --back` |
+| `bk forward` | `bk navigate --forward` |
+| `bk reload` | `bk navigate --reload` |
 
 其余 v1 legacy 命令（ws/tab/browser/daemon/storage/dialog/debug/click/type/fill/select/scroll/hover/drag/focus/upload/keys/find/search/html/url/title/console/options/pdf/open/fetch）仍可用但将在 Phase 3 移除。

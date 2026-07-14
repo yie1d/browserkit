@@ -35,13 +35,14 @@ Primary:
   status      Connection status
 
 Legacy (v1, will be removed in Phase 3):
-  back/forward/reload/click/type/fill/select/scroll/hover/drag/focus
-  upload/keys/find/search/html/url/title/console/options
+  click/type/fill/select/scroll/hover/drag/focus/upload/keys
+  find/search/html/url/title/console/options
   pdf/open/fetch/ws/tab/browser/daemon/storage/dialog/debug
 
 Removed aliases:
   goto -> use navigate    info -> use snapshot
   eval -> use evaluate    shot -> use screenshot
+  back/forward/reload -> use navigate --back/--forward/--reload
 
 Options:
       --session <NAME>    Target session (or BK_SESSION env var)
@@ -239,16 +240,6 @@ pub enum Command {
     // ══════════════════════════════════════════════════════════════
     // V1 LEGACY COMMANDS (preserved, removed in Phase 3)
     // ══════════════════════════════════════════════════════════════
-
-    /// Go back in browser history
-    #[command(hide = true)]
-    Back,
-    /// Go forward in browser history
-    #[command(hide = true)]
-    Forward,
-    /// Reload current page
-    #[command(hide = true)]
-    Reload,
 
     /// Click element
     #[command(hide = true, group(ArgGroup::new("click_target").required(true).args(["index", "element_ref", "x"])))]
@@ -1037,11 +1028,6 @@ macro_rules! ws_cmd {
     }};
 }
 
-/// Emit a deprecation warning to stderr.
-fn emit_deprecation_warning(old: &str, new: &str) {
-    eprintln!("warning: '{}' is deprecated, use '{}' instead", old, new);
-}
-
 fn build_navigate_params(
     url: Option<&String>,
     back: bool,
@@ -1355,23 +1341,6 @@ async fn dispatch(cli: &Cli, client: &mut DaemonClient) -> Result<(), String> {
                 }
             }
         },
-
-        // ── Navigation (top-level, v1 legacy) ────────────────────────
-        Command::Back => {
-            emit_deprecation_warning("back", "navigate --back");
-            let resp = send_cmd(client, "navigate", build_navigate_params(None, true, false, false, cli)).await?;
-            print_response(&resp);
-        }
-        Command::Forward => {
-            emit_deprecation_warning("forward", "navigate --forward");
-            let resp = send_cmd(client, "navigate", build_navigate_params(None, false, true, false, cli)).await?;
-            print_response(&resp);
-        }
-        Command::Reload => {
-            emit_deprecation_warning("reload", "navigate --reload");
-            let resp = send_cmd(client, "navigate", build_navigate_params(None, false, false, true, cli)).await?;
-            print_response(&resp);
-        }
 
         // ── Interaction (top-level) ───────────────────────
         Command::Click { index, element_ref, x, y } => {
@@ -1957,29 +1926,6 @@ mod tests {
     }
 
     #[test]
-    fn legacy_back_builds_v2_navigate_params() {
-        let cli = try_parse(&[
-            "bk",
-            "--session",
-            "agent-a",
-            "--target",
-            "TAB1",
-            "--timeout",
-            "5000",
-            "back",
-        ])
-        .unwrap();
-
-        let params = build_navigate_params(None, true, false, false, &cli);
-
-        assert_eq!(params["back"], true);
-        assert_eq!(params["session"], "agent-a");
-        assert_eq!(params["target"], "TAB1");
-        assert_eq!(params["timeout"], 5000);
-        assert!(params.get("wid").is_none());
-    }
-
-    #[test]
     fn cli_parses_open() {
         let cli = try_parse(&["bk", "open", "https://x.com"]).unwrap();
         if let Command::OpenV2 { url } = &cli.command {
@@ -2094,6 +2040,18 @@ mod tests {
         assert!(result.is_err());
     }
 
+    #[test]
+    fn cli_rejects_removed_navigation_aliases() {
+        for args in [
+            &["bk", "back"][..],
+            &["bk", "forward"][..],
+            &["bk", "reload"][..],
+        ] {
+            let result = try_parse(args);
+            assert!(result.is_err(), "{args:?} should be removed");
+        }
+    }
+
     // ── Removed flags ────────────────────────────────────────────
 
     #[test]
@@ -2189,15 +2147,15 @@ mod tests {
     }
 
     #[test]
-    fn back_succeeds() {
+    fn back_is_removed() {
         let result = try_parse(&["bk", "back"]);
-        assert!(result.is_ok());
+        assert!(result.is_err());
     }
 
     #[test]
-    fn forward_succeeds() {
+    fn forward_is_removed() {
         let result = try_parse(&["bk", "forward"]);
-        assert!(result.is_ok());
+        assert!(result.is_err());
     }
 
     #[test]
