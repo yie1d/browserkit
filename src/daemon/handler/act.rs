@@ -632,6 +632,54 @@ mod tests {
     }
 
     #[test]
+    fn parse_act_scroll_defaults_to_down_without_target() {
+        let scroll = parse_act_params(&json!({"kind": "scroll"})).unwrap();
+        assert_eq!(scroll.kind, ActKind::Scroll);
+        assert_eq!(scroll.direction.as_deref(), Some("down"));
+        assert_eq!(scroll.ref_id, None);
+        assert_eq!(scroll.selector, None);
+    }
+
+    #[test]
+    fn parse_act_scroll_invalid_direction_is_error() {
+        let err =
+            parse_act_params(&json!({"kind": "scroll", "direction": "diagonal"})).unwrap_err();
+        let value = serde_json::to_value(err).unwrap();
+        assert_eq!(value["error"]["code"], "INVALID_ARGUMENT");
+    }
+
+    #[test]
+    fn parse_act_scroll_non_positive_amount_is_error() {
+        for amount in [0.0, -1.0] {
+            let err = parse_act_params(&json!({
+                "kind": "scroll",
+                "direction": "down",
+                "amount": amount
+            }))
+            .unwrap_err();
+            let value = serde_json::to_value(err).unwrap();
+            assert_eq!(value["error"]["code"], "INVALID_ARGUMENT");
+        }
+    }
+
+    #[test]
+    fn parse_act_scroll_stores_selector_and_ref_shapes() {
+        let selector_scroll =
+            parse_act_params(&json!({"kind": "scroll", "selector": "#main"})).unwrap();
+        assert_eq!(selector_scroll.kind, ActKind::Scroll);
+        assert_eq!(selector_scroll.selector.as_deref(), Some("#main"));
+        assert_eq!(selector_scroll.ref_id, None);
+        assert_eq!(selector_scroll.direction, None);
+
+        let ref_scroll =
+            parse_act_params(&json!({"kind": "scroll", "ref": 42, "direction": "up"})).unwrap();
+        assert_eq!(ref_scroll.kind, ActKind::Scroll);
+        assert_eq!(ref_scroll.ref_id, Some(42));
+        assert_eq!(ref_scroll.selector, None);
+        assert_eq!(ref_scroll.direction.as_deref(), Some("up"));
+    }
+
+    #[test]
     fn parse_act_hover_and_focus_require_ref() {
         for kind in ["hover", "focus"] {
             let response = parse_act_params(&json!({"kind": kind})).unwrap_err();

@@ -43,6 +43,8 @@ Removed aliases:
   goto -> use navigate    info -> use snapshot
   eval -> use evaluate    shot -> use screenshot
   back/forward/reload -> use navigate --back/--forward/--reload
+  scroll -> use act scroll    hover -> use act hover
+  focus -> use act focus
 
 Options:
       --session <NAME>    Target session (or BK_SESSION env var)
@@ -1833,6 +1835,20 @@ mod tests {
     }
 
     #[test]
+    fn cli_parses_act_scroll_selector() {
+        let cli = try_parse(&["bk", "act", "scroll", "--selector", "#main"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Command::Act {
+                ref kind,
+                ref selector,
+                element_ref: None,
+                ..
+            } if kind.as_deref() == Some("scroll") && selector.as_deref() == Some("#main")
+        ));
+    }
+
+    #[test]
     fn cli_parses_navigate_url() {
         let cli = try_parse(&["bk", "navigate", "https://example.com"]).unwrap();
         if let Command::Navigate { url, .. } = &cli.command {
@@ -2008,6 +2024,13 @@ mod tests {
             &["bk", "hover", "--ref", "42"][..],
             &["bk", "focus", "--ref", "43"][..],
         ]);
+    }
+
+    #[test]
+    fn top_level_help_mentions_removed_scroll_hover_focus_guidance() {
+        assert!(HELP_TEXT.contains("scroll -> use act scroll"));
+        assert!(HELP_TEXT.contains("hover -> use act hover"));
+        assert!(HELP_TEXT.contains("focus -> use act focus"));
     }
 
     // ── Removed flags ────────────────────────────────────────────
