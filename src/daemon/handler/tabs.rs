@@ -23,9 +23,7 @@ fn build_tabs_response(state: &Arc<DaemonState>, session_name: &str) -> Result<R
         )
     })?;
 
-    if let Err(resp) = session.check_connected() {
-        return Err(resp);
-    }
+    session.check_connected()?;
 
     let active = session.active_target.as_deref();
     let mut tabs: Vec<serde_json::Value> = session

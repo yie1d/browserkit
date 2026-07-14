@@ -16,6 +16,9 @@ use std::sync::Arc;
 
 use fs2::FileExt;
 
+#[cfg(test)]
+pub(crate) static DAEMON_TEST_FS_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// Return the `~/.bk` base directory.
 pub fn bk_home() -> PathBuf {
     let home = if cfg!(windows) {
@@ -243,7 +246,7 @@ mod tests {
     /// `#[tokio::test]` spawns an independent tokio runtime — a tokio mutex
     /// would NOT provide cross-test serialization. A std mutex works because
     /// all tests run in the same OS process.
-    static DAEMON_FS_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    use super::DAEMON_TEST_FS_MUTEX as DAEMON_FS_MUTEX;
 
     /// Clean up both daemon.lock and daemon.port to ensure a pristine state.
     fn cleanup_daemon_files() {

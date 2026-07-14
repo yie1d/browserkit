@@ -149,15 +149,13 @@ async fn detect_new_tab(
         .filter(|t| !tabs_before.contains(&t.tid))
         .collect();
 
-    if let Some(tab) = new_tabs.last() {
-        Some(json!({
+    new_tabs.last().map(|tab| {
+        json!({
             "tid": tab.tid,
             "alias": tab.alias,
             "url": tab.url,
-        }))
-    } else {
-        None
-    }
+        })
+    })
 }
 
 handler!(handle_type, do_type(req, state));

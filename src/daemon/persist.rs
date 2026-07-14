@@ -24,6 +24,7 @@ use tracing::warn;
 
 use crate::daemon::bk_home;
 use crate::daemon::dialog::spawn_dialog_subscription;
+use crate::daemon::session::{Session, SessionMode, SessionTab};
 use crate::daemon::state::{Browser, DaemonState};
 use crate::page::Tab;
 use crate::workspace::Workspace;
@@ -89,6 +90,32 @@ fn default_managed_true() -> bool {
     true
 }
 
+/// Serializable representation of a v2 session tab.
+///
+/// CDP session IDs are deliberately omitted because they are transient and must
+/// be refreshed with `Target.attachToTarget` after daemon restart.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PersistedSessionTab {
+    pub target_id: String,
+    pub url: String,
+    pub title: String,
+}
+
+/// Serializable representation of a v2 session.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PersistedSession {
+    pub name: String,
+    pub mode: SessionMode,
+    pub browser_host: String,
+    pub browser_context_id: Option<String>,
+    pub tabs: Vec<PersistedSessionTab>,
+    pub active_target: Option<String>,
+    pub created_at: u64,
+    pub last_active: u64,
+    #[serde(default)]
+    pub disconnected: bool,
+}
+
 // ── Unified persisted state ──────────────────────────────────────────
 
 /// The single top-level structure written to `~/.bk/state.json`.
@@ -97,16 +124,18 @@ fn default_managed_true() -> bool {
 /// together in one atomic file write to eliminate cross-file inconsistency.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct PersistedState {
-    /// Schema version for forward compatibility. Current = 1.
+    /// Schema version for forward compatibility. Current = 2.
     pub version: u32,
     pub browsers: Vec<PersistedBrowser>,
     pub workspaces: Vec<PersistedWorkspace>,
+    #[serde(default)]
+    pub sessions: Vec<PersistedSession>,
     pub default_ws: Option<String>,
 }
 
 impl PersistedState {
     /// Current schema version.
-    pub const CURRENT_VERSION: u32 = 1;
+    pub const CURRENT_VERSION: u32 = 2;
 
     /// Create an empty state with the current version.
     pub fn empty() -> Self {
@@ -114,6 +143,7 @@ impl PersistedState {
             version: Self::CURRENT_VERSION,
             browsers: Vec::new(),
             workspaces: Vec::new(),
+            sessions: Vec::new(),
             default_ws: None,
         }
     }
@@ -243,6 +273,111 @@ impl PersistedWorkspace {
     }
 }
 
+impl PersistedSession {
+    /// Convert a runtime v2 `Session` into its persisted form.
+    pub fn from_session(session: &Session) -> Self {
+        let tabs = session
+            .tabs
+            .values()
+            .map(|tab| PersistedSessionTab {
+                target_id: tab.target_id.clone(),
+                url: tab.url.clone(),
+                title: tab.title.clone(),
+            })
+            .collect();
+
+        Self {
+            name: session.name.clone(),
+            mode: session.mode,
+            browser_host: session.browser_host.clone(),
+            browser_context_id: session.browser_context_id.clone(),
+            tabs,
+            active_target: session.active_target.clone(),
+            created_at: session.created_at,
+            last_active: session.last_active,
+            disconnected: session.disconnected,
+        }
+    }
+
+    /// Convert persisted session metadata into a runtime `Session`.
+    ///
+    /// Reattachment is handled separately by restore code, so every restored tab
+    /// starts with an empty `cdp_session_id`.
+    pub fn into_session(self) -> Session {
+        let mut tabs = HashMap::new();
+        for tab in self.tabs {
+            tabs.insert(
+                tab.target_id.clone(),
+                SessionTab {
+                    target_id: tab.target_id,
+                    url: tab.url,
+                    title: tab.title,
+                    cdp_session_id: String::new(),
+                },
+            );
+        }
+
+        Session {
+            name: self.name,
+            mode: self.mode,
+            browser_host: self.browser_host,
+            browser_context_id: self.browser_context_id,
+            tabs,
+            active_target: self.active_target,
+            created_at: self.created_at,
+            last_active: self.last_active,
+            disconnected: self.disconnected,
+        }
+    }
+}
+
+fn prepare_restored_session(persisted: PersistedSession, browser_available: bool) -> Session {
+    let mut session = persisted.into_session();
+    if !browser_available {
+        session.mark_disconnected();
+    }
+    session
+}
+
+async fn reattach_session_tabs(session: &mut Session, cdp: &Arc<cdpkit::CDP>) {
+    let mut failed_targets = Vec::new();
+
+    for tab in session.tabs.values_mut() {
+        match cdpkit::target::methods::AttachToTarget::new(tab.target_id.clone())
+            .with_flatten(true)
+            .send(cdp.as_ref())
+            .await
+        {
+            Ok(resp) => {
+                tab.cdp_session_id = resp.session_id;
+            }
+            Err(e) => {
+                warn!(
+                    session = %session.name,
+                    target_id = %tab.target_id,
+                    error = %e,
+                    "failed to re-attach CDP session tab, dropping tab from restored session"
+                );
+                failed_targets.push(tab.target_id.clone());
+            }
+        }
+    }
+
+    for target_id in failed_targets {
+        session.tabs.remove(&target_id);
+    }
+
+    if let Some(active) = session.active_target.as_deref() {
+        if session.tabs.contains_key(active) {
+            return;
+        }
+    }
+
+    let mut targets: Vec<String> = session.tabs.keys().cloned().collect();
+    targets.sort();
+    session.active_target = targets.into_iter().next();
+}
+
 // ── Persist (write) ──────────────────────────────────────────────────
 
 /// Write a serializable value to a JSON file atomically.
@@ -337,6 +472,7 @@ pub fn load_persisted_state() -> (PersistedState, bool) {
         version: PersistedState::CURRENT_VERSION,
         browsers,
         workspaces,
+        sessions: Vec::new(),
         default_ws,
     };
 
@@ -649,6 +785,33 @@ pub async fn restore_into_state(state: &Arc<DaemonState>) {
         tracing::info!(wid = %wid, "restored workspace");
     }
 
+    // Restore v2 sessions. Session records are kept even if their browser is
+    // unavailable, but marked disconnected so commands fail predictably.
+    for ps in restored.sessions {
+        let browser_available = state.browsers.contains_key(&ps.browser_host);
+        let browser_host = ps.browser_host.clone();
+        let session_name = ps.name.clone();
+        let mut session = prepare_restored_session(ps, browser_available);
+
+        if browser_available {
+            if let Some(browser) = state.browsers.get(&browser_host) {
+                let cdp = Arc::clone(&browser.cdp);
+                drop(browser);
+                reattach_session_tabs(&mut session, &cdp).await;
+            }
+        } else {
+            warn!(
+                session = %session_name,
+                host = %browser_host,
+                "restored session is disconnected because browser is unavailable"
+            );
+        }
+
+        let session_name = session.name.clone();
+        state.sessions.insert(session_name.clone(), session);
+        tracing::info!(session = %session_name, "restored session");
+    }
+
     // Restore default workspace ID only if the workspace was actually restored.
     // Stale default_ws (pointing to a non-existent workspace) is discarded.
     if let Some(ref wid) = restored.default_ws {
@@ -751,11 +914,17 @@ async fn do_persist(state: &Arc<DaemonState>) {
         .collect();
 
     let default_ws = state.get_default_wid();
+    let sessions: Vec<PersistedSession> = state
+        .sessions
+        .iter()
+        .map(|entry| PersistedSession::from_session(entry.value()))
+        .collect();
 
     let persisted = PersistedState {
         version: PersistedState::CURRENT_VERSION,
         browsers,
         workspaces,
+        sessions,
         default_ws,
     };
 
@@ -807,6 +976,25 @@ mod tests {
         }
     }
 
+    fn make_session(name: &str, host: &str) -> crate::daemon::session::Session {
+        let mut session = crate::daemon::session::Session::new_isolated(
+            name.to_string(),
+            host.to_string(),
+            format!("ctx-{name}"),
+        );
+        session.add_tab(
+            "target-1".to_string(),
+            "https://example.com".to_string(),
+            "Example".to_string(),
+        );
+        session
+            .tabs
+            .get_mut("target-1")
+            .unwrap()
+            .cdp_session_id = "transient-cdp-session".to_string();
+        session
+    }
+
     #[test]
     fn persisted_browser_roundtrip_json() {
         let pb = make_persisted_browser("localhost:9222", true);
@@ -850,6 +1038,64 @@ mod tests {
     }
 
     #[test]
+    fn persisted_session_from_session_does_not_serialize_cdp_session_id() {
+        let session = make_session("agent-a", "localhost:9222");
+        let persisted = PersistedSession::from_session(&session);
+
+        let json = serde_json::to_string(&persisted).unwrap();
+
+        assert!(json.contains("agent-a"));
+        assert!(!json.contains("transient-cdp-session"));
+        assert!(!json.contains("cdp_session_id"));
+        assert!(!json.contains("cdpSessionId"));
+    }
+
+    #[test]
+    fn persisted_session_into_session_restores_tabs_with_empty_cdp_session_id() {
+        let session = make_session("agent-a", "localhost:9222");
+        let persisted = PersistedSession::from_session(&session);
+
+        let restored = persisted.into_session();
+        let tab = restored.tabs.get("target-1").unwrap();
+
+        assert_eq!(restored.name, "agent-a");
+        assert_eq!(restored.mode, crate::daemon::session::SessionMode::Isolated);
+        assert_eq!(restored.browser_context_id, Some("ctx-agent-a".to_string()));
+        assert_eq!(restored.active_target, Some("target-1".to_string()));
+        assert_eq!(tab.url, "https://example.com");
+        assert_eq!(tab.title, "Example");
+        assert_eq!(tab.cdp_session_id, "");
+    }
+
+    #[test]
+    fn prepare_restored_session_marks_disconnected_when_browser_unavailable() {
+        let session = make_session("agent-a", "localhost:9222");
+        let persisted = PersistedSession::from_session(&session);
+
+        let restored = prepare_restored_session(persisted, false);
+
+        assert!(restored.disconnected);
+        assert_eq!(restored.name, "agent-a");
+        assert_eq!(restored.tab_count(), 1);
+        assert_eq!(
+            restored.tabs["target-1"].cdp_session_id,
+            "",
+            "restore must not reuse persisted CDP session IDs"
+        );
+    }
+
+    #[test]
+    fn prepare_restored_session_keeps_connected_when_browser_available() {
+        let session = make_session("agent-a", "localhost:9222");
+        let persisted = PersistedSession::from_session(&session);
+
+        let restored = prepare_restored_session(persisted, true);
+
+        assert!(!restored.disconnected);
+        assert_eq!(restored.name, "agent-a");
+    }
+
+    #[test]
     fn persisted_state_roundtrip_json() {
         let state = PersistedState {
             version: 1,
@@ -861,6 +1107,10 @@ mod tests {
                 make_persisted_workspace("a3f2", "localhost:9222"),
                 make_persisted_workspace("b7e1", "localhost:9223"),
             ],
+            sessions: vec![PersistedSession::from_session(&make_session(
+                "agent-a",
+                "localhost:9222",
+            ))],
             default_ws: Some("a3f2".to_string()),
         };
 
@@ -872,9 +1122,10 @@ mod tests {
     #[test]
     fn persisted_state_empty() {
         let state = PersistedState::empty();
-        assert_eq!(state.version, 1);
+        assert_eq!(state.version, PersistedState::CURRENT_VERSION);
         assert!(state.browsers.is_empty());
         assert!(state.workspaces.is_empty());
+        assert!(state.sessions.is_empty());
         assert_eq!(state.default_ws, None);
     }
 
@@ -892,6 +1143,10 @@ mod tests {
             workspaces: vec![
                 make_persisted_workspace("a3f2", "localhost:9222"),
             ],
+            sessions: vec![PersistedSession::from_session(&make_session(
+                "agent-a",
+                "localhost:9222",
+            ))],
             default_ws: Some("a3f2".to_string()),
         };
 
@@ -917,7 +1172,7 @@ mod tests {
 
         let json = std::fs::read_to_string(&state_path).unwrap();
         let restored: PersistedState = serde_json::from_str(&json).unwrap();
-        assert_eq!(restored.version, 1);
+        assert_eq!(restored.version, PersistedState::CURRENT_VERSION);
         assert!(restored.browsers.is_empty());
         assert!(restored.workspaces.is_empty());
         assert_eq!(restored.default_ws, None);
@@ -956,6 +1211,7 @@ mod tests {
             version: PersistedState::CURRENT_VERSION,
             browsers: loaded_browsers,
             workspaces: loaded_workspaces,
+            sessions: Vec::new(),
             default_ws: loaded_default,
         };
         let state_path = tmp.path().join("state.json");
@@ -964,7 +1220,7 @@ mod tests {
         // Verify state.json is correct
         let json = std::fs::read_to_string(&state_path).unwrap();
         let restored: PersistedState = serde_json::from_str(&json).unwrap();
-        assert_eq!(restored.version, 1);
+        assert_eq!(restored.version, PersistedState::CURRENT_VERSION);
         assert_eq!(restored.browsers.len(), 1);
         assert_eq!(restored.workspaces.len(), 1);
         assert_eq!(restored.default_ws, Some("ws1".to_string()));
@@ -1012,6 +1268,7 @@ mod tests {
             version: 1,
             browsers: vec![make_persisted_browser("localhost:9222", true)],
             workspaces: vec![make_persisted_workspace("ws_actual", "localhost:9222")],
+            sessions: Vec::new(),
             default_ws: Some("ws_nonexistent".to_string()),
         };
 
@@ -1031,6 +1288,7 @@ mod tests {
             version: 1,
             browsers: vec![make_persisted_browser("localhost:9222", true)],
             workspaces: vec![make_persisted_workspace("ws_real", "localhost:9222")],
+            sessions: Vec::new(),
             default_ws: Some("ws_real".to_string()),
         };
 
@@ -2136,6 +2394,7 @@ mod tests {
             version: PersistedState::CURRENT_VERSION,
             browsers: vec![make_persisted_browser("localhost:9222", true)],
             workspaces: vec![make_persisted_workspace("ws1", "localhost:9222")],
+            sessions: Vec::new(),
             default_ws: Some("ws1".to_string()),
         };
 
@@ -2304,6 +2563,7 @@ mod tests {
             version: PersistedState::CURRENT_VERSION,
             browsers,
             workspaces,
+            sessions: Vec::new(),
             default_ws: sanitized,
         };
         assert_eq!(state.default_ws, None);

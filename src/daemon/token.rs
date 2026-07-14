@@ -86,6 +86,7 @@ mod tests {
 
     #[test]
     fn write_and_read_token_roundtrip() {
+        let _guard = crate::daemon::DAEMON_TEST_FS_MUTEX.lock().unwrap();
         let token = generate_daemon_token();
         write_token_file(&token).unwrap();
         let read_back = read_token_file().unwrap();
@@ -96,6 +97,7 @@ mod tests {
 
     #[test]
     fn read_token_file_returns_none_when_missing() {
+        let _guard = crate::daemon::DAEMON_TEST_FS_MUTEX.lock().unwrap();
         // Ensure file does not exist
         remove_token_file();
         assert_eq!(read_token_file(), None);

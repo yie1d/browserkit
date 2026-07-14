@@ -15,6 +15,8 @@ use crate::daemon::session::Session;
 use crate::daemon::state::{Browser, DaemonState};
 use crate::error::ErrorCode;
 
+use super::session::check_session_limit;
+
 /// Handle the `connect` / `v2.connect` command.
 pub async fn handle_connect(req: &Request, state: &Arc<DaemonState>) -> Response {
     let session_name = req
@@ -62,6 +64,48 @@ fn build_connect_response(status: &str, browser: &str, session: &str, tabs: usiz
     }))
 }
 
+fn is_default_session(session_name: &str) -> bool {
+    session_name == "default"
+}
+
+fn check_new_session_limit_for_connect(
+    state: &Arc<DaemonState>,
+    session_name: &str,
+) -> Result<(), Response> {
+    if is_default_session(session_name) || state.sessions.contains_key(session_name) {
+        return Ok(());
+    }
+
+    check_session_limit(state, state.config.limits.max_sessions)
+}
+
+fn build_new_session_for_connect(
+    session_name: &str,
+    browser_host: String,
+    browser_context_id: Option<String>,
+) -> Result<Session, Response> {
+    if is_default_session(session_name) {
+        return Ok(Session::new_default(browser_host));
+    }
+
+    let browser_context_id = browser_context_id.ok_or_else(|| {
+        Response::error_detail(
+            ErrorCode::DaemonError,
+            format!(
+                "missing BrowserContext id while creating isolated session '{}'",
+                session_name
+            ),
+            None,
+        )
+    })?;
+
+    Ok(Session::new_isolated(
+        session_name.to_string(),
+        browser_host,
+        browser_context_id,
+    ))
+}
+
 /// Determine which error code best describes why connection failed.
 fn determine_connection_error(
     is_running: bool,
@@ -82,6 +126,8 @@ async fn discover_and_connect(
     state: &Arc<DaemonState>,
     session_name: &str,
 ) -> Result<Response, Response> {
+    check_new_session_limit_for_connect(state, session_name)?;
+
     // Find DevToolsActivePort
     let port_info = match finder::find_devtools_port() {
         Some(info) => info,
@@ -126,6 +172,12 @@ async fn discover_and_connect(
         },
     );
 
+    let browser_context_id = if state.sessions.contains_key(session_name) {
+        None
+    } else {
+        create_browser_context_for_session(&cdp, session_name).await?
+    };
+
     // Create or update session — preserve existing tabs on reconnect
     let tab_count = if let Some(mut existing) = state.sessions.get_mut(session_name) {
         existing.browser_host = host.clone();
@@ -135,7 +187,7 @@ async fn discover_and_connect(
         drop(existing);
         count
     } else {
-        let session = Session::new_default(host.clone());
+        let session = build_new_session_for_connect(session_name, host.clone(), browser_context_id)?;
         let count = session.tab_count();
         state.sessions.insert(session_name.to_string(), session);
         count
@@ -151,6 +203,31 @@ async fn discover_and_connect(
         session_name,
         tab_count,
     ))
+}
+
+async fn create_browser_context_for_session(
+    cdp: &Arc<cdpkit::CDP>,
+    session_name: &str,
+) -> Result<Option<String>, Response> {
+    if is_default_session(session_name) {
+        return Ok(None);
+    }
+
+    let result = cdpkit::target::methods::CreateBrowserContext::new()
+        .send(cdp.as_ref())
+        .await
+        .map_err(|e| {
+            Response::error_detail(
+                ErrorCode::DaemonError,
+                format!(
+                    "failed to create BrowserContext for session '{}': {e}",
+                    session_name
+                ),
+                None,
+            )
+        })?;
+
+    Ok(Some(result.browser_context_id))
 }
 
 /// Get browser version string via CDP Browser.getVersion.
@@ -304,5 +381,78 @@ mod tests {
             .and_then(|v| v.as_str())
             .unwrap_or("default");
         assert_eq!(name, "agent-a");
+    }
+
+    #[test]
+    fn connect_new_default_session_uses_default_browser_context() {
+        let session =
+            build_new_session_for_connect("default", "localhost:9222".into(), None).unwrap();
+
+        assert_eq!(session.name, "default");
+        assert_eq!(session.mode, crate::daemon::session::SessionMode::Default);
+        assert_eq!(session.browser_host, "localhost:9222");
+        assert_eq!(session.browser_context_id, None);
+    }
+
+    #[test]
+    fn connect_new_named_session_uses_isolated_browser_context() {
+        let session = build_new_session_for_connect(
+            "agent-a",
+            "localhost:9222".into(),
+            Some("CTX-agent-a".into()),
+        )
+        .unwrap();
+
+        assert_eq!(session.name, "agent-a");
+        assert_eq!(session.mode, crate::daemon::session::SessionMode::Isolated);
+        assert_eq!(session.browser_host, "localhost:9222");
+        assert_eq!(session.browser_context_id, Some("CTX-agent-a".into()));
+    }
+
+    #[test]
+    fn connect_new_named_session_requires_browser_context_id() {
+        let err = build_new_session_for_connect("agent-a", "localhost:9222".into(), None)
+            .unwrap_err();
+        let json = serde_json::to_value(&err).unwrap();
+
+        assert_eq!(json["ok"], false);
+        assert_eq!(json["error"]["code"], "DAEMON_ERROR");
+        assert!(json["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("BrowserContext"));
+    }
+
+    #[test]
+    fn connect_rejects_new_named_session_when_session_limit_reached() {
+        let state = Arc::new(DaemonState::with_config(crate::config::Config {
+            limits: crate::config::LimitsConfig {
+                max_sessions: 1,
+                ..Default::default()
+            },
+            ..Default::default()
+        }));
+        let existing =
+            Session::new_isolated("agent-a".into(), "localhost:9222".into(), "CTX-a".into());
+        state.sessions.insert("agent-a".into(), existing);
+
+        let err = check_new_session_limit_for_connect(&state, "agent-b").unwrap_err();
+        let json = serde_json::to_value(&err).unwrap();
+
+        assert_eq!(json["ok"], false);
+        assert_eq!(json["error"]["code"], "SESSION_LIMIT_EXCEEDED");
+    }
+
+    #[test]
+    fn connect_does_not_apply_session_limit_to_default_session() {
+        let state = Arc::new(DaemonState::with_config(crate::config::Config {
+            limits: crate::config::LimitsConfig {
+                max_sessions: 0,
+                ..Default::default()
+            },
+            ..Default::default()
+        }));
+
+        assert!(check_new_session_limit_for_connect(&state, "default").is_ok());
     }
 }

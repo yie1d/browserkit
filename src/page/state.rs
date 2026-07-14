@@ -18,6 +18,7 @@ pub const PAGE_TEXT_MAX_CHARS: usize = 2000;
 /// - Skips elements with display:none, visibility:hidden, or opacity < 0.01
 /// - Reports `element_type = "contenteditable"` for contenteditable elements
 /// - Recursively penetrates open shadow roots for Shadow DOM support
+///
 /// Returns a JSON-encoded array of element info objects.
 const DISCOVER_ELEMENTS_JS: &str = const_format::concatcp!(
     r#"(() => {

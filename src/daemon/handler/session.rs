@@ -59,7 +59,7 @@ fn clear_default_session_tabs(state: &Arc<DaemonState>) {
 }
 
 /// Check if the number of isolated sessions has reached the limit.
-fn check_session_limit(state: &Arc<DaemonState>, max: usize) -> Result<(), Response> {
+pub(crate) fn check_session_limit(state: &Arc<DaemonState>, max: usize) -> Result<(), Response> {
     if max == 0 {
         return Ok(());
     }

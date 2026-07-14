@@ -93,8 +93,98 @@ pub fn spawn_cleanup_task(state: Arc<DaemonState>, interval_seconds: u64) -> tok
         loop {
             interval.tick().await;
             cleanup_expired_workspaces(&state).await;
+            cleanup_expired_sessions(&state).await;
         }
     })
+}
+
+async fn cleanup_expired_sessions(state: &Arc<DaemonState>) {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    let timeout = state.config.limits.session_timeout_hours * 60 * 60;
+    if timeout == 0 {
+        return;
+    }
+
+    let expired: Vec<ExpiredSession> = state
+        .sessions
+        .iter()
+        .filter(|entry| now.saturating_sub(entry.value().last_active) > timeout)
+        .map(|entry| {
+            let session = entry.value();
+            let cdp = state
+                .browsers
+                .get(&session.browser_host)
+                .map(|b| Arc::clone(&b.cdp));
+            ExpiredSession {
+                name: entry.key().clone(),
+                browser_host: session.browser_host.clone(),
+                browser_context_id: session.browser_context_id.clone(),
+                mode: session.mode,
+                targets: session.tabs.keys().cloned().collect(),
+                cdp,
+            }
+        })
+        .collect();
+
+    for expired_session in &expired {
+        if let Some(cdp) = &expired_session.cdp {
+            for target_id in &expired_session.targets {
+                let _ = cdpkit::target::methods::CloseTarget::new(target_id.clone())
+                    .send(cdp.as_ref())
+                    .await;
+            }
+
+            if expired_session.mode == crate::daemon::session::SessionMode::Isolated {
+                if let Some(ctx_id) = &expired_session.browser_context_id {
+                    let _ = cdpkit::target::methods::DisposeBrowserContext::new(ctx_id.clone())
+                        .send(cdp.as_ref())
+                        .await;
+                }
+            }
+        }
+    }
+
+    let mut changed = false;
+    for expired_session in &expired {
+        let still_expired = state
+            .sessions
+            .get(&expired_session.name)
+            .map(|session| now.saturating_sub(session.last_active) > timeout)
+            .unwrap_or(false);
+
+        if !still_expired {
+            tracing::debug!(
+                session = %expired_session.name,
+                "session re-activated during cleanup, skipping removal"
+            );
+            continue;
+        }
+
+        if expired_session.mode == crate::daemon::session::SessionMode::Default {
+            if let Some(mut session) = state.sessions.get_mut(&expired_session.name) {
+                session.tabs.clear();
+                session.active_target = None;
+                session.touch();
+            }
+        } else {
+            state.sessions.remove(&expired_session.name);
+        }
+
+        changed = true;
+        info!(
+            session = %expired_session.name,
+            host = %expired_session.browser_host,
+            "session expired and cleaned up"
+        );
+    }
+
+    if changed {
+        state.request_persist();
+    }
 }
 
 /// Check all workspaces and remove those inactive for more than the configured timeout.
@@ -205,6 +295,15 @@ struct ExpiredWorkspace {
     browser_context_id: Option<String>,
     mode: crate::workspace::WorkspaceMode,
     tab_info: Vec<(String, String, bool)>, // (target_id, session_id, managed)
+    cdp: Option<Arc<cdpkit::CDP>>,
+}
+
+struct ExpiredSession {
+    name: String,
+    browser_host: String,
+    browser_context_id: Option<String>,
+    mode: crate::daemon::session::SessionMode,
+    targets: Vec<String>,
     cdp: Option<Arc<cdpkit::CDP>>,
 }
 
@@ -408,6 +507,30 @@ mod tests {
         }
     }
 
+    fn make_default_session(host: &str, last_active: u64) -> crate::daemon::session::Session {
+        let mut session = crate::daemon::session::Session::new_default(host.to_string());
+        session.last_active = last_active;
+        session.add_tab("target-default".into(), "https://example.com".into(), "Example".into());
+        session.last_active = last_active;
+        session
+    }
+
+    fn make_isolated_session(
+        name: &str,
+        host: &str,
+        last_active: u64,
+    ) -> crate::daemon::session::Session {
+        let mut session = crate::daemon::session::Session::new_isolated(
+            name.to_string(),
+            host.to_string(),
+            format!("ctx-{name}"),
+        );
+        session.last_active = last_active;
+        session.add_tab(format!("target-{name}"), "https://example.com".into(), "Example".into());
+        session.last_active = last_active;
+        session
+    }
+
     #[tokio::test]
     async fn cleanup_removes_expired_workspaces() {
         let state = Arc::new(DaemonState::new());
@@ -453,6 +576,62 @@ mod tests {
         state.workspaces.insert("ffff".to_string(), make_workspace("ffff", "localhost:9222", now - 30 * 60));
         cleanup_expired_workspaces(&state).await;
         assert!(state.workspaces.contains_key("ffff"), "exactly 30 min should not be expired");
+    }
+
+    #[tokio::test]
+    async fn cleanup_removes_expired_isolated_sessions() {
+        let state = Arc::new(DaemonState::new());
+        let now = now_ts();
+        state.sessions.insert(
+            "agent-a".to_string(),
+            make_isolated_session("agent-a", "localhost:9222", now - 73 * 60 * 60),
+        );
+        state.sessions.insert(
+            "agent-b".to_string(),
+            make_isolated_session("agent-b", "localhost:9222", now),
+        );
+
+        cleanup_expired_sessions(&state).await;
+
+        assert!(!state.sessions.contains_key("agent-a"));
+        assert!(state.sessions.contains_key("agent-b"));
+    }
+
+    #[tokio::test]
+    async fn cleanup_clears_expired_default_session_tabs_but_keeps_session() {
+        let state = Arc::new(DaemonState::new());
+        let now = now_ts();
+        state.sessions.insert(
+            "default".to_string(),
+            make_default_session("localhost:9222", now - 73 * 60 * 60),
+        );
+
+        cleanup_expired_sessions(&state).await;
+
+        let session = state.sessions.get("default").unwrap();
+        assert_eq!(session.tab_count(), 0);
+        assert!(session.active_target.is_none());
+        assert!(session.last_active >= now);
+    }
+
+    #[tokio::test]
+    async fn cleanup_sessions_respects_zero_timeout() {
+        let state = Arc::new(DaemonState::with_config(crate::config::Config {
+            limits: crate::config::LimitsConfig {
+                session_timeout_hours: 0,
+                ..Default::default()
+            },
+            ..Default::default()
+        }));
+        let now = now_ts();
+        state.sessions.insert(
+            "agent-a".to_string(),
+            make_isolated_session("agent-a", "localhost:9222", now - 365 * 24 * 60 * 60),
+        );
+
+        cleanup_expired_sessions(&state).await;
+
+        assert!(state.sessions.contains_key("agent-a"));
     }
 
     // ── Token authentication tests ──────────────────────────────────────
