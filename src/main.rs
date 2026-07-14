@@ -452,26 +452,6 @@ pub enum Command {
         action: DebugAction,
     },
 
-    // ── Legacy aliases ────────────────────────────────────────────
-    /// Create new workspace (alias for ws new)
-    #[command(hide = true)]
-    New {
-        #[arg(long)]
-        host: Option<String>,
-        #[arg(short, long)]
-        label: Option<String>,
-        #[arg(long)]
-        no_headless: bool,
-    },
-    /// List workspaces (alias for ws list)
-    #[command(hide = true)]
-    Ls,
-    /// Close workspace (alias for ws close)
-    #[command(hide = true)]
-    Rm {
-        wid: String,
-    },
-
     /// Generate shell completions
     #[command(hide = true)]
     Completions {
@@ -1654,26 +1634,6 @@ async fn dispatch(cli: &Cli, client: &mut DaemonClient) -> Result<(), String> {
             }
         },
 
-        // ── Aliases ───────────────────────────────────────
-        Command::New { host, label, no_headless } => {
-            let mut params = json!({});
-            if let Some(h) = host { params["host"] = json!(h); }
-            if let Some(l) = label { params["label"] = json!(l); }
-            if *no_headless { params["headless"] = json!(false); }
-            let resp = send_cmd(client, "ws.new", params).await?;
-            print_response(&resp);
-        }
-
-        Command::Ls => {
-            let resp = send_cmd(client, "ws.list", json!({})).await?;
-            print_response(&resp);
-        }
-
-        Command::Rm { wid } => {
-            let resp = send_cmd(client, "ws.close", json!({"wid": wid})).await?;
-            print_response(&resp);
-        }
-
         Command::Completions { .. } => unreachable!(),
         Command::Setup => unreachable!(),
     }
@@ -2046,6 +2006,18 @@ mod tests {
             &["bk", "back"][..],
             &["bk", "forward"][..],
             &["bk", "reload"][..],
+        ] {
+            let result = try_parse(args);
+            assert!(result.is_err(), "{args:?} should be removed");
+        }
+    }
+
+    #[test]
+    fn cli_rejects_removed_workspace_aliases() {
+        for args in [
+            &["bk", "new"][..],
+            &["bk", "ls"][..],
+            &["bk", "rm", "ws1"][..],
         ] {
             let result = try_parse(args);
             assert!(result.is_err(), "{args:?} should be removed");

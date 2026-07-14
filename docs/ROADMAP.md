@@ -102,4 +102,5 @@ Status: pending
 - [x] Move deprecated `shot` onto v2 `screenshot` and remove legacy `page.screenshot` daemon route.
 - [x] Remove deprecated `goto`, `info`, `eval`, and `shot` CLI aliases after v2 parity.
 - [x] Remove legacy `back`, `forward`, and `reload` CLI aliases after v2 `navigate` parity.
+- [x] Remove legacy `new`, `ls`, and `rm` workspace CLI aliases.
 - [ ] Start deleting legacy workspace-facing surfaces after v2 parity is verified.

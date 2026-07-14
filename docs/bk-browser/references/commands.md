@@ -368,5 +368,8 @@ bk status
 | `bk back` | `bk navigate --back` |
 | `bk forward` | `bk navigate --forward` |
 | `bk reload` | `bk navigate --reload` |
+| `bk new` | `bk ws new` (legacy) |
+| `bk ls` | `bk ws list` (legacy) |
+| `bk rm <wid>` | `bk ws close <wid>` (legacy) |
 
 其余 v1 legacy 命令（ws/tab/browser/daemon/storage/dialog/debug/click/type/fill/select/scroll/hover/drag/focus/upload/keys/find/search/html/url/title/console/options/pdf/open/fetch）仍可用但将在 Phase 3 移除。
