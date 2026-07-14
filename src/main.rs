@@ -35,13 +35,13 @@ Primary:
   status      Connection status
 
 Legacy (v1, will be removed in Phase 3):
-  goto/back/forward/reload/click/type/fill/select/scroll/hover/drag/focus
-  upload/keys/info/find/search/eval/html/url/title/console/options
-  shot/pdf/open/fetch/ws/tab/browser/daemon/storage/dialog/debug
+  back/forward/reload/click/type/fill/select/scroll/hover/drag/focus
+  upload/keys/find/search/html/url/title/console/options
+  pdf/open/fetch/ws/tab/browser/daemon/storage/dialog/debug
 
-Deprecated aliases (emit warning, redirect to v2):
-  goto -> navigate    info -> snapshot
-  eval -> evaluate    shot -> screenshot
+Removed aliases:
+  goto -> use navigate    info -> use snapshot
+  eval -> use evaluate    shot -> use screenshot
 
 Options:
       --session <NAME>    Target session (or BK_SESSION env var)
@@ -192,6 +192,12 @@ pub enum Command {
         /// Capture full scrollable page
         #[arg(long)]
         full_page: bool,
+        /// CSS selector for element screenshot
+        #[arg(long)]
+        selector: Option<String>,
+        /// Overlay element labels before capture
+        #[arg(long)]
+        labels: bool,
     },
 
     /// Wait for condition
@@ -229,66 +235,6 @@ pub enum Command {
     /// Connection status
     #[command(about = "Show connection status", name = "status")]
     StatusV2,
-
-    // ══════════════════════════════════════════════════════════════
-    // DEPRECATED ALIASES (emit stderr warning, then execute v2 equivalent)
-    // ══════════════════════════════════════════════════════════════
-
-    /// [deprecated] Use 'navigate' instead
-    #[command(hide = true, name = "goto")]
-    DeprecatedGoto {
-        /// Target URL
-        url: String,
-    },
-
-    /// [deprecated] Use 'snapshot' instead
-    #[command(hide = true, name = "info")]
-    DeprecatedInfo {
-        /// Exclude page text from output
-        #[arg(long)]
-        no_text: bool,
-        /// Include viewport screenshot
-        #[arg(long)]
-        screenshot: bool,
-        /// Output elements in tree format
-        #[arg(long)]
-        tree: bool,
-        /// Include accessibility info
-        #[arg(long)]
-        ax: bool,
-    },
-
-    /// [deprecated] Use 'evaluate' instead
-    #[command(hide = true, name = "eval")]
-    DeprecatedEval {
-        /// JavaScript expression (omit when using --file)
-        expr: Option<String>,
-        /// Run synchronously without await
-        #[arg(long)]
-        sync: bool,
-        /// Execute JS from file path
-        #[arg(long, value_name = "PATH")]
-        file: Option<String>,
-    },
-
-    /// [deprecated] Use 'screenshot' instead
-    #[command(hide = true, name = "shot")]
-    DeprecatedShot {
-        /// URL for one-shot mode
-        url: Option<String>,
-        /// Output file path
-        #[arg(short, long)]
-        output: Option<String>,
-        /// Capture full scrollable page
-        #[arg(long)]
-        full_page: bool,
-        /// CSS selector for element screenshot
-        #[arg(short, long)]
-        selector: Option<String>,
-        /// Overlay index labels
-        #[arg(long)]
-        labels: bool,
-    },
 
     // ══════════════════════════════════════════════════════════════
     // V1 LEGACY COMMANDS (preserved, removed in Phase 3)
@@ -1096,17 +1042,6 @@ fn emit_deprecation_warning(old: &str, new: &str) {
     eprintln!("warning: '{}' is deprecated, use '{}' instead", old, new);
 }
 
-fn build_evaluate_params(js_expr: String, cli: &Cli, await_promise: bool) -> serde_json::Value {
-    let mut params = json!({
-        "expression": js_expr,
-        "await_promise": await_promise,
-    });
-    if let Some(s) = &cli.session { params["session"] = json!(s); }
-    if let Some(t) = &cli.target { params["target"] = json!(t); }
-    if let Some(to) = cli.timeout { params["timeout"] = json!(to); }
-    params
-}
-
 fn build_navigate_params(
     url: Option<&String>,
     back: bool,
@@ -1140,23 +1075,6 @@ fn build_screenshot_params(
     if let Some(s) = selector { params["selector"] = json!(s); }
     if let Some(s) = &cli.session { params["session"] = json!(s); }
     if let Some(t) = &cli.target { params["target"] = json!(t); }
-    params
-}
-
-fn build_oneshot_screenshot_params(
-    session: &str,
-    output: Option<&str>,
-    full_page: bool,
-    selector: Option<&str>,
-    labels: bool,
-) -> serde_json::Value {
-    let mut params = json!({
-        "session": session,
-        "full_page": full_page,
-        "labels": labels,
-    });
-    if let Some(o) = output { params["output"] = json!(o); }
-    if let Some(s) = selector { params["selector"] = json!(s); }
     params
 }
 
@@ -1250,11 +1168,17 @@ async fn dispatch(cli: &Cli, client: &mut DaemonClient) -> Result<(), String> {
             print_response(&resp);
         }
 
-        Command::ScreenshotV2 { output, full_page } => {
+        Command::ScreenshotV2 { output, full_page, selector, labels } => {
             let resp = send_cmd(
                 client,
                 "screenshot",
-                build_screenshot_params(output.as_deref(), *full_page, None, false, cli),
+                build_screenshot_params(
+                    output.as_deref(),
+                    *full_page,
+                    selector.as_deref(),
+                    *labels,
+                    cli,
+                ),
             )
             .await?;
             handle_binary_response(&resp, output.as_deref(), "screenshot.png");
@@ -1316,64 +1240,6 @@ async fn dispatch(cli: &Cli, client: &mut DaemonClient) -> Result<(), String> {
 
         Command::StatusV2 => {
             dispatch_status(client).await?;
-        }
-
-        // ══════════════════════════════════════════════════════════
-        // DEPRECATED ALIASES
-        // ══════════════════════════════════════════════════════════
-
-        Command::DeprecatedGoto { url } => {
-            emit_deprecation_warning("goto", "navigate");
-            let mut params = json!({"url": url});
-            if let Some(s) = &cli.session { params["session"] = json!(s); }
-            if let Some(t) = &cli.target { params["target"] = json!(t); }
-            if let Some(to) = cli.timeout { params["timeout"] = json!(to); }
-            let resp = send_cmd(client, "navigate", params).await?;
-            print_response(&resp);
-        }
-
-        Command::DeprecatedInfo { no_text, screenshot: _, tree: _, ax: _ } => {
-            emit_deprecation_warning("info", "snapshot");
-            let mut params = json!({"no_page_text": no_text});
-            if let Some(s) = &cli.session { params["session"] = json!(s); }
-            if let Some(t) = &cli.target { params["target"] = json!(t); }
-            let resp = send_cmd(client, "snapshot", params).await?;
-            print_response(&resp);
-        }
-
-        Command::DeprecatedEval { expr, sync, file } => {
-            emit_deprecation_warning("eval", "evaluate");
-            let js_expr = if let Some(path) = file {
-                std::fs::read_to_string(path)
-                    .map_err(|e| format!("failed to read JS file: {}", e))?
-            } else if let Some(e) = expr {
-                e.clone()
-            } else {
-                return Err("eval requires either an expression or --file".into());
-            };
-            let resp = send_cmd(client, "evaluate", build_evaluate_params(js_expr, cli, !sync)).await?;
-            print_response(&resp);
-        }
-
-        Command::DeprecatedShot { url, output, full_page, selector, labels } => {
-            emit_deprecation_warning("shot", "screenshot");
-            if let Some(target_url) = url {
-                dispatch_oneshot_shot(client, target_url, output, full_page, selector, labels).await?;
-            } else {
-                let resp = send_cmd(
-                    client,
-                    "screenshot",
-                    build_screenshot_params(
-                        output.as_deref(),
-                        *full_page,
-                        selector.as_deref(),
-                        *labels,
-                        cli,
-                    ),
-                )
-                .await?;
-                handle_binary_response(&resp, output.as_deref(), "screenshot.png");
-            }
         }
 
         // ══════════════════════════════════════════════════════════
@@ -1978,52 +1844,6 @@ async fn wait_for_daemon_exit() {
 
 // ── One-shot helpers ───────────────────────────────────────────
 
-/// One-shot screenshot: create temporary session -> open -> screenshot -> close session.
-async fn dispatch_oneshot_shot(
-    client: &mut DaemonClient,
-    url: &str,
-    output: &Option<String>,
-    full_page: &bool,
-    selector: &Option<String>,
-    labels: &bool,
-) -> Result<(), String> {
-    let millis = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis())
-        .unwrap_or_default();
-    let session = format!("__bk_oneshot_shot_{}_{}", std::process::id(), millis);
-
-    let resp = send_cmd(client, "connect", json!({"session": session.clone()})).await?;
-    if !resp.ok {
-        print_response(&resp);
-        return Ok(());
-    }
-
-    let open_resp = send_cmd(client, "open", json!({"session": session.clone(), "url": url})).await?;
-    if !open_resp.ok {
-        print_response(&open_resp);
-        let _ = send_cmd(client, "session.close", json!({"session": session.clone()})).await;
-        return Ok(());
-    }
-
-    let resp = send_cmd(
-        client,
-        "screenshot",
-        build_oneshot_screenshot_params(
-            &session,
-            output.as_deref(),
-            *full_page,
-            selector.as_deref(),
-            *labels,
-        ),
-    )
-    .await?;
-    handle_binary_response(&resp, output.as_deref(), "screenshot.png");
-
-    let _ = send_cmd(client, "session.close", json!({"session": session})).await;
-    Ok(())
-}
-
 /// One-shot PDF: create ws -> goto -> pdf -> close ws.
 async fn dispatch_oneshot_pdf(
     client: &mut DaemonClient,
@@ -2196,6 +2016,15 @@ mod tests {
     }
 
     #[test]
+    fn cli_parses_screenshot_selector_and_labels() {
+        let cli = try_parse(&["bk", "screenshot", "--selector", "#app", "--labels"]).unwrap();
+        if let Command::ScreenshotV2 { selector, labels, .. } = &cli.command {
+            assert_eq!(selector.as_deref(), Some("#app"));
+            assert!(*labels);
+        } else { panic!("wrong variant"); }
+    }
+
+    #[test]
     fn cli_parses_session_close() {
         let cli = try_parse(&["bk", "session", "close"]).unwrap();
         assert!(matches!(cli.command, Command::Session { .. }));
@@ -2239,103 +2068,30 @@ mod tests {
         assert!(cli.no_state_diff);
     }
 
-    // ── Deprecated aliases ────────────────────────────────────────
+    // ── Removed aliases ───────────────────────────────────────────
 
     #[test]
-    fn cli_parses_deprecated_goto() {
-        let cli = try_parse(&["bk", "goto", "https://a.com"]).unwrap();
-        assert!(matches!(cli.command, Command::DeprecatedGoto { .. }));
+    fn cli_rejects_removed_goto_alias() {
+        let result = try_parse(&["bk", "goto", "https://a.com"]);
+        assert!(result.is_err());
     }
 
     #[test]
-    fn cli_parses_deprecated_info() {
-        let cli = try_parse(&["bk", "info"]).unwrap();
-        assert!(matches!(cli.command, Command::DeprecatedInfo { .. }));
+    fn cli_rejects_removed_info_alias() {
+        let result = try_parse(&["bk", "info"]);
+        assert!(result.is_err());
     }
 
     #[test]
-    fn cli_parses_deprecated_eval() {
-        let cli = try_parse(&["bk", "eval", "document.title"]).unwrap();
-        assert!(matches!(cli.command, Command::DeprecatedEval { .. }));
+    fn cli_rejects_removed_eval_alias() {
+        let result = try_parse(&["bk", "eval", "document.title"]);
+        assert!(result.is_err());
     }
 
     #[test]
-    fn deprecated_eval_builds_v2_evaluate_params() {
-        let cli = try_parse(&[
-            "bk",
-            "--session",
-            "agent-a",
-            "--target",
-            "TAB1",
-            "--timeout",
-            "5000",
-            "eval",
-            "--sync",
-            "document.title",
-        ])
-        .unwrap();
-
-        let params = build_evaluate_params("document.title".into(), &cli, false);
-
-        assert_eq!(params["expression"], "document.title");
-        assert_eq!(params["session"], "agent-a");
-        assert_eq!(params["target"], "TAB1");
-        assert_eq!(params["timeout"], 5000);
-        assert_eq!(params["await_promise"], false);
-        assert!(params.get("wid").is_none());
-    }
-
-    #[test]
-    fn cli_parses_deprecated_shot() {
-        let cli = try_parse(&["bk", "shot"]).unwrap();
-        assert!(matches!(cli.command, Command::DeprecatedShot { .. }));
-    }
-
-    #[test]
-    fn deprecated_shot_builds_v2_screenshot_params() {
-        let cli = try_parse(&[
-            "bk",
-            "--session",
-            "agent-a",
-            "--target",
-            "TAB1",
-            "shot",
-            "--full-page",
-            "--selector",
-            "#app",
-            "--labels",
-            "--output",
-            "shot.png",
-        ])
-        .unwrap();
-
-        let params = build_screenshot_params(Some("shot.png"), true, Some("#app"), true, &cli);
-
-        assert_eq!(params["session"], "agent-a");
-        assert_eq!(params["target"], "TAB1");
-        assert_eq!(params["full_page"], true);
-        assert_eq!(params["selector"], "#app");
-        assert_eq!(params["labels"], true);
-        assert_eq!(params["output"], "shot.png");
-        assert!(params.get("wid").is_none());
-    }
-
-    #[test]
-    fn oneshot_shot_builds_v2_screenshot_params_for_temp_session() {
-        let params = build_oneshot_screenshot_params(
-            "oneshot-1",
-            Some("shot.png"),
-            true,
-            Some("#app"),
-            true,
-        );
-
-        assert_eq!(params["session"], "oneshot-1");
-        assert_eq!(params["full_page"], true);
-        assert_eq!(params["selector"], "#app");
-        assert_eq!(params["labels"], true);
-        assert_eq!(params["output"], "shot.png");
-        assert!(params.get("wid").is_none());
+    fn cli_rejects_removed_shot_alias() {
+        let result = try_parse(&["bk", "shot"]);
+        assert!(result.is_err());
     }
 
     // ── Removed flags ────────────────────────────────────────────

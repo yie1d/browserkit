@@ -131,11 +131,11 @@ pub struct ElementInfo {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ancestors: Option<Vec<String>>,
     /// Accessibility role from AX tree (e.g. "button", "textbox", "link").
-    /// Only present when --ax flag is used with `bk info`.
+    /// Only present when AX enrichment is requested by snapshot/state code.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ax_role: Option<String>,
     /// Accessible name from AX tree (what screen readers announce).
-    /// Only present when --ax flag is used with `bk info`.
+    /// Only present when AX enrichment is requested by snapshot/state code.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ax_name: Option<String>,
 }

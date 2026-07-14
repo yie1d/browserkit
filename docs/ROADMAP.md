@@ -100,4 +100,5 @@ Status: pending
 - [x] Move deprecated `eval` onto v2 `evaluate` and remove legacy `js.eval` / `js.await` daemon routes.
 - [x] Move legacy `back` / `forward` / `reload` onto v2 `navigate` and remove matching daemon routes.
 - [x] Move deprecated `shot` onto v2 `screenshot` and remove legacy `page.screenshot` daemon route.
+- [x] Remove deprecated `goto`, `info`, `eval`, and `shot` CLI aliases after v2 parity.
 - [ ] Start deleting legacy workspace-facing surfaces after v2 parity is verified.

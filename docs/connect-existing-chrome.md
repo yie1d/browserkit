@@ -87,14 +87,15 @@ Key difference:
 
 ### Working with attached workspaces
 
-All normal commands work: `bk goto`, `bk click`, `bk eval`, etc.
+Current session-oriented commands work against attached browser tabs:
+`bk navigate`, `bk snapshot`, `bk act`, `bk evaluate`, etc.
 
 ```bash
 # Navigate in the user's visible tab
-bk goto https://example.com
+bk navigate https://example.com
 
 # Take screenshot of the user's actual browser state
-bk shot --output current.png
+bk screenshot --output current.png
 ```
 
 ### Close semantics (per-tab managed model)

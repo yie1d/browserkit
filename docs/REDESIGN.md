@@ -1532,14 +1532,14 @@ bk act click --ref 89
 
 v2 是 breaking change，但为平滑过渡提供以下措施：
 
-**旧命令别名（deprecated，会打印 warning 到 stderr）：**
+**旧命令别名：**
 
 | 旧命令 | 实际执行 | 废弃版本 |
 |--------|----------|----------|
-| `bk goto <url>` | `bk navigate <url>` | v2.0 起 deprecated |
-| `bk info` | `bk snapshot` | v2.0 起 deprecated |
-| `bk eval <expr>` | `bk evaluate <expr>` | v2.0 起 deprecated |
-| `bk shot` | `bk screenshot` | v2.0 起 deprecated |
+| `bk goto <url>` | `bk navigate <url>` | 已移除 |
+| `bk info` | `bk snapshot` | 已移除 |
+| `bk eval <expr>` | `bk evaluate <expr>` | 已移除 |
+| `bk shot` | `bk screenshot` | 已移除 |
 | `bk click --ref N` | `bk act click --ref N` | v2.0 起 deprecated |
 | `bk type --ref N "text"` | `bk act type --ref N "text"` | v2.0 起 deprecated（注意默认行为变了） |
 

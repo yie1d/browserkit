@@ -355,15 +355,15 @@ bk status
 
 ---
 
-## Deprecated Aliases
+## Removed Aliases
 
-以下 v1 命令已废弃，执行时会输出警告并重定向到对应 v2 命令：
+以下 v1 别名已移除，直接使用对应 v2 命令：
 
-| 废弃命令 | 重定向到 | 说明 |
-|---------|----------|------|
-| `bk goto <url>` | `bk navigate <url>` | 导航 |
-| `bk info` | `bk snapshot` | 页面状态 |
-| `bk eval <expr>` | `bk evaluate <expr>` | 执行 JS |
-| `bk shot` | `bk screenshot` | 截图 |
+| 已移除命令 | 使用 |
+|---------|------|
+| `bk goto <url>` | `bk navigate <url>` |
+| `bk info` | `bk snapshot` |
+| `bk eval <expr>` | `bk evaluate <expr>` |
+| `bk shot` | `bk screenshot` |
 
 其余 v1 legacy 命令（ws/tab/browser/daemon/storage/dialog/debug/click/type/fill/select/scroll/hover/drag/focus/upload/keys/find/search/html/url/title/console/options/pdf/open/fetch）仍可用但将在 Phase 3 移除。
