@@ -113,7 +113,7 @@ Usage: bk act [OPTIONS] [KIND]
 | `--y <Y>` | integer | click 的 Y 坐标（与 --ref 互斥） |
 | `--direction <DIR>` | string | scroll 方向：`up` \| `down` \| `left` \| `right` \| `top` \| `bottom` |
 | `--amount <PX>` | number | scroll 像素量；仅页面滚动生效，必须大于 0 |
-| `--selector <CSS>` | string | scroll 的 CSS 目标；与 `--ref` 一样表示滚动到元素 |
+| `--selector <CSS>` | string | scroll 时表示滚动到元素；upload 时表示目标 file input；与 `--ref` 一样表示元素目标 |
 | `[FILES]...` | positional | upload 动作的文件路径列表，至少一个 |
 | `--from-ref <ELEMENT_REF>` | string | drag 源元素 ref |
 | `--from-selector <CSS>` | string | drag 源元素 selector |

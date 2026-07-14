@@ -180,13 +180,22 @@ fn parse_act_params(params: &serde_json::Value) -> Result<ActParams, Response> {
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
 
-    fn reject_incompatible_fields(
+    fn reject_unexpected_fields(
         params: &serde_json::Value,
         kind: &str,
-        fields: &[&str],
+        allowed_fields: &[&str],
     ) -> Result<(), Response> {
-        for field in fields {
-            if params.get(*field).is_some() {
+        const COMMON_FIELDS: &[&str] = &["kind", "session", "target", "timeout", "no_state_diff"];
+
+        let Some(object) = params.as_object() else {
+            return Ok(());
+        };
+
+        for field in object.keys() {
+            if COMMON_FIELDS.contains(&field.as_str()) || allowed_fields.contains(&field.as_str()) {
+                continue;
+            }
+            if params.get(field).is_some() {
                 return Err(Response::error_detail(
                     ErrorCode::InvalidArgument,
                     format!("{kind} does not support '{field}'"),
@@ -278,6 +287,7 @@ fn parse_act_params(params: &serde_json::Value) -> Result<ActParams, Response> {
     // Validation per kind
     match kind {
         ActKind::Click => {
+            reject_unexpected_fields(params, "click", &["ref", "x", "y"])?;
             if ref_id.is_none() && (x.is_none() || y.is_none()) {
                 return Err(Response::error_detail(
                     ErrorCode::InvalidArgument,
@@ -287,6 +297,7 @@ fn parse_act_params(params: &serde_json::Value) -> Result<ActParams, Response> {
             }
         }
         ActKind::Type => {
+            reject_unexpected_fields(params, "type", &["ref", "text", "append"])?;
             if ref_id.is_none() {
                 return Err(Response::error_detail(
                     ErrorCode::InvalidArgument,
@@ -303,22 +314,7 @@ fn parse_act_params(params: &serde_json::Value) -> Result<ActParams, Response> {
             }
         }
         ActKind::Fill => {
-            reject_incompatible_fields(
-                params,
-                "fill",
-                &[
-                    "ref",
-                    "x",
-                    "y",
-                    "text",
-                    "value",
-                    "append",
-                    "keys",
-                    "direction",
-                    "amount",
-                    "selector",
-                ],
-            )?;
+            reject_unexpected_fields(params, "fill", &["fields"])?;
             let Some(fields_value) = params.get("fields") else {
                 return Err(Response::error_detail(
                     ErrorCode::InvalidArgument,
@@ -342,6 +338,7 @@ fn parse_act_params(params: &serde_json::Value) -> Result<ActParams, Response> {
             }
         }
         ActKind::Press => {
+            reject_unexpected_fields(params, "press", &["keys"])?;
             if keys.is_empty() {
                 return Err(Response::error_detail(
                     ErrorCode::InvalidArgument,
@@ -351,6 +348,7 @@ fn parse_act_params(params: &serde_json::Value) -> Result<ActParams, Response> {
             }
         }
         ActKind::Scroll => {
+            reject_unexpected_fields(params, "scroll", &["ref", "selector", "direction", "amount"])?;
             if let Some(direction) = direction.as_deref() {
                 if !matches!(
                     direction,
@@ -377,6 +375,7 @@ fn parse_act_params(params: &serde_json::Value) -> Result<ActParams, Response> {
             }
         }
         ActKind::Hover | ActKind::Focus => {
+            reject_unexpected_fields(params, kind_str, &["ref"])?;
             if ref_id.is_none() {
                 return Err(Response::error_detail(
                     ErrorCode::InvalidArgument,
@@ -386,11 +385,7 @@ fn parse_act_params(params: &serde_json::Value) -> Result<ActParams, Response> {
             }
         }
         ActKind::Select => {
-            reject_incompatible_fields(
-                params,
-                "select",
-                &["selector", "x", "y", "text", "append", "keys", "direction", "amount"],
-            )?;
+            reject_unexpected_fields(params, "select", &["ref", "value"])?;
             if ref_id.is_none() {
                 return Err(Response::error_detail(
                     ErrorCode::InvalidArgument,
@@ -407,21 +402,7 @@ fn parse_act_params(params: &serde_json::Value) -> Result<ActParams, Response> {
             }
         }
         ActKind::Options => {
-            reject_incompatible_fields(
-                params,
-                "options",
-                &[
-                    "selector",
-                    "x",
-                    "y",
-                    "text",
-                    "value",
-                    "append",
-                    "keys",
-                    "direction",
-                    "amount",
-                ],
-            )?;
+            reject_unexpected_fields(params, "options", &["ref"])?;
             if ref_id.is_none() {
                 return Err(Response::error_detail(
                     ErrorCode::InvalidArgument,
@@ -431,27 +412,7 @@ fn parse_act_params(params: &serde_json::Value) -> Result<ActParams, Response> {
             }
         }
         ActKind::Upload => {
-            reject_incompatible_fields(
-                params,
-                "upload",
-                &[
-                    "x",
-                    "y",
-                    "text",
-                    "value",
-                    "append",
-                    "fields",
-                    "keys",
-                    "direction",
-                    "amount",
-                    "from_ref",
-                    "from_selector",
-                    "to_ref",
-                    "to_selector",
-                    "from_index",
-                    "to_index",
-                ],
-            )?;
+            reject_unexpected_fields(params, "upload", &["ref", "selector", "files"])?;
             match (ref_id.is_some(), selector.is_some()) {
                 (true, false) | (false, true) => {}
                 _ => {
@@ -478,25 +439,10 @@ fn parse_act_params(params: &serde_json::Value) -> Result<ActParams, Response> {
             }
         }
         ActKind::Drag => {
-            reject_incompatible_fields(
+            reject_unexpected_fields(
                 params,
                 "drag",
-                &[
-                    "ref",
-                    "selector",
-                    "x",
-                    "y",
-                    "text",
-                    "value",
-                    "append",
-                    "fields",
-                    "keys",
-                    "direction",
-                    "amount",
-                    "files",
-                    "from_index",
-                    "to_index",
-                ],
+                &["from_ref", "from_selector", "to_ref", "to_selector"],
             )?;
             match (from_ref.is_some(), from_selector.is_some()) {
                 (true, false) | (false, true) => {}
@@ -779,6 +725,30 @@ fn action_error(action: &str, error: crate::error::BkError) -> Response {
     Response::error_detail(code, format!("{action} failed: {error}"), None)
 }
 
+fn upload_action_error(
+    selector_target: bool,
+    error: crate::error::BkError,
+) -> Response {
+    let code = match &error {
+        crate::error::BkError::InvalidRequest(message)
+            if message.contains("file path must be absolute:")
+                || message.contains("file not found:")
+                || message.contains("path is not a file:") =>
+        {
+            ErrorCode::FileNotFound
+        }
+        crate::error::BkError::Other(message)
+            if selector_target && message.contains("element not found for selector:") =>
+        {
+            ErrorCode::SelectorNotFound
+        }
+        _ if is_element_not_found_error(&error) => ErrorCode::RefNotFound,
+        _ => ErrorCode::JsError,
+    };
+
+    Response::error_detail(code, format!("upload failed: {error}"), None)
+}
+
 // ── Click execution ──────────────────────────────────────────────────────────
 
 /// Execute a click action via ref (backendNodeId) or raw coordinates.
@@ -991,7 +961,7 @@ async fn execute_upload(
     if let Some(ref_id) = params.ref_id {
         upload_files_by_target(cdp, session_id, &ElementTarget::Ref(ref_id), &params.files)
             .await
-            .map_err(|e| action_error("upload", e))?;
+            .map_err(|e| upload_action_error(false, e))?;
 
         let mut success = ActionSuccess::completed("upload", Some(ref_id));
         success.insert("files", json!(params.files));
@@ -1004,7 +974,7 @@ async fn execute_upload(
         .expect("upload selector validated above");
     upload_files_by_selector(cdp, session_id, selector, &params.files)
         .await
-        .map_err(|e| action_error("upload", e))?;
+        .map_err(|e| upload_action_error(true, e))?;
 
     let mut success = ActionSuccess::completed("upload", None);
     success.insert("files", json!(params.files));
@@ -1296,6 +1266,39 @@ mod tests {
             params[field] = field_value;
             let value = serde_json::to_value(parse_act_params(&params).unwrap_err()).unwrap();
             assert_eq!(value["error"]["code"], "INVALID_ARGUMENT", "{field}");
+        }
+    }
+
+    #[test]
+    fn parse_existing_kinds_reject_upload_and_drag_fields() {
+        let cases = [
+            ("click", json!({"kind": "click", "ref": 42})),
+            ("type", json!({"kind": "type", "ref": 42, "text": "hello"})),
+            ("press", json!({"kind": "press", "keys": ["Enter"]})),
+            ("scroll", json!({"kind": "scroll"})),
+            ("hover", json!({"kind": "hover", "ref": 42})),
+            ("focus", json!({"kind": "focus", "ref": 42})),
+            ("select", json!({"kind": "select", "ref": 42, "value": "green"})),
+            ("options", json!({"kind": "options", "ref": 42})),
+            (
+                "fill",
+                json!({"kind": "fill", "fields": [{"ref": 42, "value": "alpha"}]}),
+            ),
+        ];
+
+        for (kind, base) in cases {
+            for (field, field_value) in [
+                ("files", json!(["a.txt"])),
+                ("from_ref", json!(10)),
+                ("from_selector", json!("#drag-source")),
+                ("to_ref", json!(20)),
+                ("to_selector", json!("#drag-target")),
+            ] {
+                let mut params = base.clone();
+                params[field] = field_value;
+                let value = serde_json::to_value(parse_act_params(&params).unwrap_err()).unwrap();
+                assert_eq!(value["error"]["code"], "INVALID_ARGUMENT", "{kind} + {field}");
+            }
         }
     }
 
@@ -1771,5 +1774,45 @@ mod tests {
         assert!(!p.append);
         assert_eq!(p.value, None);
         assert!(p.keys.is_empty());
+    }
+
+    #[test]
+    fn upload_error_maps_file_validation_to_file_not_found() {
+        let value = serde_json::to_value(upload_action_error(
+            false,
+            crate::error::BkError::InvalidRequest("file not found: 'C:\\missing.txt'".into()),
+        ))
+        .unwrap();
+        assert_eq!(value["error"]["code"], "FILE_NOT_FOUND");
+    }
+
+    #[test]
+    fn upload_error_maps_ref_target_resolution_to_ref_not_found() {
+        let value = serde_json::to_value(upload_action_error(
+            false,
+            crate::error::BkError::Other("element ref no longer present in the page".into()),
+        ))
+        .unwrap();
+        assert_eq!(value["error"]["code"], "REF_NOT_FOUND");
+    }
+
+    #[test]
+    fn upload_error_maps_selector_target_resolution_to_selector_not_found() {
+        let value = serde_json::to_value(upload_action_error(
+            true,
+            crate::error::BkError::Other("upload: element not found for selector: #missing".into()),
+        ))
+        .unwrap();
+        assert_eq!(value["error"]["code"], "SELECTOR_NOT_FOUND");
+    }
+
+    #[test]
+    fn upload_error_keeps_other_failures_as_js_error() {
+        let value = serde_json::to_value(upload_action_error(
+            true,
+            crate::error::BkError::Other("upload: element is not an input[type=file]".into()),
+        ))
+        .unwrap();
+        assert_eq!(value["error"]["code"], "JS_ERROR");
     }
 }
