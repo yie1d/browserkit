@@ -97,7 +97,7 @@ bk snapshot --wait none
 执行交互动作：click、type、fill、press、scroll、hover、focus、select、options、upload、drag。
 
 ```
-Usage: bk act [OPTIONS] [KIND]
+Usage: bk act [OPTIONS] [KIND] [FILES]...
 ```
 
 | 参数 | 类型 | 说明 |

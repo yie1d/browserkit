@@ -5,7 +5,7 @@
 //
 // Session/target resolution follows the same pattern as snapshot/navigate.
 
-use std::sync::Arc;
+use std::{future::Future, sync::Arc, time::Duration};
 
 use serde_json::json;
 use tracing::info;
@@ -47,9 +47,7 @@ struct ActParams {
     kind: ActKind,
     session_name: String,
     target: Option<String>,
-    #[allow(dead_code)]
     timeout: u64,
-    #[allow(dead_code)]
     no_state_diff: bool,
     // Click params
     ref_id: Option<i64>,
@@ -128,57 +126,49 @@ fn parse_act_params(params: &serde_json::Value) -> Result<ActParams, Response> {
         }
     };
 
-    let ref_id = params.get("ref").and_then(|v| v.as_i64());
-    let x = params.get("x").and_then(|v| v.as_f64());
-    let y = params.get("y").and_then(|v| v.as_f64());
-    let text = params
-        .get("text")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string());
-    let value = params
-        .get("value")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string());
-    let append = params
-        .get("append")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
+    let allowed_fields: &[&str] = match kind {
+        ActKind::Click => &["ref", "x", "y"],
+        ActKind::Type => &["ref", "text", "append"],
+        ActKind::Fill => &["fields"],
+        ActKind::Press => &["keys"],
+        ActKind::Scroll => &["ref", "selector", "direction", "amount"],
+        ActKind::Hover | ActKind::Focus | ActKind::Options => &["ref"],
+        ActKind::Select => &["ref", "value"],
+        ActKind::Upload => &["ref", "selector", "files"],
+        ActKind::Drag => &["from_ref", "from_selector", "to_ref", "to_selector"],
+    };
+    reject_unexpected_fields(params, kind_str, allowed_fields)?;
+
+    let session_name = parse_optional_string(params, "session")?
+        .unwrap_or_else(|| "default".to_string());
+    let target = parse_optional_string(params, "target")?;
+    let timeout = parse_optional_u64(params, "timeout")?.unwrap_or(30000);
+    let no_state_diff = parse_optional_bool(params, "no_state_diff")?.unwrap_or(false);
+    let ref_id = parse_optional_i64(params, "ref")?;
+    let x = parse_optional_f64(params, "x")?;
+    let y = parse_optional_f64(params, "y")?;
+    let text = parse_optional_string(params, "text")?;
+    let value = parse_optional_string(params, "value")?;
+    let append = parse_optional_bool(params, "append")?.unwrap_or(false);
     let fields = match params.get("fields") {
-        Some(value) => match value.as_array() {
-            Some(items) => parse_fill_fields(items)?,
-            None => Vec::new(),
-        },
+        Some(value) => parse_fill_fields(value.as_array().ok_or_else(|| {
+            Response::error_detail(
+                ErrorCode::InvalidArgument,
+                "fill fields must be an array".into(),
+                None,
+            )
+        })?)?,
         None => Vec::new(),
     };
-    let keys: Vec<String> = params
-        .get("keys")
-        .and_then(|v| v.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                .collect()
-        })
-        .unwrap_or_default();
-    let direction = params
-        .get("direction")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string());
-    let amount = params.get("amount").and_then(|v| v.as_f64());
-    let selector = params
-        .get("selector")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string());
+    let keys = parse_string_array_field(params, "keys")?.unwrap_or_default();
+    let direction = parse_optional_string(params, "direction")?;
+    let amount = parse_optional_f64(params, "amount")?;
+    let selector = parse_optional_string(params, "selector")?;
     let files = parse_string_array_field(params, "files")?.unwrap_or_default();
-    let from_ref = params.get("from_ref").and_then(|v| v.as_i64());
-    let from_selector = params
-        .get("from_selector")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string());
-    let to_ref = params.get("to_ref").and_then(|v| v.as_i64());
-    let to_selector = params
-        .get("to_selector")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string());
+    let from_ref = parse_optional_i64(params, "from_ref")?;
+    let from_selector = parse_optional_string(params, "from_selector")?;
+    let to_ref = parse_optional_i64(params, "to_ref")?;
+    let to_selector = parse_optional_string(params, "to_selector")?;
 
     fn reject_unexpected_fields(
         params: &serde_json::Value,
@@ -234,6 +224,85 @@ fn parse_act_params(params: &serde_json::Value) -> Result<ActParams, Response> {
         Ok(Some(parsed))
     }
 
+    fn invalid_field_type(field: &str, expected: &str) -> Response {
+        Response::error_detail(
+            ErrorCode::InvalidArgument,
+            format!("{field} must be {expected}"),
+            None,
+        )
+    }
+
+    fn parse_optional_string(
+        params: &serde_json::Value,
+        field: &str,
+    ) -> Result<Option<String>, Response> {
+        params
+            .get(field)
+            .map(|value| {
+                value
+                    .as_str()
+                    .map(str::to_string)
+                    .ok_or_else(|| invalid_field_type(field, "a string"))
+            })
+            .transpose()
+    }
+
+    fn parse_optional_i64(
+        params: &serde_json::Value,
+        field: &str,
+    ) -> Result<Option<i64>, Response> {
+        params
+            .get(field)
+            .map(|value| {
+                value
+                    .as_i64()
+                    .ok_or_else(|| invalid_field_type(field, "an integer"))
+            })
+            .transpose()
+    }
+
+    fn parse_optional_u64(
+        params: &serde_json::Value,
+        field: &str,
+    ) -> Result<Option<u64>, Response> {
+        params
+            .get(field)
+            .map(|value| {
+                value
+                    .as_u64()
+                    .ok_or_else(|| invalid_field_type(field, "a non-negative integer"))
+            })
+            .transpose()
+    }
+
+    fn parse_optional_f64(
+        params: &serde_json::Value,
+        field: &str,
+    ) -> Result<Option<f64>, Response> {
+        params
+            .get(field)
+            .map(|value| {
+                value
+                    .as_f64()
+                    .ok_or_else(|| invalid_field_type(field, "a number"))
+            })
+            .transpose()
+    }
+
+    fn parse_optional_bool(
+        params: &serde_json::Value,
+        field: &str,
+    ) -> Result<Option<bool>, Response> {
+        params
+            .get(field)
+            .map(|value| {
+                value
+                    .as_bool()
+                    .ok_or_else(|| invalid_field_type(field, "a boolean"))
+            })
+            .transpose()
+    }
+
     fn parse_fill_fields(items: &[serde_json::Value]) -> Result<Vec<ActFillField>, Response> {
         let mut parsed = Vec::with_capacity(items.len());
 
@@ -287,17 +356,18 @@ fn parse_act_params(params: &serde_json::Value) -> Result<ActParams, Response> {
     // Validation per kind
     match kind {
         ActKind::Click => {
-            reject_unexpected_fields(params, "click", &["ref", "x", "y"])?;
-            if ref_id.is_none() && (x.is_none() || y.is_none()) {
+            if !matches!(
+                (ref_id.is_some(), x.is_some(), y.is_some()),
+                (true, false, false) | (false, true, true)
+            ) {
                 return Err(Response::error_detail(
                     ErrorCode::InvalidArgument,
-                    "click requires --ref or both --x and --y".into(),
+                    "click requires exactly one target mode: ref alone or x and y together".into(),
                     None,
                 ));
             }
         }
         ActKind::Type => {
-            reject_unexpected_fields(params, "type", &["ref", "text", "append"])?;
             if ref_id.is_none() {
                 return Err(Response::error_detail(
                     ErrorCode::InvalidArgument,
@@ -314,7 +384,6 @@ fn parse_act_params(params: &serde_json::Value) -> Result<ActParams, Response> {
             }
         }
         ActKind::Fill => {
-            reject_unexpected_fields(params, "fill", &["fields"])?;
             let Some(fields_value) = params.get("fields") else {
                 return Err(Response::error_detail(
                     ErrorCode::InvalidArgument,
@@ -338,7 +407,6 @@ fn parse_act_params(params: &serde_json::Value) -> Result<ActParams, Response> {
             }
         }
         ActKind::Press => {
-            reject_unexpected_fields(params, "press", &["keys"])?;
             if keys.is_empty() {
                 return Err(Response::error_detail(
                     ErrorCode::InvalidArgument,
@@ -348,7 +416,6 @@ fn parse_act_params(params: &serde_json::Value) -> Result<ActParams, Response> {
             }
         }
         ActKind::Scroll => {
-            reject_unexpected_fields(params, "scroll", &["ref", "selector", "direction", "amount"])?;
             if let Some(direction) = direction.as_deref() {
                 if !matches!(
                     direction,
@@ -375,7 +442,6 @@ fn parse_act_params(params: &serde_json::Value) -> Result<ActParams, Response> {
             }
         }
         ActKind::Hover | ActKind::Focus => {
-            reject_unexpected_fields(params, kind_str, &["ref"])?;
             if ref_id.is_none() {
                 return Err(Response::error_detail(
                     ErrorCode::InvalidArgument,
@@ -385,7 +451,6 @@ fn parse_act_params(params: &serde_json::Value) -> Result<ActParams, Response> {
             }
         }
         ActKind::Select => {
-            reject_unexpected_fields(params, "select", &["ref", "value"])?;
             if ref_id.is_none() {
                 return Err(Response::error_detail(
                     ErrorCode::InvalidArgument,
@@ -402,7 +467,6 @@ fn parse_act_params(params: &serde_json::Value) -> Result<ActParams, Response> {
             }
         }
         ActKind::Options => {
-            reject_unexpected_fields(params, "options", &["ref"])?;
             if ref_id.is_none() {
                 return Err(Response::error_detail(
                     ErrorCode::InvalidArgument,
@@ -412,7 +476,6 @@ fn parse_act_params(params: &serde_json::Value) -> Result<ActParams, Response> {
             }
         }
         ActKind::Upload => {
-            reject_unexpected_fields(params, "upload", &["ref", "selector", "files"])?;
             match (ref_id.is_some(), selector.is_some()) {
                 (true, false) | (false, true) => {}
                 _ => {
@@ -439,11 +502,6 @@ fn parse_act_params(params: &serde_json::Value) -> Result<ActParams, Response> {
             }
         }
         ActKind::Drag => {
-            reject_unexpected_fields(
-                params,
-                "drag",
-                &["from_ref", "from_selector", "to_ref", "to_selector"],
-            )?;
             match (from_ref.is_some(), from_selector.is_some()) {
                 (true, false) | (false, true) => {}
                 _ => {
@@ -476,23 +534,10 @@ fn parse_act_params(params: &serde_json::Value) -> Result<ActParams, Response> {
 
     Ok(ActParams {
         kind,
-        session_name: params
-            .get("session")
-            .and_then(|v| v.as_str())
-            .unwrap_or("default")
-            .into(),
-        target: params
-            .get("target")
-            .and_then(|v| v.as_str())
-            .map(|s| s.into()),
-        timeout: params
-            .get("timeout")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(30000),
-        no_state_diff: params
-            .get("no_state_diff")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false),
+        session_name,
+        target,
+        timeout,
+        no_state_diff,
         ref_id,
         x,
         y,
@@ -538,6 +583,20 @@ fn build_act_response(
         }
     }
     Response::ok(data)
+}
+
+async fn execute_with_timeout<T, F>(timeout_ms: u64, action: F) -> Result<T, Response>
+where
+    F: Future<Output = Result<T, Response>>,
+{
+    match tokio::time::timeout(Duration::from_millis(timeout_ms), action).await {
+        Ok(result) => result,
+        Err(_) => Err(Response::error_detail(
+            ErrorCode::Timeout,
+            format!("action execution timed out after {timeout_ms} ms"),
+            None,
+        )),
+    }
 }
 
 // ── Main handler ─────────────────────────────────────────────────────────────
@@ -615,35 +674,38 @@ pub async fn handle_act(req: &Request, state: &Arc<DaemonState>) -> Response {
     };
 
     // Dispatch by kind
-    let action_result = match params.kind {
-        ActKind::Click => execute_click(&cdp, cdp_session_id, &params, &target_id).await,
-        ActKind::Type => execute_type(&cdp, cdp_session_id, &params, &target_id).await,
-        ActKind::Fill => execute_fill(&cdp, cdp_session_id, &params).await,
-        ActKind::Press => execute_press(&cdp, cdp_session_id, &params, &target_id).await,
-        ActKind::Scroll => execute_scroll(&cdp, cdp_session_id, &params).await,
-        ActKind::Hover => {
-            execute_ref_action(
-                "hover",
-                &cdp,
-                cdp_session_id,
-                params.ref_id.expect("hover ref validated above"),
-            )
-            .await
+    let action_result = execute_with_timeout(params.timeout, async {
+        match params.kind {
+            ActKind::Click => execute_click(&cdp, cdp_session_id, &params, &target_id).await,
+            ActKind::Type => execute_type(&cdp, cdp_session_id, &params, &target_id).await,
+            ActKind::Fill => execute_fill(&cdp, cdp_session_id, &params).await,
+            ActKind::Press => execute_press(&cdp, cdp_session_id, &params, &target_id).await,
+            ActKind::Scroll => execute_scroll(&cdp, cdp_session_id, &params).await,
+            ActKind::Hover => {
+                execute_ref_action(
+                    "hover",
+                    &cdp,
+                    cdp_session_id,
+                    params.ref_id.expect("hover ref validated above"),
+                )
+                .await
+            }
+            ActKind::Focus => {
+                execute_ref_action(
+                    "focus",
+                    &cdp,
+                    cdp_session_id,
+                    params.ref_id.expect("focus ref validated above"),
+                )
+                .await
+            }
+            ActKind::Select => execute_select(&cdp, cdp_session_id, &params).await,
+            ActKind::Options => execute_options(&cdp, cdp_session_id, &params).await,
+            ActKind::Upload => execute_upload(&cdp, cdp_session_id, &params).await,
+            ActKind::Drag => execute_drag(&cdp, cdp_session_id, &params).await,
         }
-        ActKind::Focus => {
-            execute_ref_action(
-                "focus",
-                &cdp,
-                cdp_session_id,
-                params.ref_id.expect("focus ref validated above"),
-            )
-            .await
-        }
-        ActKind::Select => execute_select(&cdp, cdp_session_id, &params).await,
-        ActKind::Options => execute_options(&cdp, cdp_session_id, &params).await,
-        ActKind::Upload => execute_upload(&cdp, cdp_session_id, &params).await,
-        ActKind::Drag => execute_drag(&cdp, cdp_session_id, &params).await,
-    };
+    })
+    .await;
 
     let action_success = match action_result {
         Ok(success) => success,
@@ -711,8 +773,20 @@ fn is_element_not_found_error(error: &crate::error::BkError) -> bool {
     }
 }
 
+fn is_selector_not_found_error(error: &crate::error::BkError) -> bool {
+    match error {
+        crate::error::BkError::Other(message) => {
+            message.contains("selector")
+                && (message.contains("not found") || message.contains("no element found"))
+        }
+        _ => false,
+    }
+}
+
 fn action_error(action: &str, error: crate::error::BkError) -> Response {
-    let code = if is_element_not_found_error(&error) {
+    let code = if is_selector_not_found_error(&error) {
+        ErrorCode::SelectorNotFound
+    } else if is_element_not_found_error(&error) {
         ErrorCode::RefNotFound
     } else {
         ErrorCode::JsError
@@ -1826,6 +1900,65 @@ mod tests {
     }
 
     #[test]
+    fn parse_act_rejects_wrong_field_types() {
+        let cases = [
+            ("session", json!({"kind": "click", "ref": 1, "session": 7})),
+            ("target", json!({"kind": "click", "ref": 1, "target": false})),
+            ("timeout", json!({"kind": "click", "ref": 1, "timeout": "slow"})),
+            ("no_state_diff", json!({"kind": "click", "ref": 1, "no_state_diff": 1})),
+            ("ref", json!({"kind": "click", "ref": "1"})),
+            ("x", json!({"kind": "click", "x": "10", "y": 20})),
+            ("y", json!({"kind": "click", "x": 10, "y": "20"})),
+            ("text", json!({"kind": "type", "ref": 1, "text": 7})),
+            ("value", json!({"kind": "select", "ref": 1, "value": false})),
+            ("append", json!({"kind": "type", "ref": 1, "text": "a", "append": "yes"})),
+            ("fields", json!({"kind": "fill", "fields": {"ref": 1, "value": "a"}})),
+            ("keys", json!({"kind": "press", "keys": "Enter"})),
+            ("direction", json!({"kind": "scroll", "direction": 1})),
+            ("amount", json!({"kind": "scroll", "direction": "down", "amount": "10"})),
+            ("selector", json!({"kind": "scroll", "selector": 1})),
+            ("files", json!({"kind": "upload", "ref": 1, "files": "a.txt"})),
+            ("from_ref", json!({"kind": "drag", "from_ref": "1", "to_ref": 2})),
+            ("from_selector", json!({"kind": "drag", "from_selector": 1, "to_ref": 2})),
+            ("to_ref", json!({"kind": "drag", "from_ref": 1, "to_ref": "2"})),
+            ("to_selector", json!({"kind": "drag", "from_ref": 1, "to_selector": 2})),
+        ];
+
+        for (field, params) in cases {
+            let response = parse_act_params(&params).unwrap_err();
+            let error = response.error.unwrap();
+            assert_eq!(error["code"], "INVALID_ARGUMENT", "{field}");
+            let message = error["message"].as_str().unwrap();
+            assert!(message.contains(field), "{field}: {message}");
+            assert!(message.contains("must be"), "{field}: {message}");
+        }
+    }
+
+    #[test]
+    fn parse_act_rejects_mixed_key_types() {
+        let response = parse_act_params(&json!({"kind": "press", "keys": ["Control", 7]}))
+            .unwrap_err();
+        let error = response.error.unwrap();
+        assert_eq!(error["code"], "INVALID_ARGUMENT");
+        assert!(error["message"].as_str().unwrap().contains("keys"));
+    }
+
+    #[test]
+    fn parse_act_click_requires_exactly_one_target_mode() {
+        for params in [
+            json!({"kind": "click"}),
+            json!({"kind": "click", "x": 10}),
+            json!({"kind": "click", "y": 20}),
+            json!({"kind": "click", "ref": 1, "x": 10}),
+            json!({"kind": "click", "ref": 1, "y": 20}),
+            json!({"kind": "click", "ref": 1, "x": 10, "y": 20}),
+        ] {
+            let response = parse_act_params(&params).unwrap_err();
+            assert_eq!(response.error.unwrap()["code"], "INVALID_ARGUMENT", "{params}");
+        }
+    }
+
+    #[test]
     fn act_response_structure_click() {
         let resp = build_act_response(
             "click",
@@ -2068,6 +2201,26 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn action_execution_timeout_returns_timeout_error() {
+        let result = execute_with_timeout(1, async {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            Ok::<_, Response>(())
+        })
+        .await;
+
+        let response = result.unwrap_err();
+        let error = response.error.unwrap();
+        assert_eq!(error["code"], "TIMEOUT");
+        assert!(error["message"].as_str().unwrap().contains("1 ms"));
+    }
+
+    #[tokio::test]
+    async fn action_execution_timeout_passes_immediate_success() {
+        let result = execute_with_timeout(100, async { Ok::<_, Response>(42) }).await;
+        assert_eq!(result.unwrap(), 42);
+    }
+
     #[test]
     fn parse_act_defaults() {
         let params = json!({"kind": "click", "ref": 1});
@@ -2079,6 +2232,28 @@ mod tests {
         assert!(!p.append);
         assert_eq!(p.value, None);
         assert!(p.keys.is_empty());
+    }
+
+    #[test]
+    fn action_error_maps_selector_not_found_before_ref_not_found() {
+        for (action, message) in [
+            ("scroll", "scroll to selector: element not found for selector"),
+            ("drag", "no element found for selector: #drop"),
+        ] {
+            let response = action_error(action, BkError::Other(message.into()));
+            assert_eq!(response.error.unwrap()["code"], "SELECTOR_NOT_FOUND", "{action}");
+        }
+    }
+
+    #[test]
+    fn action_error_keeps_ref_not_found_classification() {
+        for (action, message) in [
+            ("scroll", "element ref no longer present in the page"),
+            ("drag", "drag source ref not found"),
+        ] {
+            let response = action_error(action, BkError::Other(message.into()));
+            assert_eq!(response.error.unwrap()["code"], "REF_NOT_FOUND", "{action}");
+        }
     }
 
     #[test]

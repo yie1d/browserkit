@@ -140,7 +140,11 @@ where
     }
 
     let req: Request = serde_json::from_str(line.trim()).map_err(|e| {
-        Response::err(format!("invalid request: {e}"))
+        Response::error_detail(
+            ErrorCode::InvalidArgument,
+            format!("invalid request: {e}"),
+            None,
+        )
     })?;
     Ok(Some(req))
 }
@@ -304,7 +308,9 @@ mod tests {
         let mut reader = BufReader::new(&input[..]);
         let err = read_request(&mut reader).await.unwrap_err();
         assert!(!err.ok);
-        assert!(err.error.unwrap().as_str().unwrap().contains("invalid request"));
+        let error = err.error.unwrap();
+        assert_eq!(error["code"], "INVALID_ARGUMENT");
+        assert!(error["message"].as_str().unwrap().contains("invalid request"));
     }
 
     #[tokio::test]

@@ -38,7 +38,7 @@ pub struct ResolvedElement {
 
 /// Error returned when a ref (backendNodeId) no longer exists in the page.
 const REF_GONE_MSG: &str =
-    "element ref no longer present in the page; run 'bk page state' to get updated refs";
+    "element ref no longer present in the page; run 'bk snapshot' to get updated refs";
 
 /// Resolve an element target to coordinates + objectId.
 ///
@@ -485,7 +485,8 @@ mod tests {
 
     #[test]
     fn ref_gone_msg_content() {
-        assert!(REF_GONE_MSG.contains("page state"));
+        assert!(REF_GONE_MSG.contains("bk snapshot"));
+        assert!(!REF_GONE_MSG.contains("bk page state"));
         assert!(REF_GONE_MSG.contains("no longer present"));
     }
 

@@ -399,7 +399,9 @@ mod tests {
         let n = stream.read(&mut buf).await.unwrap();
         let resp: Response = serde_json::from_str(std::str::from_utf8(&buf[..n]).unwrap().trim()).unwrap();
         assert!(!resp.ok);
-        assert!(resp.error.unwrap().as_str().unwrap().contains("invalid request"));
+        let error = resp.error.unwrap();
+        assert_eq!(error["code"], "INVALID_ARGUMENT");
+        assert!(error["message"].as_str().unwrap().contains("invalid request"));
     }
 
     #[tokio::test]
