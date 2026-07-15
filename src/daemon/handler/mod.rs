@@ -1,7 +1,6 @@
 // Command dispatcher: routes requests to handler functions
 
 mod act;
-mod action;
 mod browser;
 pub mod common;
 mod connect;
@@ -249,33 +248,42 @@ mod tests {
         }
     }
 
+    async fn assert_prefixed_routes_removed(prefix: &str, commands: &[&str]) {
+        let routes: Vec<String> = commands
+            .iter()
+            .map(|command| format!("{prefix}.{command}"))
+            .collect();
+        let route_refs: Vec<&str> = routes.iter().map(String::as_str).collect();
+        assert_routes_removed(&route_refs).await;
+    }
+
     #[tokio::test]
     async fn dispatch_removed_scroll_hover_focus_routes_are_unknown() {
-        assert_routes_removed(&["act.scroll", "act.hover", "act.focus"]).await;
+        assert_prefixed_routes_removed("act", &["scroll", "hover", "focus"]).await;
     }
 
     #[tokio::test]
     async fn dispatch_removed_select_and_options_routes_are_unknown() {
-        assert_routes_removed(&["act.select", "act.dropdown_options"]).await;
+        assert_prefixed_routes_removed("act", &["select", "dropdown_options"]).await;
     }
 
     #[tokio::test]
     async fn dispatch_removed_fill_route_is_unknown() {
-        assert_routes_removed(&["act.fill"]).await;
+        assert_prefixed_routes_removed("act", &["fill"]).await;
     }
 
     #[tokio::test]
     async fn dispatch_removed_upload_and_drag_routes_are_unknown() {
-        assert_routes_removed(&["act.upload", "act.drag"]).await;
+        assert_prefixed_routes_removed("act", &["upload", "drag"]).await;
     }
 
     #[tokio::test]
     async fn dispatch_removed_act_keys_route_is_unknown() {
-        assert_routes_removed(&["act.keys"]).await;
+        assert_prefixed_routes_removed("act", &["keys"]).await;
     }
 
     #[tokio::test]
     async fn dispatch_removed_click_and_type_routes_are_unknown() {
-        assert_routes_removed(&["act.click", "act.type"]).await;
+        assert_prefixed_routes_removed("act", &["click", "type"]).await;
     }
 }

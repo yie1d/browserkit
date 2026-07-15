@@ -41,14 +41,7 @@ Legacy (v1, will be removed in Phase 3):
 Removed aliases:
   goto -> use navigate    info -> use snapshot
   eval -> use evaluate    shot -> use screenshot
-  click -> use act click  type -> use act type
   back/forward/reload -> use navigate --back/--forward/--reload
-  keys -> use act press --keys
-  scroll -> use act scroll    hover -> use act hover
-  focus -> use act focus
-  fill -> use act fill
-  select -> use act select    options -> use act options
-  upload -> use act upload    drag -> use act drag
 
 Options:
       --session <NAME>    Target session (or BK_SESSION env var)
@@ -2033,18 +2026,22 @@ mod tests {
     }
 
     #[test]
-    fn top_level_help_mentions_removed_scroll_hover_focus_guidance() {
-        assert!(HELP_TEXT.contains("click -> use act click"));
-        assert!(HELP_TEXT.contains("type -> use act type"));
-        assert!(HELP_TEXT.contains("keys -> use act press --keys"));
-        assert!(HELP_TEXT.contains("scroll -> use act scroll"));
-        assert!(HELP_TEXT.contains("hover -> use act hover"));
-        assert!(HELP_TEXT.contains("focus -> use act focus"));
-        assert!(HELP_TEXT.contains("fill -> use act fill"));
-        assert!(HELP_TEXT.contains("select -> use act select"));
-        assert!(HELP_TEXT.contains("options -> use act options"));
-        assert!(HELP_TEXT.contains("upload -> use act upload"));
-        assert!(HELP_TEXT.contains("drag -> use act drag"));
+    fn top_level_help_omits_removed_action_alias_guidance() {
+        for removed in [
+            "click -> use act click",
+            "type -> use act type",
+            "keys -> use act press --keys",
+            "scroll -> use act scroll",
+            "hover -> use act hover",
+            "focus -> use act focus",
+            "fill -> use act fill",
+            "select -> use act select",
+            "options -> use act options",
+            "upload -> use act upload",
+            "drag -> use act drag",
+        ] {
+            assert!(!HELP_TEXT.contains(removed), "{removed}");
+        }
     }
 
     // ── Removed flags ────────────────────────────────────────────
