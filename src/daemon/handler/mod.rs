@@ -79,8 +79,6 @@ pub async fn handle_request(
         "page.search" => page::handle_page_search(req, state).await,
         "page.find_elements" => page::handle_find_elements(req, state).await,
         "page.console" => page::handle_page_console(req, state).await,
-        "act.click" => action::handle_click(req, state).await,
-        "act.type" => action::handle_type(req, state).await,
         "storage.cookies.get" => storage::handle_storage_cookies_get(req, state).await,
         "storage.cookies.set" => storage::handle_storage_cookies_set(req, state).await,
         "storage.cookies.clear" => storage::handle_storage_cookies_clear(req, state).await,
@@ -274,5 +272,10 @@ mod tests {
     #[tokio::test]
     async fn dispatch_removed_act_keys_route_is_unknown() {
         assert_routes_removed(&["act.keys"]).await;
+    }
+
+    #[tokio::test]
+    async fn dispatch_removed_click_and_type_routes_are_unknown() {
+        assert_routes_removed(&["act.click", "act.type"]).await;
     }
 }

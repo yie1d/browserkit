@@ -127,6 +127,8 @@ bk act click --ref 42
 bk act click --x 300 --y 200
 ```
 
+> 旧的 `bk click` 已移除，统一使用 `bk act click`。当前返回包含 action result 和 `state_diff`，但在 browserkit 具备 session-native target lifecycle tracking 前，不会报告 `new_tab`。
+
 ### type
 
 ```bash
@@ -135,6 +137,7 @@ bk act type --ref 42 --text "追加内容" --append
 ```
 
 > type 默认为**替换**模式（清空后输入）。需要追加时加 `--append`。
+> 旧的 `bk type` 已移除，统一使用 `bk act type`。
 
 ### fill
 
@@ -442,6 +445,8 @@ bk status
 | `bk info` | `bk snapshot` |
 | `bk eval <expr>` | `bk evaluate <expr>` |
 | `bk shot` | `bk screenshot` |
+| `bk click --ref <N>` | `bk act click --ref <N>` |
+| `bk type --ref <N> <TEXT>` | `bk act type --ref <N> --text <TEXT>` |
 | `bk back` | `bk navigate --back` |
 | `bk forward` | `bk navigate --forward` |
 | `bk reload` | `bk navigate --reload` |
@@ -459,4 +464,4 @@ bk status
 | `bk upload --ref <N> <FILES...>` | `bk act upload --ref <N> <FILES...>` |
 | `bk drag --from-ref <N> --to-ref <N>` | `bk act drag --from-ref <N> --to-ref <N>` |
 
-其余 v1 legacy 命令（ws/tab/browser/daemon/storage/dialog/debug/click/type/find/search/html/console/pdf/open/fetch）仍可用但将在 Phase 3 移除。
+其余 v1 legacy 命令（ws/tab/browser/daemon/storage/dialog/debug/find/search/html/console/pdf/open/fetch）仍可用但将在 Phase 3 移除。

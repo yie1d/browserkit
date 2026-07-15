@@ -109,4 +109,6 @@ Status: pending
 - [x] Complete v2 act parity Batch C by moving `fill` onto `bk act` and removing the legacy `fill` command and `act.fill` daemon route.
 - [x] Complete v2 act parity Batch D by moving `upload` and `drag` onto `bk act` and removing the legacy CLI commands plus `act.upload` / `act.drag` daemon routes.
 - [x] Complete v2 act parity Batch E by moving legacy `keys` onto `bk act press --keys` and removing the `act.keys` daemon route.
+- [x] Complete v2 act parity Batch F by moving legacy `click` and `type` onto `bk act` and removing the legacy CLI commands plus `act.click` / `act.type` daemon routes.
+- [ ] Add session-native target lifecycle tracking so `bk act click` can report `new_tab` again.
 - [ ] Start deleting legacy workspace-facing surfaces after v2 parity is verified.

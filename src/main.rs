@@ -7,7 +7,7 @@
 //   4. Auto-detect when only one workspace exists
 //   5. Error with helpful message
 
-use clap::{ArgGroup, CommandFactory, Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
 use serde_json::json;
 
 // ── Custom grouped help text ──────────────────────────────────
@@ -35,13 +35,13 @@ Primary:
   status      Connection status
 
 Legacy (v1, will be removed in Phase 3):
-  click/type
   find/search/html/url/title/console
   pdf/open/fetch/ws/tab/browser/daemon/storage/dialog/debug
 
 Removed aliases:
   goto -> use navigate    info -> use snapshot
   eval -> use evaluate    shot -> use screenshot
+  click -> use act click  type -> use act type
   back/forward/reload -> use navigate --back/--forward/--reload
   keys -> use act press --keys
   scroll -> use act scroll    hover -> use act hover
@@ -276,31 +276,6 @@ pub enum Command {
     // V1 LEGACY COMMANDS (preserved, removed in Phase 3)
     // ══════════════════════════════════════════════════════════════
 
-    /// Click element
-    #[command(hide = true, group(ArgGroup::new("click_target").required(true).args(["index", "element_ref", "x"])))]
-    Click {
-        #[arg(short, long)]
-        index: Option<usize>,
-        #[arg(short = 'r', long = "ref")]
-        element_ref: Option<i64>,
-        #[arg(short, long, requires = "y")]
-        x: Option<f64>,
-        #[arg(short, long, requires = "x")]
-        y: Option<f64>,
-    },
-    /// Type text into element
-    #[command(hide = true, group(ArgGroup::new("type_target").required(true).args(["index", "element_ref"])))]
-    Type {
-        #[arg(short, long)]
-        index: Option<usize>,
-        #[arg(short = 'r', long = "ref")]
-        element_ref: Option<i64>,
-        #[arg(long)]
-        clear: bool,
-        #[arg(long)]
-        autocomplete: bool,
-        text: String,
-    },
     /// Find elements by CSS selector
     #[command(hide = true)]
     Find {
@@ -1306,27 +1281,6 @@ async fn dispatch(cli: &Cli, client: &mut DaemonClient) -> Result<(), String> {
             }
         },
 
-        // ── Interaction (top-level) ───────────────────────
-        Command::Click { index, element_ref, x, y } => {
-            let wid = resolve_workspace(client).await?;
-            let mut params = json!({"wid": wid});
-            if let Some(r) = element_ref { params["ref"] = json!(r); }
-            else if let Some(i) = index { params["index"] = json!(i); }
-            if let Some(cx) = x { params["x"] = json!(cx); }
-            if let Some(cy) = y { params["y"] = json!(cy); }
-            let resp = send_cmd(client, "act.click", params).await?;
-            print_response(&resp);
-        }
-
-        Command::Type { index, element_ref, text, clear, autocomplete } => {
-            let wid = resolve_workspace(client).await?;
-            let mut params = json!({"wid": wid, "text": text, "clear": clear, "autocomplete": autocomplete});
-            if let Some(r) = element_ref { params["ref"] = json!(r); }
-            else if let Some(i) = index { params["index"] = json!(i); }
-            let resp = send_cmd(client, "act.type", params).await?;
-            print_response(&resp);
-        }
-
         // ── Page State (top-level, v1 legacy) ────────────────────────
         Command::Find { selector, attributes, max, include_text } => {
             let wid = resolve_workspace(client).await?;
@@ -2071,7 +2025,17 @@ mod tests {
     }
 
     #[test]
+    fn cli_rejects_removed_click_and_type_commands() {
+        assert_cli_commands_removed(&[
+            &["bk", "click", "--ref", "42"][..],
+            &["bk", "type", "--ref", "42", "hello"][..],
+        ]);
+    }
+
+    #[test]
     fn top_level_help_mentions_removed_scroll_hover_focus_guidance() {
+        assert!(HELP_TEXT.contains("click -> use act click"));
+        assert!(HELP_TEXT.contains("type -> use act type"));
         assert!(HELP_TEXT.contains("keys -> use act press --keys"));
         assert!(HELP_TEXT.contains("scroll -> use act scroll"));
         assert!(HELP_TEXT.contains("hover -> use act hover"));
@@ -2095,50 +2059,6 @@ mod tests {
     fn cli_no_ws_flag() {
         let result = try_parse(&["bk", "--ws", "abc", "snapshot"]);
         assert!(result.is_err());
-    }
-
-    // ── V1 legacy commands still work ────────────────────────────
-
-    #[test]
-    fn click_without_target_is_rejected() {
-        let result = try_parse(&["bk", "click"]);
-        assert!(result.is_err(), "click without any target should be rejected");
-    }
-
-    #[test]
-    fn click_with_coordinates_succeeds() {
-        let result = try_parse(&["bk", "click", "--x", "100.0", "--y", "200.0"]);
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn click_with_index_succeeds() {
-        let result = try_parse(&["bk", "click", "--index", "2"]);
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn click_with_ref_succeeds() {
-        let result = try_parse(&["bk", "click", "--ref", "55"]);
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn type_without_target_is_rejected() {
-        let result = try_parse(&["bk", "type", "hello"]);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn type_with_index_succeeds() {
-        let result = try_parse(&["bk", "type", "--index", "3", "hello"]);
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn type_with_ref_succeeds() {
-        let result = try_parse(&["bk", "type", "--ref", "42", "hello"]);
-        assert!(result.is_ok());
     }
 
     #[test]

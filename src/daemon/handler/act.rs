@@ -520,7 +520,6 @@ fn build_act_response(
     ref_id: Option<i64>,
     result: &str,
     state_diff: Option<serde_json::Value>,
-    new_tab: Option<&str>,
     target: &str,
     action_data: serde_json::Map<String, serde_json::Value>,
 ) -> Response {
@@ -532,9 +531,6 @@ fn build_act_response(
     });
     if let Some(r) = ref_id {
         data["ref"] = json!(r);
-    }
-    if let Some(nt) = new_tab {
-        data["new_tab"] = json!(nt);
     }
     if let Some(data_obj) = data.as_object_mut() {
         for (key, value) in action_data {
@@ -676,7 +672,6 @@ pub async fn handle_act(req: &Request, state: &Arc<DaemonState>) -> Response {
         action_success.ref_id,
         "completed",
         state_diff_json,
-        None,
         &target_id,
         action_success.data,
     )
@@ -1530,7 +1525,6 @@ mod tests {
             Some(42),
             "completed",
             None,
-            None,
             "TAB1",
             serde_json::Map::new(),
         );
@@ -1541,6 +1535,7 @@ mod tests {
         assert_eq!(json["data"]["result"], "completed");
         assert_eq!(json["data"]["target"], "TAB1");
         assert!(json["data"]["state_diff"].is_null());
+        assert!(json["data"].get("new_tab").is_none());
     }
 
     #[test]
@@ -1549,7 +1544,6 @@ mod tests {
             "press",
             None,
             "completed",
-            None,
             None,
             "TAB2",
             serde_json::Map::new(),
@@ -1563,21 +1557,6 @@ mod tests {
     }
 
     #[test]
-    fn act_response_with_new_tab() {
-        let resp = build_act_response(
-            "click",
-            Some(5),
-            "completed",
-            None,
-            Some("NEW_TAB_ID"),
-            "TAB1",
-            serde_json::Map::new(),
-        );
-        let json = serde_json::to_value(&resp).unwrap();
-        assert_eq!(json["data"]["new_tab"], "NEW_TAB_ID");
-    }
-
-    #[test]
     fn act_response_with_state_diff() {
         let diff = json!({"url_changed": null, "elements_added": 3});
         let resp = build_act_response(
@@ -1585,7 +1564,6 @@ mod tests {
             Some(1),
             "completed",
             Some(diff.clone()),
-            None,
             "T1",
             serde_json::Map::new(),
         );
@@ -1606,12 +1584,32 @@ mod tests {
             json!([{"value": "green", "text": "Green", "selected": true}]),
         );
 
-        let resp = build_act_response("select", Some(77), "completed", None, None, "TAB1", data);
+        let resp = build_act_response("select", Some(77), "completed", None, "TAB1", data);
         let json = serde_json::to_value(&resp).unwrap();
 
         assert_eq!(json["data"]["value"], "green");
         assert_eq!(json["data"]["detail"]["selected_value"], "green");
         assert_eq!(json["data"]["options"][0]["text"], "Green");
+    }
+
+    #[test]
+    fn click_error_maps_missing_element_to_ref_not_found() {
+        let value = serde_json::to_value(action_error(
+            "click",
+            crate::error::BkError::Other("element ref no longer present in the page".into()),
+        ))
+        .unwrap();
+        assert_eq!(value["error"]["code"], "REF_NOT_FOUND");
+    }
+
+    #[test]
+    fn type_error_keeps_other_failures_as_js_error() {
+        let value = serde_json::to_value(action_error(
+            "type",
+            crate::error::BkError::Other("type failed: focus script error".into()),
+        ))
+        .unwrap();
+        assert_eq!(value["error"]["code"], "JS_ERROR");
     }
 
     #[tokio::test]

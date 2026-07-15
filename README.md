@@ -184,6 +184,8 @@ bk act drag --from-selector "#card-a" --to-selector "#drop-zone"
 ```
 
 `bk act fill`, `bk act select`, and `bk act options` accept only stable element refs from `bk snapshot`.
+Legacy top-level `bk click` and `bk type` are removed; use `bk act click` and `bk act type`.
+`bk act click` returns the action result plus `state_diff`. It does not report `new_tab` until browserkit has session-native target lifecycle tracking.
 
 | Action | Command |
 |--------|---------|
