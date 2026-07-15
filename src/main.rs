@@ -35,7 +35,7 @@ Primary:
   status      Connection status
 
 Legacy (v1, will be removed in Phase 3):
-  click/type/keys
+  click/type
   find/search/html/url/title/console
   pdf/open/fetch/ws/tab/browser/daemon/storage/dialog/debug
 
@@ -43,6 +43,7 @@ Removed aliases:
   goto -> use navigate    info -> use snapshot
   eval -> use evaluate    shot -> use screenshot
   back/forward/reload -> use navigate --back/--forward/--reload
+  keys -> use act press --keys
   scroll -> use act scroll    hover -> use act hover
   focus -> use act focus
   fill -> use act fill
@@ -299,12 +300,6 @@ pub enum Command {
         #[arg(long)]
         autocomplete: bool,
         text: String,
-    },
-    /// Send keyboard keys
-    #[command(hide = true)]
-    Keys {
-        #[arg(required = true)]
-        keys: Vec<String>,
     },
     /// Find elements by CSS selector
     #[command(hide = true)]
@@ -1332,12 +1327,6 @@ async fn dispatch(cli: &Cli, client: &mut DaemonClient) -> Result<(), String> {
             print_response(&resp);
         }
 
-        Command::Keys { keys } => {
-            let wid = resolve_workspace(client).await?;
-            let resp = send_cmd(client, "act.keys", json!({"wid": wid, "keys": keys})).await?;
-            print_response(&resp);
-        }
-
         // ── Page State (top-level, v1 legacy) ────────────────────────
         Command::Find { selector, attributes, max, include_text } => {
             let wid = resolve_workspace(client).await?;
@@ -2074,7 +2063,16 @@ mod tests {
     }
 
     #[test]
+    fn cli_rejects_removed_keys_command() {
+        assert_cli_commands_removed(&[
+            &["bk", "keys", "Enter"][..],
+            &["bk", "keys", "Control+a"][..],
+        ]);
+    }
+
+    #[test]
     fn top_level_help_mentions_removed_scroll_hover_focus_guidance() {
+        assert!(HELP_TEXT.contains("keys -> use act press --keys"));
         assert!(HELP_TEXT.contains("scroll -> use act scroll"));
         assert!(HELP_TEXT.contains("hover -> use act hover"));
         assert!(HELP_TEXT.contains("focus -> use act focus"));
@@ -2144,14 +2142,8 @@ mod tests {
     }
 
     #[test]
-    fn keys_requires_at_least_one_arg() {
-        let result = try_parse(&["bk", "keys"]);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn keys_with_single_key_succeeds() {
-        let result = try_parse(&["bk", "keys", "Enter"]);
+    fn press_with_single_key_succeeds() {
+        let result = try_parse(&["bk", "act", "press", "--keys", "Enter"]);
         assert!(result.is_ok());
     }
 

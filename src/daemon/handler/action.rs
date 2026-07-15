@@ -229,31 +229,6 @@ async fn check_autocomplete(
     is_autocomplete
 }
 
-handler!(handle_act_keys, do_act_keys(req, state));
-
-async fn do_act_keys(req: &Request, state: &Arc<DaemonState>) -> Result<Response, BkError> {
-    let ctx = resolve_context(req, state, "act.keys")?;
-
-    let keys: Vec<String> = req.params.get("keys")
-        .and_then(|v| v.as_array())
-        .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
-        .unwrap_or_default();
-
-    if keys.is_empty() {
-        return Err(BkError::InvalidRequest("act.keys requires at least one key".into()));
-    }
-
-    let session = ctx.cdp.session(&ctx.cdp_session_id);
-
-    for key_str in &keys {
-        dispatch_key_combo(&session, key_str).await?;
-    }
-
-    touch_workspace(state, &ctx.wid);
-    info!(wid = %ctx.wid, tid = %ctx.tid, count = keys.len(), "keys dispatched");
-    Ok(Response::ok(json!({ "wid": ctx.wid, "tid": ctx.tid, "status": "keys_sent", "count": keys.len() })))
-}
-
 /// Parse a key string like "Control+Shift+Enter" and dispatch keyDown/keyUp events.
 pub async fn dispatch_key_combo(
     session: &cdpkit::Session<'_>,

@@ -450,6 +450,7 @@ bk status
 | `bk rm <wid>` | `bk ws close <wid>` (legacy) |
 | `bk url` | `bk evaluate "location.href"` |
 | `bk title` | `bk evaluate "document.title"` |
+| `bk keys Enter` | `bk act press --keys Enter` |
 | `bk scroll ...` | `bk act scroll ...` |
 | `bk hover --ref <N>` | `bk act hover --ref <N>` |
 | `bk focus --ref <N>` | `bk act focus --ref <N>` |
@@ -458,4 +459,4 @@ bk status
 | `bk upload --ref <N> <FILES...>` | `bk act upload --ref <N> <FILES...>` |
 | `bk drag --from-ref <N> --to-ref <N>` | `bk act drag --from-ref <N> --to-ref <N>` |
 
-其余 v1 legacy 命令（ws/tab/browser/daemon/storage/dialog/debug/click/type/keys/find/search/html/console/pdf/open/fetch）仍可用但将在 Phase 3 移除。
+其余 v1 legacy 命令（ws/tab/browser/daemon/storage/dialog/debug/click/type/find/search/html/console/pdf/open/fetch）仍可用但将在 Phase 3 移除。

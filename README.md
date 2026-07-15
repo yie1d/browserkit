@@ -187,7 +187,7 @@ bk act drag --from-selector "#card-a" --to-selector "#drop-zone"
 
 | Action | Command |
 |--------|---------|
-| keys | `bk keys Enter`, `bk keys Control+a` |
+| keys | `bk act press --keys Enter`, `bk act press --keys Control+a` |
 | dialog | `bk dialog accept`, `bk dialog dismiss`, `bk dialog policy accept` |
 
 ### navigate
