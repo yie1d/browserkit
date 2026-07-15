@@ -447,6 +447,7 @@ bk status
 | `bk shot` | `bk screenshot` |
 | `bk click --ref <N>` | `bk act click --ref <N>` |
 | `bk type --ref <N> <TEXT>` | `bk act type --ref <N> --text <TEXT>` |
+| `bk fill --set ref:<N>=<VALUE>` | `bk act fill --set ref:<N>=<VALUE>` |
 | `bk back` | `bk navigate --back` |
 | `bk forward` | `bk navigate --forward` |
 | `bk reload` | `bk navigate --reload` |
