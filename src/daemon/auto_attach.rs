@@ -288,21 +288,21 @@ pub fn spawn_auto_attach_task(
                         &target_info.url,
                         &target_info.title,
                     );
-                    if let Some((ref wid, ref tid)) = added {
+                    if let Some((ref wid, _)) = added {
                         // Start dialog + console subscription for this auto-attached tab
                         spawn_dialog_subscription(
                             Arc::clone(&state),
+                            wid.clone(),
+                            target_info.target_id.clone(),
                             Arc::clone(&cdp),
                             session_id.clone(),
-                            wid.clone(),
-                            tid.clone(),
                         );
                         spawn_console_subscription(
                             Arc::clone(&state),
+                            wid.clone(),
+                            target_info.target_id.clone(),
                             Arc::clone(&cdp),
                             session_id.clone(),
-                            wid.clone(),
-                            tid.clone(),
                         );
                         state.request_persist();
                     }
@@ -318,8 +318,8 @@ pub fn spawn_auto_attach_task(
                         "auto-attach: TargetDestroyed event received"
                     );
                     let removed = handle_target_destroyed(&state, &ev.target_id);
-                    if let Some((ref wid, ref tid)) = removed {
-                        state.dialog_state.cancel_subscription(wid, tid);
+                    if let Some((ref wid, _)) = removed {
+                        state.dialog_state.cancel_subscription(wid, &ev.target_id);
                         state.request_persist();
                     }
                 }
@@ -426,21 +426,21 @@ pub fn spawn_auto_attach_task(
                         &target_info.url,
                         &target_info.title,
                     );
-                    if let Some((ref wid, ref tid)) = added {
+                    if let Some((ref wid, _)) = added {
                         // Start dialog + console subscription for this auto-attached tab
                         spawn_dialog_subscription(
                             Arc::clone(&state),
+                            wid.clone(),
+                            target_info.target_id.clone(),
                             Arc::clone(&cdp),
                             session_id.clone(),
-                            wid.clone(),
-                            tid.clone(),
                         );
                         spawn_console_subscription(
                             Arc::clone(&state),
+                            wid.clone(),
+                            target_info.target_id.clone(),
                             Arc::clone(&cdp),
                             session_id.clone(),
-                            wid.clone(),
-                            tid.clone(),
                         );
                         state.request_persist();
                     }

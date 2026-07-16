@@ -13,6 +13,7 @@ use crate::config::Config;
 use crate::daemon::dialog::DialogState;
 use crate::daemon::persist::PersistTx;
 use crate::daemon::session::Session;
+use crate::daemon::target_lifecycle::TargetLifecycleEvent;
 use crate::workspace::Workspace;
 
 /// Type alias for workspace IDs (16-character hex strings).
@@ -60,6 +61,12 @@ pub struct DaemonState {
     /// tracks target lifecycle events. The token allows stopping the task when
     /// the browser disconnects or the last attached workspace is closed.
     pub auto_attach_tasks: DashMap<String, CancellationToken>,
+    /// Cancellation tokens for session-native target watcher tasks, keyed by browser host.
+    pub target_watchers: DashMap<String, CancellationToken>,
+    /// Broadcast stream for session-native target lifecycle changes.
+    pub target_events: tokio::sync::broadcast::Sender<TargetLifecycleEvent>,
+    /// Console subscription task tokens, keyed by (session_name, target_id).
+    pub console_subscription_tokens: DashMap<(String, String), CancellationToken>,
     /// Dialog management state: pending dialogs, policies, subscription tokens.
     pub dialog_state: DialogState,
     /// When true, the persist task will not write state.json.
@@ -81,6 +88,7 @@ impl DaemonState {
     /// receiver out and replaces it with `None`.
     pub fn new() -> Self {
         let (persist_tx, persist_rx) = tokio::sync::mpsc::channel(32);
+        let (target_events, _) = tokio::sync::broadcast::channel(1024);
         Self {
             browsers: DashMap::new(),
             workspaces: DashMap::new(),
@@ -95,6 +103,9 @@ impl DaemonState {
             persist_tx,
             _persist_rx_guard: Some(persist_rx),
             auto_attach_tasks: DashMap::new(),
+            target_watchers: DashMap::new(),
+            target_events,
+            console_subscription_tokens: DashMap::new(),
             dialog_state: DialogState::new(),
             persist_disabled: AtomicBool::new(false),
             sessions: DashMap::new(),
@@ -139,6 +150,9 @@ impl DaemonState {
         self.browsers.remove(host);
         // Cancel any auto-attach tasks for this host
         if let Some((_, token)) = self.auto_attach_tasks.remove(host) {
+            token.cancel();
+        }
+        if let Some((_, token)) = self.target_watchers.remove(host) {
             token.cancel();
         }
         // Mark all sessions using this browser as disconnected

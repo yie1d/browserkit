@@ -8,6 +8,7 @@ pub mod protocol;
 pub mod server;
 pub mod session;
 pub mod state;
+pub mod target_lifecycle;
 pub mod token;
 
 use std::fs::File;
