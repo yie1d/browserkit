@@ -177,11 +177,20 @@ pub async fn capture_pdf(cdp: &Arc<CDP>, session_id: &str) -> Result<String, BkE
 pub fn validate_pdf_output_path(path: &str) -> Result<(), BkError> {
     let p = Path::new(path);
     for component in p.components() {
-        if component == std::path::Component::ParentDir {
-            return Err(BkError::InvalidRequest(format!(
-                "output path '{}' contains '..' (path traversal not allowed)",
-                path
-            )));
+        match component {
+            std::path::Component::Prefix(_) | std::path::Component::RootDir => {
+                return Err(BkError::InvalidRequest(format!(
+                    "output path '{}' must be a relative path",
+                    path
+                )));
+            }
+            std::path::Component::ParentDir => {
+                return Err(BkError::InvalidRequest(format!(
+                    "output path '{}' contains '..' (path traversal not allowed)",
+                    path
+                )));
+            }
+            _ => {}
         }
     }
     if p.is_absolute() {
@@ -636,6 +645,26 @@ mod tests {
             "/tmp/page.pdf"
         };
         let err = super::validate_pdf_output_path(path).unwrap_err();
+        assert!(
+            err.to_string().contains("must be a relative path"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn pdf_output_path_rejects_windows_rooted_path() {
+        let err = super::validate_pdf_output_path("\\temp\\page.pdf").unwrap_err();
+        assert!(
+            err.to_string().contains("must be a relative path"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn pdf_output_path_rejects_windows_drive_relative_path() {
+        let err = super::validate_pdf_output_path("C:page.pdf").unwrap_err();
         assert!(
             err.to_string().contains("must be a relative path"),
             "unexpected error: {err}"

@@ -24,6 +24,26 @@ fn request_error(message: impl Into<String>) -> Response {
     Response::from(BkError::InvalidRequest(message.into()))
 }
 
+fn invalid_argument(message: impl Into<String>) -> Response {
+    Response::error_detail(ErrorCode::InvalidArgument, message.into(), None)
+}
+
+fn canonical_inspect_payload(
+    session_name: &str,
+    target_id: &str,
+    fields: serde_json::Value,
+) -> Result<serde_json::Value, Response> {
+    let mut object = fields
+        .as_object()
+        .cloned()
+        .ok_or_else(|| invalid_argument("inspect response fields must be an object"))?;
+    object.remove("wid");
+    object.remove("tid");
+    object.insert("session".into(), json!(session_name));
+    object.insert("target".into(), json!(target_id));
+    Ok(serde_json::Value::Object(object))
+}
+
 fn touch_session(state: &Arc<DaemonState>, session_name: &str) {
     if let Some(mut session) = state.sessions.get_mut(session_name) {
         session.touch();
@@ -80,13 +100,15 @@ async fn do_find(req: &Request, state: &Arc<DaemonState>) -> Result<Response, Re
         "find"
     );
 
-    Ok(Response::ok(json!({
-        "session": ctx.session_name,
-        "target": ctx.target_id,
+    Ok(Response::ok(canonical_inspect_payload(
+        &ctx.session_name,
+        &ctx.target_id,
+        json!({
         "selector": selector,
         "count": elements.len(),
         "elements": elements,
-    })))
+        }),
+    )?))
 }
 
 async fn do_search(req: &Request, state: &Arc<DaemonState>) -> Result<Response, Response> {
@@ -134,12 +156,14 @@ async fn do_search(req: &Request, state: &Arc<DaemonState>) -> Result<Response, 
         "search"
     );
 
-    Ok(Response::ok(json!({
-        "session": ctx.session_name,
-        "target": ctx.target_id,
+    Ok(Response::ok(canonical_inspect_payload(
+        &ctx.session_name,
+        &ctx.target_id,
+        json!({
         "matches": matches,
         "count": matches.len(),
-    })))
+        }),
+    )?))
 }
 
 async fn do_html(req: &Request, state: &Arc<DaemonState>) -> Result<Response, Response> {
@@ -157,11 +181,13 @@ async fn do_html(req: &Request, state: &Arc<DaemonState>) -> Result<Response, Re
         "html captured"
     );
 
-    Ok(Response::ok(json!({
-        "session": ctx.session_name,
-        "target": ctx.target_id,
+    Ok(Response::ok(canonical_inspect_payload(
+        &ctx.session_name,
+        &ctx.target_id,
+        json!({
         "html": html,
-    })))
+        }),
+    )?))
 }
 
 async fn do_console(req: &Request, state: &Arc<DaemonState>) -> Result<Response, Response> {
@@ -231,15 +257,23 @@ async fn do_console(req: &Request, state: &Arc<DaemonState>) -> Result<Response,
         "console"
     );
 
-    Ok(Response::ok(json!({
-        "session": ctx.session_name,
-        "target": ctx.target_id,
+    Ok(Response::ok(canonical_inspect_payload(
+        &ctx.session_name,
+        &ctx.target_id,
+        json!({
         "entries": entries,
         "count": entries.len(),
-    })))
+        }),
+    )?))
 }
 
 async fn do_pdf(req: &Request, state: &Arc<DaemonState>) -> Result<Response, Response> {
+    if req.params.get("url").is_some() {
+        return Err(invalid_argument(
+            "pdf operates on the current target; open or navigate to a URL before printing",
+        ));
+    }
+
     let ctx = resolve_session_target(state, &req.params)?;
     let output = req.params.get("output").and_then(|v| v.as_str());
     let landscape = req
@@ -274,11 +308,13 @@ async fn do_pdf(req: &Request, state: &Arc<DaemonState>) -> Result<Response, Res
         "pdf generated"
     );
 
-    let mut result = json!({
-        "session": ctx.session_name,
-        "target": ctx.target_id,
+    let mut result = canonical_inspect_payload(
+        &ctx.session_name,
+        &ctx.target_id,
+        json!({
         "data": data,
-    });
+        }),
+    )?;
     if let Some(path) = output {
         result["file"] = json!(path);
     }
@@ -313,5 +349,56 @@ mod tests {
             let value = serde_json::to_value(handle_inspect(&req, &state).await).unwrap();
             assert_eq!(value["error"]["code"], "SESSION_NOT_FOUND", "{cmd}");
         }
+    }
+
+    #[tokio::test]
+    async fn pdf_rejects_url_before_session_resolution() {
+        let state = Arc::new(DaemonState::new());
+        let req = Request {
+            cmd: "pdf".into(),
+            params: json!({"url": "https://example.com"}),
+            token: None,
+        };
+
+        let value = serde_json::to_value(handle_inspect(&req, &state).await).unwrap();
+
+        assert_eq!(value["ok"], false);
+        assert_eq!(value["error"]["code"], "INVALID_ARGUMENT");
+        assert!(value["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("current target"));
+    }
+
+    #[test]
+    fn canonical_inspect_payload_uses_session_target_not_wid_tid() {
+        let value = canonical_inspect_payload(
+            "agent-a",
+            "TARGET-1",
+            json!({
+                "entries": [],
+                "count": 0,
+            }),
+        )
+        .unwrap();
+
+        assert_eq!(value["session"], "agent-a");
+        assert_eq!(value["target"], "TARGET-1");
+        assert!(value.get("wid").is_none(), "payload must not expose wid");
+        assert!(value.get("tid").is_none(), "payload must not expose tid");
+        assert_eq!(value["count"], 0);
+    }
+
+    #[test]
+    fn canonical_inspect_payload_rejects_non_object_fields() {
+        let err = canonical_inspect_payload("agent-a", "TARGET-1", json!(["entries"]))
+            .unwrap_err();
+        let value = serde_json::to_value(err).unwrap();
+
+        assert_eq!(value["error"]["code"], "INVALID_ARGUMENT");
+        assert!(value["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("fields must be an object"));
     }
 }
