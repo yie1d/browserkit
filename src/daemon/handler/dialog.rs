@@ -7,33 +7,39 @@ use tracing::info;
 
 use crate::daemon::dialog::{DialogPolicy, build_handle_params};
 use crate::daemon::protocol::{Request, Response};
-use crate::daemon::state::{resolve_wid, DaemonState};
-use crate::error::BkError;
-use super::common::handler;
+use crate::daemon::state::DaemonState;
+use crate::error::{BkError, ErrorCode};
+use super::common::{resolve_session_selection, resolve_session_target};
 
-handler!(handle_dialog_list, do_dialog_list(req, state));
-handler!(handle_dialog_accept, do_dialog_accept(req, state));
-handler!(handle_dialog_dismiss, do_dialog_dismiss(req, state));
-handler!(handle_dialog_policy, do_dialog_policy(req, state));
+pub async fn handle_dialog_list(req: &Request, state: &Arc<DaemonState>) -> Response {
+    do_dialog_list(req, state).await.unwrap_or_else(|resp| resp)
+}
+
+pub async fn handle_dialog_accept(req: &Request, state: &Arc<DaemonState>) -> Response {
+    do_dialog_accept(req, state).await.unwrap_or_else(|resp| resp)
+}
+
+pub async fn handle_dialog_dismiss(req: &Request, state: &Arc<DaemonState>) -> Response {
+    do_dialog_dismiss(req, state).await.unwrap_or_else(|resp| resp)
+}
+
+pub async fn handle_dialog_policy(req: &Request, state: &Arc<DaemonState>) -> Response {
+    do_dialog_policy(req, state).await.unwrap_or_else(|resp| resp)
+}
 
 async fn do_dialog_list(
     req: &Request,
     state: &Arc<DaemonState>,
-) -> Result<Response, BkError> {
-    let prefix = req
-        .params
-        .get("wid")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| BkError::InvalidRequest("dialog.list requires 'wid' param".into()))?;
-
-    let wid = resolve_wid(state, prefix)?;
-    let pending = state.dialog_state.list_pending_for_ws(&wid);
+) -> Result<Response, Response> {
+    let session_name = resolve_dialog_session(state, &req.params)?;
+    let pending = state.dialog_state.list_pending_for_session(&session_name);
 
     let items: Vec<serde_json::Value> = pending
         .into_iter()
-        .map(|(tid, dialog)| {
+        .map(|(target_id, dialog)| {
             json!({
-                "tid": tid,
+                "session": session_name,
+                "target": target_id,
                 "type": dialog.dialog_type,
                 "message": dialog.message,
                 "default_prompt": dialog.default_prompt,
@@ -49,44 +55,35 @@ async fn do_dialog_list(
 async fn do_dialog_accept(
     req: &Request,
     state: &Arc<DaemonState>,
-) -> Result<Response, BkError> {
-    let prefix = req
-        .params
-        .get("wid")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| BkError::InvalidRequest("dialog.accept requires 'wid' param".into()))?;
+) -> Result<Response, Response> {
+    let session_name = resolve_dialog_session(state, &req.params)?;
+    let target_param = optional_string_field(&req.params, "target")?;
+    let prompt_text = optional_string_field(&req.params, "text")?;
+    let target_id = resolve_dialog_target_for_action(state, &session_name, target_param)?;
+    let ctx = resolve_dialog_action_context(state, &session_name, &target_id)?;
+    let dialog = pending_dialog_for_target(state, &ctx.session_name, &ctx.target_id)?;
 
-    let wid = resolve_wid(state, prefix)?;
-    let tid_param = req.params.get("tid").and_then(|v| v.as_str());
-    let prompt_text = req.params.get("text").and_then(|v| v.as_str());
-
-    // Resolve which tab's dialog to accept
-    let tid = resolve_dialog_tab(state, &wid, tid_param)?;
-
-    // Verify a pending dialog exists (but don't remove it yet — only after success)
-    let dialog = state.dialog_state.get_pending(&wid, &tid)
-        .ok_or_else(|| BkError::Other(format!("no pending dialog on tab {}", tid)))?;
-
-    // Get CDP connection and session for this tab
-    let (cdp, session_id) = get_tab_cdp(state, &wid, &tid)?;
-
-    // Send HandleJavaScriptDialog
     let cmd = build_handle_params(true, prompt_text);
-    let session = cdp.session(&session_id);
-    cmd.send(&session).await?;
+    let session = ctx.cdp.session(&ctx.cdp_session_id);
+    cmd.send(&session)
+        .await
+        .map_err(BkError::from)
+        .map_err(Response::from)?;
 
-    // Only remove pending after successful send
-    state.dialog_state.take_pending(&wid, &tid);
-
+    state
+        .dialog_state
+        .take_pending(&ctx.session_name, &ctx.target_id);
+    touch_session(state, &ctx.session_name);
     info!(
-        wid = %wid,
-        tid = %tid,
+        session = %ctx.session_name,
+        target = %ctx.target_id,
         dialog_type = %dialog.dialog_type,
         "dialog: manually accepted"
     );
 
     Ok(Response::ok(json!({
-        "tid": tid,
+        "session": ctx.session_name,
+        "target": ctx.target_id,
         "type": dialog.dialog_type,
         "action": "accepted",
     })))
@@ -95,43 +92,34 @@ async fn do_dialog_accept(
 async fn do_dialog_dismiss(
     req: &Request,
     state: &Arc<DaemonState>,
-) -> Result<Response, BkError> {
-    let prefix = req
-        .params
-        .get("wid")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| BkError::InvalidRequest("dialog.dismiss requires 'wid' param".into()))?;
+) -> Result<Response, Response> {
+    let session_name = resolve_dialog_session(state, &req.params)?;
+    let target_param = optional_string_field(&req.params, "target")?;
+    let target_id = resolve_dialog_target_for_action(state, &session_name, target_param)?;
+    let ctx = resolve_dialog_action_context(state, &session_name, &target_id)?;
+    let dialog = pending_dialog_for_target(state, &ctx.session_name, &ctx.target_id)?;
 
-    let wid = resolve_wid(state, prefix)?;
-    let tid_param = req.params.get("tid").and_then(|v| v.as_str());
-
-    // Resolve which tab's dialog to dismiss
-    let tid = resolve_dialog_tab(state, &wid, tid_param)?;
-
-    // Verify a pending dialog exists (but don't remove it yet — only after success)
-    let dialog = state.dialog_state.get_pending(&wid, &tid)
-        .ok_or_else(|| BkError::Other(format!("no pending dialog on tab {}", tid)))?;
-
-    // Get CDP connection and session
-    let (cdp, session_id) = get_tab_cdp(state, &wid, &tid)?;
-
-    // Send HandleJavaScriptDialog
     let cmd = build_handle_params(false, None);
-    let session = cdp.session(&session_id);
-    cmd.send(&session).await?;
+    let session = ctx.cdp.session(&ctx.cdp_session_id);
+    cmd.send(&session)
+        .await
+        .map_err(BkError::from)
+        .map_err(Response::from)?;
 
-    // Only remove pending after successful send
-    state.dialog_state.take_pending(&wid, &tid);
-
+    state
+        .dialog_state
+        .take_pending(&ctx.session_name, &ctx.target_id);
+    touch_session(state, &ctx.session_name);
     info!(
-        wid = %wid,
-        tid = %tid,
+        session = %ctx.session_name,
+        target = %ctx.target_id,
         dialog_type = %dialog.dialog_type,
         "dialog: manually dismissed"
     );
 
     Ok(Response::ok(json!({
-        "tid": tid,
+        "session": ctx.session_name,
+        "target": ctx.target_id,
         "type": dialog.dialog_type,
         "action": "dismissed",
     })))
@@ -140,31 +128,26 @@ async fn do_dialog_dismiss(
 async fn do_dialog_policy(
     req: &Request,
     state: &Arc<DaemonState>,
-) -> Result<Response, BkError> {
-    let prefix = req
-        .params
-        .get("wid")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| BkError::InvalidRequest("dialog.policy requires 'wid' param".into()))?;
-
-    let wid = resolve_wid(state, prefix)?;
+) -> Result<Response, Response> {
+    let session_name = resolve_dialog_session(state, &req.params)?;
 
     // If a policy value is provided, set it; otherwise return current
     if let Some(policy_str) = req.params.get("policy").and_then(|v| v.as_str()) {
         let policy = DialogPolicy::from_str_opt(policy_str)
-            .ok_or_else(|| BkError::InvalidRequest(
+            .ok_or_else(|| request_error(
                 format!("invalid dialog policy '{}', expected: manual, accept, dismiss", policy_str)
             ))?;
-        state.dialog_state.set_policy(&wid, policy);
-        info!(wid = %wid, policy = %policy.as_str(), "dialog: policy updated");
+        state.dialog_state.set_policy(&session_name, policy);
+        touch_session(state, &session_name);
+        info!(session = %session_name, policy = %policy.as_str(), "dialog: policy updated");
         Ok(Response::ok(json!({
-            "wid": wid,
+            "session": session_name,
             "policy": policy.as_str(),
         })))
     } else {
-        let policy = state.dialog_state.get_policy(&wid);
+        let policy = state.dialog_state.get_policy(&session_name);
         Ok(Response::ok(json!({
-            "wid": wid,
+            "session": session_name,
             "policy": policy.as_str(),
         })))
     }
@@ -172,61 +155,210 @@ async fn do_dialog_policy(
 
 // ─── Helpers ──────────────────────────────────────────────────────────
 
-/// Resolve which tab to operate on for dialog commands.
-///
-/// If `tid_param` is given, validates it has a pending dialog.
-/// If not given, auto-selects the single pending dialog in the workspace,
-/// or errors if 0 or multiple exist.
-fn resolve_dialog_tab(
-    state: &DaemonState,
-    wid: &str,
-    tid_param: Option<&str>,
-) -> Result<String, BkError> {
-    if let Some(tid) = tid_param {
-        // Validate this tab exists in the workspace
-        let ws = state.workspaces.get(wid)
-            .ok_or_else(|| BkError::WorkspaceNotFound(wid.to_string()))?;
-        if !ws.tabs.contains_key(tid) {
-            return Err(BkError::TabNotFound(tid.to_string()));
-        }
-        // Check if this tab actually has a pending dialog
-        if state.dialog_state.get_pending(wid, tid).is_none() {
-            return Err(BkError::Other(format!(
-                "tab {} exists but has no pending dialog", tid
-            )));
-        }
-        return Ok(tid.to_string());
-    }
+fn request_error(message: impl Into<String>) -> Response {
+    Response::from(BkError::InvalidRequest(message.into()))
+}
 
-    // Auto-select: find tabs with pending dialogs in this workspace
-    let pending = state.dialog_state.list_pending_for_ws(wid);
-    match pending.len() {
-        0 => Err(BkError::Other("no pending dialogs in this workspace".into())),
-        1 => Ok(pending[0].0.clone()),
-        n => Err(BkError::Other(format!(
-            "{} pending dialogs in workspace, specify --tid to choose one", n
+fn invalid_argument(message: impl Into<String>) -> Response {
+    Response::error_detail(ErrorCode::InvalidArgument, message.into(), None)
+}
+
+fn optional_string_field<'a>(
+    params: &'a serde_json::Value,
+    field: &str,
+) -> Result<Option<&'a str>, Response> {
+    match params.get(field) {
+        None => Ok(None),
+        Some(serde_json::Value::String(value)) => Ok(Some(value.as_str())),
+        Some(_) => Err(invalid_argument(format!(
+            "'{field}' must be a string when provided"
         ))),
     }
 }
 
-/// Get the CDP connection and session_id for a tab.
-fn get_tab_cdp(
+fn resolve_dialog_session(
     state: &DaemonState,
-    wid: &str,
-    tid: &str,
-) -> Result<(Arc<cdpkit::CDP>, String), BkError> {
-    let ws = state.workspaces.get(wid)
-        .ok_or_else(|| BkError::WorkspaceNotFound(wid.to_string()))?;
-    let tab = ws.tabs.get(tid)
-        .ok_or_else(|| BkError::TabNotFound(tid.to_string()))?;
-    let session_id = tab.cdp_session_id.clone();
-    let browser_host = ws.browser_host.clone();
-    drop(ws); // release DashMap ref before getting browser
+    params: &serde_json::Value,
+) -> Result<String, Response> {
+    let session_param = optional_string_field(params, "session")?;
+    resolve_session_selection(state, session_param)
+}
 
-    let browser = state.browsers.get(&browser_host)
-        .ok_or_else(|| BkError::BrowserConnectionFailed(
-            format!("no connection for host: {}", browser_host)
-        ))?;
-    let cdp = Arc::clone(&browser.cdp);
-    Ok((cdp, session_id))
+fn resolve_dialog_target_for_action(
+    state: &DaemonState,
+    session_name: &str,
+    target_param: Option<&str>,
+) -> Result<String, Response> {
+    if let Some(target_id) = target_param {
+        return Ok(target_id.to_string());
+    }
+
+    let pending = state.dialog_state.list_pending_for_session(session_name);
+    match pending.len() {
+        0 => Err(Response::from(BkError::Other(
+            "no pending dialogs in session".into(),
+        ))),
+        1 => Ok(pending[0].0.clone()),
+        n => Err(Response::from(BkError::Other(format!(
+            "{n} pending dialogs in session, specify --target to choose one"
+        )))),
+    }
+}
+
+fn resolve_dialog_action_context(
+    state: &DaemonState,
+    session_name: &str,
+    target_id: &str,
+) -> Result<super::common::SessionTargetContext, Response> {
+    resolve_session_target(
+        state,
+        &json!({
+            "session": session_name,
+            "target": target_id,
+        }),
+    )
+}
+
+fn pending_dialog_for_target(
+    state: &DaemonState,
+    session_name: &str,
+    target_id: &str,
+) -> Result<crate::daemon::dialog::PendingDialog, Response> {
+    state
+        .dialog_state
+        .get_pending(session_name, target_id)
+        .ok_or_else(|| {
+            Response::from(BkError::Other(format!(
+                "target {target_id} has no pending dialog"
+            )))
+        })
+}
+
+fn touch_session(state: &Arc<DaemonState>, session_name: &str) {
+    if let Some(mut session) = state.sessions.get_mut(session_name) {
+        session.touch();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::daemon::session::Session;
+
+    fn pending_dialog(dialog_type: &str) -> crate::daemon::dialog::PendingDialog {
+        crate::daemon::dialog::PendingDialog {
+            dialog_type: dialog_type.to_string(),
+            message: "message".to_string(),
+            default_prompt: None,
+            url: "https://example.test".to_string(),
+            opened_at: 1000,
+        }
+    }
+
+    fn session_with_tab(target_id: &str) -> Session {
+        let mut session = Session::new_default("localhost:9222".into());
+        session.add_tab(target_id.into(), "https://example.test".into(), "Example".into());
+        session
+            .tabs
+            .get_mut(target_id)
+            .expect("tab should be inserted")
+            .cdp_session_id = "CDP_SESSION".into();
+        session
+    }
+
+    #[tokio::test]
+    async fn dialog_list_uses_session_and_target_fields() {
+        let state = Arc::new(DaemonState::new());
+        state
+            .sessions
+            .insert("agent".into(), Session::new_default("localhost:9222".into()));
+        state
+            .dialog_state
+            .set_pending("agent", "T1", pending_dialog("confirm"));
+
+        let req = Request {
+            cmd: "dialog.list".into(),
+            params: json!({"session": "agent"}),
+            token: None,
+        };
+
+        let value = serde_json::to_value(handle_dialog_list(&req, &state).await).unwrap();
+
+        assert_eq!(value["ok"], true);
+        assert_eq!(value["data"][0]["session"], "agent");
+        assert_eq!(value["data"][0]["target"], "T1");
+        assert!(value["data"][0].get("wid").is_none());
+        assert!(value["data"][0].get("tid").is_none());
+    }
+
+    #[tokio::test]
+    async fn dialog_policy_uses_session_field() {
+        let state = Arc::new(DaemonState::new());
+        state
+            .sessions
+            .insert("agent".into(), Session::new_default("localhost:9222".into()));
+
+        let req = Request {
+            cmd: "dialog.policy".into(),
+            params: json!({"session": "agent", "policy": "accept"}),
+            token: None,
+        };
+
+        let value = serde_json::to_value(handle_dialog_policy(&req, &state).await).unwrap();
+
+        assert_eq!(value["ok"], true);
+        assert_eq!(value["data"]["session"], "agent");
+        assert_eq!(value["data"]["policy"], "accept");
+        assert!(value["data"].get("wid").is_none());
+        assert_eq!(state.dialog_state.get_policy("agent"), DialogPolicy::Accept);
+    }
+
+    #[tokio::test]
+    async fn dialog_accept_omitted_target_rejects_ambiguous_pending_dialogs() {
+        let state = Arc::new(DaemonState::new());
+        state
+            .sessions
+            .insert("agent".into(), Session::new_default("localhost:9222".into()));
+        state
+            .dialog_state
+            .set_pending("agent", "T1", pending_dialog("confirm"));
+        state
+            .dialog_state
+            .set_pending("agent", "T2", pending_dialog("prompt"));
+
+        let req = Request {
+            cmd: "dialog.accept".into(),
+            params: json!({"session": "agent"}),
+            token: None,
+        };
+
+        let value = serde_json::to_value(handle_dialog_accept(&req, &state).await).unwrap();
+
+        assert_eq!(value["ok"], false);
+        assert!(value["error"]
+            .as_str()
+            .expect("ambiguous pending error should be a string")
+            .contains("2 pending dialogs in session, specify --target"));
+    }
+
+    #[tokio::test]
+    async fn dialog_accept_keeps_pending_when_cdp_session_resolution_fails() {
+        let state = Arc::new(DaemonState::new());
+        state.sessions.insert("agent".into(), session_with_tab("T1"));
+        state
+            .dialog_state
+            .set_pending("agent", "T1", pending_dialog("confirm"));
+
+        let req = Request {
+            cmd: "dialog.accept".into(),
+            params: json!({"session": "agent", "target": "T1"}),
+            token: None,
+        };
+
+        let value = serde_json::to_value(handle_dialog_accept(&req, &state).await).unwrap();
+
+        assert_eq!(value["ok"], false);
+        assert_eq!(value["error"]["code"], "CHROME_DISCONNECTED");
+        assert!(state.dialog_state.get_pending("agent", "T1").is_some());
+    }
 }

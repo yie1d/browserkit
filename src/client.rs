@@ -194,39 +194,6 @@ impl DaemonClient {
         Ok(resp)
     }
 
-    /// Read streaming responses (for network.monitor, cdp.events, etc.).
-    ///
-    /// Calls the provided callback for each response line until the connection
-    /// closes or the callback returns `false`.
-    pub async fn read_streaming<F>(&mut self, mut on_response: F) -> Result<(), BkError>
-    where
-        F: FnMut(Response) -> bool,
-    {
-        loop {
-            let mut line = String::new();
-            let n = self
-                .reader
-                .read_line(&mut line)
-                .await
-                .map_err(BkError::Io)?;
-
-            if n == 0 {
-                break; // EOF — daemon closed connection
-            }
-
-            match serde_json::from_str::<Response>(line.trim()) {
-                Ok(resp) => {
-                    if !on_response(resp) {
-                        break;
-                    }
-                }
-                Err(e) => {
-                    tracing::warn!(error = %e, "invalid streaming response line");
-                }
-            }
-        }
-        Ok(())
-    }
 }
 
 /// Build a daemon [`Request`] from a command name and params.
@@ -310,66 +277,6 @@ mod tests {
 
         assert!(resp.ok);
         assert_eq!(resp.data.unwrap()["status"], "running");
-
-        server_task.await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn daemon_client_streaming_responses() {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let port = listener.local_addr().unwrap().port();
-
-        let server_task = tokio::spawn(async move {
-            let (stream, _) = listener.accept().await.unwrap();
-            let (read_half, write_half) = stream.into_split();
-            let mut reader = BufReader::new(read_half);
-            let mut writer = BufWriter::new(write_half);
-
-            // Read the initial request
-            let mut line = String::new();
-            reader.read_line(&mut line).await.unwrap();
-
-            // Send 3 streaming responses then close
-            for i in 0..3 {
-                let resp = Response::ok(json!({"event": i}));
-                let resp_json = serde_json::to_string(&resp).unwrap();
-                writer.write_all(resp_json.as_bytes()).await.unwrap();
-                writer.write_all(b"\n").await.unwrap();
-                writer.flush().await.unwrap();
-            }
-            // Close connection (drop writer)
-        });
-
-        let stream = TcpStream::connect(format!("127.0.0.1:{}", port))
-            .await
-            .unwrap();
-        let (read_half, write_half) = stream.into_split();
-        let mut client = DaemonClient {
-            reader: BufReader::new(read_half),
-            writer: BufWriter::new(write_half),
-        };
-
-        // Send initial request
-        client
-            .send_request(&Request {
-                cmd: "network.monitor".into(),
-                params: json!({"wid": "test"}),
-                token: None,
-            })
-            .await
-            .ok(); // First response is consumed by send_request
-
-        // Read remaining streaming responses
-        let mut events = Vec::new();
-        client
-            .read_streaming(|resp| {
-                events.push(resp);
-                true
-            })
-            .await
-            .unwrap();
-
-        assert_eq!(events.len(), 2); // 2 remaining after first consumed by send_request
 
         server_task.await.unwrap();
     }

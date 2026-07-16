@@ -147,7 +147,7 @@ impl ErrorCode {
             Self::ChromeDisconnected => "Chrome may have closed; run bk connect to reconnect",
             Self::SessionNotFound => "session may have expired or been closed; create a new one",
             Self::SessionNoTab => "use bk open to create a tab first",
-            Self::DialogBlocking => "handle the dialog first: bk act dialog accept/dismiss",
+            Self::DialogBlocking => "handle the dialog first: bk dialog accept or bk dialog dismiss",
             Self::NavigateFailed => "check URL is valid and accessible",
             Self::Timeout => "increase --timeout or check if page is responsive",
             Self::ElementNotVisible => "element may be hidden or overlapped; try scrolling or waiting",

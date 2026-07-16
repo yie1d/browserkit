@@ -93,12 +93,12 @@ pub async fn handle_request(
         "storage.local.set" => storage::handle_storage_local_set(req, state).await,
         "storage.export" => storage::handle_storage_export(req, state).await,
         "storage.import" => storage::handle_storage_import(req, state).await,
-        "network.monitor" => network::handle_network_monitor(req, state).await,
-        "network.har" => network::handle_network_har(req, state).await,
+        "debug.block" => network::handle_debug_block(req, state).await,
+        "debug.unblock" => network::handle_debug_unblock(req, state).await,
+        "debug.cdp" => debug::handle_debug_cdp(req, state).await,
         "network.block" => network::handle_network_block(req, state).await,
         "network.unblock" => network::handle_network_unblock(req, state).await,
         "cdp.send" => debug::handle_cdp_send(req, state).await,
-        "cdp.events" => debug::handle_cdp_events(req, state).await,
         "dialog.list" => dialog::handle_dialog_list(req, state).await,
         "dialog.accept" => dialog::handle_dialog_accept(req, state).await,
         "dialog.dismiss" => dialog::handle_dialog_dismiss(req, state).await,
@@ -313,5 +313,25 @@ mod tests {
                 serde_json::to_value(handle_request(&req, &state, &test_context()).await).unwrap();
             assert_eq!(value["error"]["code"], "SESSION_NOT_FOUND");
         }
+    }
+
+    #[tokio::test]
+    async fn developer_routes_use_session_resolution() {
+        let state = Arc::new(DaemonState::new());
+        for cmd in ["debug.cdp", "debug.block", "debug.unblock"] {
+            let req = Request {
+                cmd: cmd.into(),
+                params: serde_json::json!({}),
+                token: None,
+            };
+            let value =
+                serde_json::to_value(handle_request(&req, &state, &test_context()).await).unwrap();
+            assert_eq!(value["error"]["code"], "SESSION_NOT_FOUND", "{cmd}");
+        }
+    }
+
+    #[tokio::test]
+    async fn removed_streaming_developer_routes_are_unknown() {
+        assert_routes_removed(&["network.monitor", "network.har", "cdp.events"]).await;
     }
 }

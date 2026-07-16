@@ -606,23 +606,13 @@ pub enum LocalAction {
 
 #[derive(Subcommand)]
 pub enum DebugAction {
-    /// Monitor network requests (streaming)
-    Monitor,
-    /// Navigate and record HAR
-    Har {
-        /// URL to navigate to
-        url: String,
-    },
     /// Block requests matching pattern
     Block {
         /// URL pattern to block
         pattern: String,
     },
     /// Unblock requests
-    Unblock {
-        /// Pattern to unblock (all if omitted)
-        pattern: Option<String>,
-    },
+    Unblock,
     /// Send raw CDP command
     Cdp {
         /// CDP method name
@@ -630,34 +620,21 @@ pub enum DebugAction {
         /// JSON params (optional)
         params: Option<String>,
     },
-    /// Listen to CDP events (streaming)
-    Events {
-        /// Event filter pattern
-        #[arg(long)]
-        filter: Option<String>,
-    },
 }
 
 #[derive(Subcommand)]
 pub enum DialogAction {
-    /// List pending dialogs in current workspace
+    /// List pending dialogs in current session
     List,
     /// Accept (confirm) a pending dialog
     Accept {
-        /// Tab ID (required if multiple pending dialogs)
-        #[arg(long)]
-        tid: Option<String>,
         /// Text to enter for prompt dialogs
         #[arg(long)]
         text: Option<String>,
     },
     /// Dismiss (cancel) a pending dialog
-    Dismiss {
-        /// Tab ID (required if multiple pending dialogs)
-        #[arg(long)]
-        tid: Option<String>,
-    },
-    /// View or set the dialog handling policy for this workspace
+    Dismiss,
+    /// View or set the dialog handling policy for this session
     Policy {
         /// Policy to set: manual, accept, dismiss (omit to view current)
         policy: Option<String>,
@@ -1476,27 +1453,29 @@ async fn dispatch(cli: &Cli, client: &mut DaemonClient) -> Result<(), String> {
 
         // ── Management (Dialog) ───────────────────────────
         Command::Dialog { action } => {
-            let wid = resolve_workspace(client).await?;
             match action {
                 DialogAction::List => {
-                    let resp = send_cmd(client, "dialog.list", json!({"wid": wid})).await?;
+                    let mut params = json!({});
+                    add_session_target_params(&mut params, cli);
+                    let resp = send_cmd(client, "dialog.list", params).await?;
                     print_response(&resp);
                 }
-                DialogAction::Accept { tid, text } => {
-                    let mut params = json!({"wid": wid});
-                    if let Some(t) = tid { params["tid"] = json!(t); }
+                DialogAction::Accept { text } => {
+                    let mut params = json!({});
+                    add_session_target_params(&mut params, cli);
                     if let Some(txt) = text { params["text"] = json!(txt); }
                     let resp = send_cmd(client, "dialog.accept", params).await?;
                     print_response(&resp);
                 }
-                DialogAction::Dismiss { tid } => {
-                    let mut params = json!({"wid": wid});
-                    if let Some(t) = tid { params["tid"] = json!(t); }
+                DialogAction::Dismiss => {
+                    let mut params = json!({});
+                    add_session_target_params(&mut params, cli);
                     let resp = send_cmd(client, "dialog.dismiss", params).await?;
                     print_response(&resp);
                 }
                 DialogAction::Policy { policy } => {
-                    let mut params = json!({"wid": wid});
+                    let mut params = json!({});
+                    add_session_target_params(&mut params, cli);
                     if let Some(p) = policy { params["policy"] = json!(p); }
                     let resp = send_cmd(client, "dialog.policy", params).await?;
                     print_response(&resp);
@@ -1506,26 +1485,17 @@ async fn dispatch(cli: &Cli, client: &mut DaemonClient) -> Result<(), String> {
 
         // ── Management (Debug) ────────────────────────────
         Command::Debug { action } => {
-            let wid = resolve_workspace(client).await?;
             match action {
-                DebugAction::Monitor => {
-                    let resp = send_cmd(client, "network.monitor", json!({"wid": wid})).await?;
-                    print_response(&resp);
-                    run_streaming(client).await;
-                }
-                DebugAction::Har { url } => {
-                    let resp = send_cmd(client, "network.har", json!({"wid": wid, "url": url})).await?;
-                    print_response(&resp);
-                    run_streaming(client).await;
-                }
                 DebugAction::Block { pattern } => {
-                    let resp = send_cmd(client, "network.block", json!({"wid": wid, "pattern": pattern})).await?;
+                    let mut params = json!({"pattern": pattern});
+                    add_session_target_params(&mut params, cli);
+                    let resp = send_cmd(client, "debug.block", params).await?;
                     print_response(&resp);
                 }
-                DebugAction::Unblock { pattern } => {
-                    let mut params = json!({"wid": wid});
-                    if let Some(p) = pattern { params["pattern"] = json!(p); }
-                    let resp = send_cmd(client, "network.unblock", params).await?;
+                DebugAction::Unblock => {
+                    let mut params = json!({});
+                    add_session_target_params(&mut params, cli);
+                    let resp = send_cmd(client, "debug.unblock", params).await?;
                     print_response(&resp);
                 }
                 DebugAction::Cdp { method, params } => {
@@ -1534,15 +1504,10 @@ async fn dispatch(cli: &Cli, client: &mut DaemonClient) -> Result<(), String> {
                             .map_err(|e| format!("invalid CDP params JSON: {}", e))?,
                         None => json!({}),
                     };
-                    let resp = send_cmd(client, "cdp.send", json!({"wid": wid, "method": method, "params": cdp_params})).await?;
+                    let mut req_params = json!({"method": method, "params": cdp_params});
+                    add_session_target_params(&mut req_params, cli);
+                    let resp = send_cmd(client, "debug.cdp", req_params).await?;
                     print_response(&resp);
-                }
-                DebugAction::Events { filter } => {
-                    let mut params = json!({"wid": wid});
-                    if let Some(f) = filter { params["filter"] = json!(f); }
-                    let resp = send_cmd(client, "cdp.events", params).await?;
-                    print_response(&resp);
-                    run_streaming(client).await;
                 }
             }
         },
@@ -1573,16 +1538,6 @@ async fn send_cmd(
 /// Print a response as JSON to stdout.
 fn print_response(resp: &Response) {
     println!("{}", serde_json::to_string(resp).unwrap_or_default());
-}
-
-/// Read streaming responses and print each one as JSON.
-async fn run_streaming(client: &mut DaemonClient) {
-    let _ = client
-        .read_streaming(|resp| {
-            print_response(&resp);
-            true
-        })
-        .await;
 }
 
 /// Handle binary (base64) responses: save to file or print info.
@@ -2134,6 +2089,15 @@ mod tests {
             HELP_TEXT.contains("  attach"),
             "custom primary help should list attach"
         );
+    }
+
+    #[test]
+    fn cli_rejects_removed_streaming_debug_commands() {
+        assert_cli_commands_removed(&[
+            &["bk", "debug", "monitor"][..],
+            &["bk", "debug", "har", "https://example.com"][..],
+            &["bk", "debug", "events"][..],
+        ]);
     }
 
     // ── Removed flags ────────────────────────────────────────────
