@@ -6,23 +6,30 @@ mod browser;
 pub mod common;
 mod connect;
 mod daemon;
+#[allow(dead_code)]
 mod debug;
 mod dialog;
 mod evaluate;
 mod inspect;
-mod nav;
 mod navigate;
+#[allow(dead_code)]
 mod network;
 mod open;
-mod page;
 mod screenshot;
 mod session;
 mod snapshot;
-mod storage;
-pub(crate) mod tab;
 mod tabs;
 mod wait;
-mod workspace;
+
+pub(crate) mod tab {
+    use crate::daemon::state::DaemonState;
+
+    pub(crate) fn is_target_tracked(state: &DaemonState, target_id: &str) -> bool {
+        state.workspaces.iter().any(|ws_entry| {
+            ws_entry.value().tabs.values().any(|tab| tab.target_id == target_id)
+        })
+    }
+}
 
 use std::sync::Arc;
 
@@ -41,16 +48,16 @@ pub async fn handle_request(
 
     match req.cmd.as_str() {
         "ping" => daemon::handle_ping(),
-        "connect" | "v2.connect" => connect::handle_connect(req, state).await,
-        "open" | "v2.open" => open::handle_open(req, state).await,
-        "snapshot" | "v2.snapshot" => snapshot::handle_snapshot(req, state).await,
-        "navigate" | "v2.navigate" => navigate::handle_navigate(req, state).await,
-        "act" | "v2.act" => act::handle_act(req, state).await,
-        "attach" | "v2.attach" => attach::handle_attach(req, state).await,
-        "tabs" | "v2.tabs" => tabs::handle_tabs(req, state).await,
-        "close" | "v2.close" => tabs::handle_close(req, state).await,
-        "session.close" | "v2.session.close" => session::handle_session_close(req, state).await,
-        "session.list" | "v2.session.list" => session::handle_session_list(req, state).await,
+        "connect" => connect::handle_connect(req, state).await,
+        "open" => open::handle_open(req, state).await,
+        "snapshot" => snapshot::handle_snapshot(req, state).await,
+        "navigate" => navigate::handle_navigate(req, state).await,
+        "act" => act::handle_act(req, state).await,
+        "attach" => attach::handle_attach(req, state).await,
+        "tabs" => tabs::handle_tabs(req, state).await,
+        "close" => tabs::handle_close(req, state).await,
+        "session.close" => session::handle_session_close(req, state).await,
+        "session.list" => session::handle_session_list(req, state).await,
         "session.cookies.get" => session::handle_session_cookies_get(req, state).await,
         "session.cookies.set" => session::handle_session_cookies_set(req, state).await,
         "session.cookies.clear" => session::handle_session_cookies_clear(req, state).await,
@@ -58,9 +65,9 @@ pub async fn handle_request(
         "session.storage.local.set" => session::handle_session_storage_local_set(req, state).await,
         "session.storage.export" => session::handle_session_storage_export(req, state).await,
         "session.storage.import" => session::handle_session_storage_import(req, state).await,
-        "evaluate" | "v2.evaluate" => evaluate::handle_evaluate(req, state).await,
-        "screenshot" | "v2.screenshot" => screenshot::handle_screenshot(req, state).await,
-        "wait" | "v2.wait" => wait::handle_wait(req, state).await,
+        "evaluate" => evaluate::handle_evaluate(req, state).await,
+        "screenshot" => screenshot::handle_screenshot(req, state).await,
+        "wait" => wait::handle_wait(req, state).await,
         "find" | "search" | "html" | "console" | "pdf" => inspect::handle_inspect(req, state).await,
         "daemon.status" => daemon::handle_daemon_status(state, ctx).await,
         "daemon.stop" => daemon::handle_daemon_stop(state, ctx).await,
@@ -68,37 +75,9 @@ pub async fn handle_request(
         "browser.discover" => browser::handle_browser_discover(req, state).await,
         "browser.list" => browser::handle_browser_list(state).await,
         "browser.disconnect" => browser::handle_browser_disconnect(req, state).await,
-        "ws.new" => workspace::handle_ws_new(req, state).await,
-        "ws.attach" => workspace::handle_ws_attach(req, state).await,
-        "ws.list" => workspace::handle_ws_list(state).await,
-        "ws.info" => workspace::handle_ws_info(req, state).await,
-        "ws.close" => workspace::handle_ws_close(req, state).await,
-        "ws.default" => workspace::handle_ws_default(state).await,
-        "ws.use" => workspace::handle_ws_use(req, state).await,
-        "tab.new" => tab::handle_tab_new(req, state).await,
-        "tab.attach" => tab::handle_tab_attach(req, state).await,
-        "tab.list" => tab::handle_tab_list(req, state).await,
-        "tab.switch" => tab::handle_tab_switch(req, state).await,
-        "tab.close" => tab::handle_tab_close(req, state).await,
-        "nav.goto" => nav::handle_goto(req, state).await,
-        "page.pdf" => page::handle_pdf(req, state).await,
-        "page.html" => page::handle_html(req, state).await,
-        "page.search" => page::handle_page_search(req, state).await,
-        "page.find_elements" => page::handle_find_elements(req, state).await,
-        "page.console" => page::handle_page_console(req, state).await,
-        "storage.cookies.get" => storage::handle_storage_cookies_get(req, state).await,
-        "storage.cookies.set" => storage::handle_storage_cookies_set(req, state).await,
-        "storage.cookies.clear" => storage::handle_storage_cookies_clear(req, state).await,
-        "storage.local.get" => storage::handle_storage_local_get(req, state).await,
-        "storage.local.set" => storage::handle_storage_local_set(req, state).await,
-        "storage.export" => storage::handle_storage_export(req, state).await,
-        "storage.import" => storage::handle_storage_import(req, state).await,
         "debug.block" => network::handle_debug_block(req, state).await,
         "debug.unblock" => network::handle_debug_unblock(req, state).await,
         "debug.cdp" => debug::handle_debug_cdp(req, state).await,
-        "network.block" => network::handle_network_block(req, state).await,
-        "network.unblock" => network::handle_network_unblock(req, state).await,
-        "cdp.send" => debug::handle_cdp_send(req, state).await,
         "dialog.list" => dialog::handle_dialog_list(req, state).await,
         "dialog.accept" => dialog::handle_dialog_accept(req, state).await,
         "dialog.dismiss" => dialog::handle_dialog_dismiss(req, state).await,
@@ -333,5 +312,35 @@ mod tests {
     #[tokio::test]
     async fn removed_streaming_developer_routes_are_unknown() {
         assert_routes_removed(&["network.monitor", "network.har", "cdp.events"]).await;
+    }
+
+    #[tokio::test]
+    async fn removed_route_families_are_unknown() {
+        let state = Arc::new(DaemonState::new());
+        for cmd in [
+            "v2.connect",
+            "v2.open",
+            "v2.snapshot",
+            "v2.act",
+            "v2.navigate",
+            "ws.list",
+            "tab.list",
+            "nav.goto",
+            "page.html",
+            "page.pdf",
+            "storage.local.get",
+            "network.monitor",
+            "network.har",
+            "cdp.events",
+        ] {
+            let req = Request {
+                cmd: cmd.into(),
+                params: serde_json::json!({}),
+                token: None,
+            };
+            let value =
+                serde_json::to_value(handle_request(&req, &state, &test_context()).await).unwrap();
+            assert_eq!(value["error"], format!("unknown command: {cmd}"));
+        }
     }
 }

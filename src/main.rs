@@ -1,11 +1,4 @@
 // CLI entry point: clap command parsing + daemon client wiring
-//
-// Legacy v1 workspace resolution priority:
-//   1. --ws / -w flag (explicit)
-//   2. BK_WS environment variable
-//   3. Daemon default workspace (ws.default)
-//   4. Auto-detect when only one workspace exists
-//   5. Error with helpful message
 
 use clap::{CommandFactory, Parser, Subcommand};
 use serde_json::json;
@@ -37,16 +30,12 @@ Primary:
   html        Get page HTML
   console     Show console log buffer
   pdf         Generate PDF of current target
-  session     Session management (close/list/cookies)
+  session     Session management (close/list/cookies/storage)
   status      Connection status
-
-Legacy (v1, will be removed in Phase 3):
-  url/title/fetch/ws/tab/browser/daemon/storage/dialog/debug
-
-Removed aliases:
-  goto -> use navigate    info -> use snapshot
-  eval -> use evaluate    shot -> use screenshot
-  back/forward/reload -> use navigate --back/--forward/--reload
+  browser     Browser connection management
+  daemon      Daemon process management
+  dialog      Dialog management
+  debug       Request blocking and raw CDP
 
 Options:
       --session <NAME>    Target session (or BK_SESSION env var)
@@ -277,10 +266,6 @@ pub enum Command {
     #[command(about = "Show connection status", name = "status")]
     StatusV2,
 
-    // ══════════════════════════════════════════════════════════════
-    // V1 LEGACY COMMANDS (preserved, removed in Phase 3)
-    // ══════════════════════════════════════════════════════════════
-
     /// Find elements by CSS selector
     Find {
         selector: String,
@@ -320,25 +305,8 @@ pub enum Command {
         #[arg(short, long)]
         output: Option<String>,
     },
-    /// Fetch HTML from URL (one-shot)
-    #[command(hide = true)]
-    Fetch {
-        url: String,
-    },
 
     // ── Management ────────────────────────────────────────────────
-    /// Workspace management
-    #[command(hide = true)]
-    Ws {
-        #[command(subcommand)]
-        action: WsAction,
-    },
-    /// Tab management
-    #[command(hide = true)]
-    Tab {
-        #[command(subcommand)]
-        action: TabAction,
-    },
     /// Browser management
     Browser {
         #[command(subcommand)]
@@ -349,20 +317,12 @@ pub enum Command {
         #[command(subcommand)]
         action: DaemonAction,
     },
-    /// Storage management
-    #[command(hide = true)]
-    Storage {
-        #[command(subcommand)]
-        action: StorageAction,
-    },
     /// Dialog management
-    #[command(hide = true)]
     Dialog {
         #[command(subcommand)]
         action: DialogAction,
     },
     /// Debug tools
-    #[command(hide = true)]
     Debug {
         #[command(subcommand)]
         action: DebugAction,
@@ -471,136 +431,6 @@ pub enum BrowserAction {
     Disconnect {
         /// CDP endpoint host
         host: String,
-    },
-}
-
-#[derive(Subcommand)]
-pub enum WsAction {
-    /// Create a new workspace
-    New {
-        /// Browser host to connect to
-        #[arg(long)]
-        host: Option<String>,
-        /// Workspace label
-        #[arg(short, long)]
-        label: Option<String>,
-        /// Show browser window (override config headless = true)
-        #[arg(long)]
-        no_headless: bool,
-        /// Create in attached mode (share user's browser context, no isolation)
-        #[arg(long)]
-        attached: bool,
-        /// URL/title/target_id pattern to filter tabs (only with --attached)
-        #[arg(short, long)]
-        pattern: Option<String>,
-    },
-    /// Attach existing browser tabs into a new attached workspace
-    Attach {
-        /// URL/title/target_id pattern to filter tabs
-        #[arg(short, long)]
-        pattern: Option<String>,
-        /// Browser host (must already be connected)
-        #[arg(long)]
-        host: Option<String>,
-        /// Workspace label
-        #[arg(short, long)]
-        label: Option<String>,
-    },
-    /// List all workspaces
-    List,
-    /// Show workspace details
-    Info {
-        /// Workspace ID (optional, uses default if omitted)
-        wid: Option<String>,
-    },
-    /// Close a workspace
-    Close {
-        /// Workspace ID
-        wid: String,
-    },
-    /// Set default workspace
-    Use {
-        /// Workspace ID
-        wid: String,
-    },
-    /// Show current default workspace
-    Default,
-}
-
-#[derive(Subcommand)]
-pub enum TabAction {
-    /// Create a new tab
-    New {
-        /// Initial URL (default: about:blank)
-        url: Option<String>,
-    },
-    /// Attach an existing browser tab by URL/title/target_id pattern
-    Attach {
-        /// Substring to match against URL, title, or target_id prefix
-        pattern: String,
-    },
-    /// List tabs in workspace
-    List,
-    /// Switch active tab
-    Switch {
-        /// Tab alias (t1, t2, ...) or tid/prefix
-        tid: String,
-    },
-    /// Close a tab
-    Close {
-        /// Tab alias (t1, t2, ...) or tid/prefix
-        tid: String,
-    },
-}
-
-
-#[derive(Subcommand)]
-pub enum StorageAction {
-    /// Cookie operations
-    Cookies {
-        #[command(subcommand)]
-        action: CookieAction,
-    },
-    /// LocalStorage operations
-    Local {
-        #[command(subcommand)]
-        action: LocalAction,
-    },
-    /// Export all storage state
-    Export,
-    /// Import storage state from file
-    Import {
-        /// Path to state JSON file
-        file: String,
-    },
-}
-
-#[derive(Subcommand)]
-pub enum CookieAction {
-    /// Get all cookies
-    Get,
-    /// Set cookies (JSON array)
-    Set {
-        /// Cookie JSON
-        json: String,
-    },
-    /// Clear all cookies
-    Clear,
-}
-
-#[derive(Subcommand)]
-pub enum LocalAction {
-    /// Get localStorage value
-    Get {
-        /// Key
-        key: String,
-    },
-    /// Set localStorage value
-    Set {
-        /// Key
-        key: String,
-        /// Value
-        value: String,
     },
 }
 
@@ -886,41 +716,6 @@ async fn run_setup() {
         }
     });
     println!("{}", serde_json::to_string(&resp).unwrap());
-}
-
-// ── Workspace resolution (v1 legacy) ──────────────────────────
-
-/// Resolve workspace ID for legacy v1 commands.
-/// Priority: BK_WS env → daemon default → single-ws auto-detect → error
-async fn resolve_workspace(client: &mut DaemonClient) -> Result<String, String> {
-    // 1. BK_WS environment variable
-    if let Ok(wid) = std::env::var("BK_WS") {
-        if !wid.is_empty() {
-            return Ok(wid);
-        }
-    }
-
-    // 2. Query daemon for default workspace
-    let resp = send_cmd(client, "ws.default", json!({})).await?;
-    if let Some(data) = &resp.data {
-        if let Some(wid) = data.get("wid").and_then(|v| v.as_str()) {
-            return Ok(wid.to_string());
-        }
-    }
-
-    // 3. Auto-detect: if only one workspace exists, use it
-    let resp = send_cmd(client, "ws.list", json!({})).await?;
-    if let Some(data) = &resp.data {
-        if let Some(arr) = data.as_array() {
-            if arr.len() == 1 {
-                if let Some(wid) = arr[0].get("wid").and_then(|v| v.as_str()) {
-                    return Ok(wid.to_string());
-                }
-            }
-        }
-    }
-
-    Err("no workspace specified. Set BK_WS env or run `bk ws use <wid>`".into())
 }
 
 // ── Command dispatch ───────────────────────────────────────────
@@ -1223,12 +1018,9 @@ async fn dispatch(cli: &Cli, client: &mut DaemonClient) -> Result<(), String> {
         },
 
         Command::StatusV2 => {
-            dispatch_status(client).await?;
+            let resp = send_cmd(client, "daemon.status", json!({})).await?;
+            print_response(&resp);
         }
-
-        // ══════════════════════════════════════════════════════════
-        // V1 LEGACY COMMANDS
-        // ══════════════════════════════════════════════════════════
 
         // ── Daemon ─────────────────────────────────────────
         Command::Daemon { action } => match action {
@@ -1262,81 +1054,6 @@ async fn dispatch(cli: &Cli, client: &mut DaemonClient) -> Result<(), String> {
             BrowserAction::Disconnect { host } => {
                 let resp = send_cmd(client, "browser.disconnect", json!({"host": host})).await?;
                 print_response(&resp);
-            }
-        },
-
-        // ── Workspace ──────────────────────────────────────
-        Command::Ws { action } => match action {
-            WsAction::New { host, label, no_headless, attached, pattern } => {
-                let mut params = json!({});
-                if let Some(h) = host { params["host"] = json!(h); }
-                if let Some(l) = label { params["label"] = json!(l); }
-                if *no_headless { params["headless"] = json!(false); }
-                if *attached { params["attached"] = json!(true); }
-                if let Some(p) = pattern { params["pattern"] = json!(p); }
-                let resp = send_cmd(client, "ws.new", params).await?;
-                print_response(&resp);
-            }
-            WsAction::Attach { pattern, host, label } => {
-                let mut params = json!({});
-                if let Some(p) = pattern { params["pattern"] = json!(p); }
-                if let Some(h) = host { params["host"] = json!(h); }
-                if let Some(l) = label { params["label"] = json!(l); }
-                let resp = send_cmd(client, "ws.attach", params).await?;
-                print_response(&resp);
-            }
-            WsAction::List => {
-                let resp = send_cmd(client, "ws.list", json!({})).await?;
-                print_response(&resp);
-            }
-            WsAction::Info { wid } => {
-                let wid = match wid {
-                    Some(w) => w.clone(),
-                    None => resolve_workspace(client).await?,
-                };
-                let resp = send_cmd(client, "ws.info", json!({"wid": wid})).await?;
-                print_response(&resp);
-            }
-            WsAction::Close { wid } => {
-                let resp = send_cmd(client, "ws.close", json!({"wid": wid})).await?;
-                print_response(&resp);
-            }
-            WsAction::Use { wid } => {
-                let resp = send_cmd(client, "ws.use", json!({"wid": wid})).await?;
-                print_response(&resp);
-            }
-            WsAction::Default => {
-                let resp = send_cmd(client, "ws.default", json!({})).await?;
-                print_response(&resp);
-            }
-        },
-
-        // ── Tab ────────────────────────────────────────────
-        Command::Tab { action } => {
-            let wid = resolve_workspace(client).await?;
-            match action {
-                TabAction::New { url } => {
-                    let mut params = json!({"wid": wid});
-                    if let Some(u) = url { params["url"] = json!(u); }
-                    let resp = send_cmd(client, "tab.new", params).await?;
-                    print_response(&resp);
-                }
-                TabAction::Attach { pattern } => {
-                    let resp = send_cmd(client, "tab.attach", json!({"wid": wid, "pattern": pattern})).await?;
-                    print_response(&resp);
-                }
-                TabAction::List => {
-                    let resp = send_cmd(client, "tab.list", json!({"wid": wid})).await?;
-                    print_response(&resp);
-                }
-                TabAction::Switch { tid } => {
-                    let resp = send_cmd(client, "tab.switch", json!({"wid": wid, "tid": tid})).await?;
-                    print_response(&resp);
-                }
-                TabAction::Close { tid } => {
-                    let resp = send_cmd(client, "tab.close", json!({"wid": wid, "tid": tid})).await?;
-                    print_response(&resp);
-                }
             }
         },
 
@@ -1386,70 +1103,6 @@ async fn dispatch(cli: &Cli, client: &mut DaemonClient) -> Result<(), String> {
             let resp = send_cmd(client, "pdf", params).await?;
             handle_binary_response(&resp, output.as_deref(), "page.pdf");
         }
-
-
-        Command::Fetch { url } => {
-            let resp = send_cmd(client, "ws.new", json!({})).await?;
-            if !resp.ok {
-                print_response(&resp);
-                return Ok(());
-            }
-            let wid = resp.data.as_ref()
-                .and_then(|d| d.get("wid"))
-                .and_then(|v| v.as_str())
-                .ok_or("failed to get wid from ws.new response")?
-                .to_string();
-            let _ = send_cmd(client, "nav.goto", json!({"wid": wid, "url": url})).await?;
-            let resp = send_cmd(client, "page.html", json!({"wid": wid})).await?;
-            print_response(&resp);
-            let _ = send_cmd(client, "ws.close", json!({"wid": wid})).await;
-        }
-
-
-        // ── Management (Storage) ──────────────────────────
-        Command::Storage { action } => {
-            let wid = resolve_workspace(client).await?;
-            match action {
-                StorageAction::Cookies { action: ca } => match ca {
-                    CookieAction::Get => {
-                        let resp = send_cmd(client, "storage.cookies.get", json!({"wid": wid})).await?;
-                        print_response(&resp);
-                    }
-                    CookieAction::Set { json: j } => {
-                        let cookies: serde_json::Value = serde_json::from_str(j)
-                            .map_err(|e| format!("invalid cookie JSON: {}", e))?;
-                        let resp = send_cmd(client, "storage.cookies.set", json!({"wid": wid, "cookies": cookies})).await?;
-                        print_response(&resp);
-                    }
-                    CookieAction::Clear => {
-                        let resp = send_cmd(client, "storage.cookies.clear", json!({"wid": wid})).await?;
-                        print_response(&resp);
-                    }
-                },
-                StorageAction::Local { action: la } => match la {
-                    LocalAction::Get { key } => {
-                        let resp = send_cmd(client, "storage.local.get", json!({"wid": wid, "key": key})).await?;
-                        print_response(&resp);
-                    }
-                    LocalAction::Set { key, value } => {
-                        let resp = send_cmd(client, "storage.local.set", json!({"wid": wid, "key": key, "value": value})).await?;
-                        print_response(&resp);
-                    }
-                },
-                StorageAction::Export => {
-                    let resp = send_cmd(client, "storage.export", json!({"wid": wid})).await?;
-                    print_response(&resp);
-                }
-                StorageAction::Import { file } => {
-                    let content = std::fs::read_to_string(file)
-                        .map_err(|e| format!("failed to read storage file: {}", e))?;
-                    let state: serde_json::Value = serde_json::from_str(&content)
-                        .map_err(|e| format!("invalid storage JSON: {}", e))?;
-                    let resp = send_cmd(client, "storage.import", json!({"wid": wid, "state": state})).await?;
-                    print_response(&resp);
-                }
-            }
-        },
 
         // ── Management (Dialog) ───────────────────────────
         Command::Dialog { action } => {
@@ -1577,32 +1230,6 @@ fn base64_decode_and_save(data: &str, path: &str) -> Result<(), String> {
         .decode(data)
         .map_err(|e| format!("base64 decode error: {}", e))?;
     std::fs::write(path, bytes).map_err(|e| format!("write error: {}", e))
-}
-
-// ── Status command ─────────────────────────────────────────────
-
-fn status_commands() -> [&'static str; 3] {
-    ["daemon.status", "browser.list", "session.list"]
-}
-
-/// Implement `bk status`: show daemon + browsers + sessions overview as JSON.
-async fn dispatch_status(client: &mut DaemonClient) -> Result<(), String> {
-    let commands = status_commands();
-    let daemon_resp = send_cmd(client, commands[0], json!({})).await?;
-    let browser_resp = send_cmd(client, commands[1], json!({})).await?;
-    let session_resp = send_cmd(client, commands[2], json!({})).await?;
-
-    let result = json!({
-        "ok": true,
-        "data": {
-            "daemon": daemon_resp.data,
-            "browsers": browser_resp.data,
-            "sessions": session_resp.data,
-        }
-    });
-    println!("{}", serde_json::to_string(&result).unwrap_or_default());
-
-    Ok(())
 }
 
 // ── Daemon exit wait ──────────────────────────────────────────
@@ -1934,14 +1561,6 @@ mod tests {
     }
 
     #[test]
-    fn top_level_status_uses_session_only_admin_commands() {
-        let commands = status_commands();
-        assert_eq!(commands, ["daemon.status", "browser.list", "session.list"]);
-        assert!(!commands.contains(&"ws.list"));
-        assert!(!commands.contains(&"ws.default"));
-    }
-
-    #[test]
     fn cli_global_session_param() {
         let cli = try_parse(&["bk", "--session", "my-session", "snapshot"]).unwrap();
         assert_eq!(cli.session, Some("my-session".into()));
@@ -2109,6 +1728,22 @@ mod tests {
             &["bk", "debug", "har", "https://example.com"][..],
             &["bk", "debug", "events"][..],
         ]);
+    }
+
+    #[test]
+    fn cli_rejects_all_removed_workspace_surfaces() {
+        for args in [
+            &["bk", "ws", "list"][..],
+            &["bk", "tab", "list"][..],
+            &["bk", "fetch", "https://example.com"][..],
+            &["bk", "storage", "export"][..],
+            &["bk", "debug", "monitor"][..],
+            &["bk", "debug", "har", "https://example.com"][..],
+            &["bk", "debug", "events"][..],
+            &["bk", "--ws", "abc", "snapshot"][..],
+        ] {
+            assert!(try_parse(args).is_err(), "removed command parsed: {args:?}");
+        }
     }
 
     // ── Removed flags ────────────────────────────────────────────
