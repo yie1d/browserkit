@@ -388,6 +388,11 @@ pub enum SessionAction {
         #[command(subcommand)]
         action: CookiesAction,
     },
+    /// Storage operations
+    Storage {
+        #[command(subcommand)]
+        action: SessionStorageAction,
+    },
 }
 
 #[derive(Subcommand)]
@@ -401,6 +406,38 @@ pub enum CookiesAction {
     },
     /// Clear all cookies
     Clear,
+}
+
+#[derive(Subcommand)]
+pub enum SessionStorageAction {
+    /// LocalStorage operations
+    Local {
+        #[command(subcommand)]
+        action: SessionLocalStorageAction,
+    },
+    /// Export all storage state
+    Export,
+    /// Import storage state from file
+    Import {
+        /// Path to state JSON file
+        file: String,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum SessionLocalStorageAction {
+    /// Get localStorage value
+    Get {
+        /// Key
+        key: String,
+    },
+    /// Set localStorage value
+    Set {
+        /// Key
+        key: String,
+        /// Value
+        value: String,
+    },
 }
 
 // ── Subcommand enums ───────────────────────────────────────────
@@ -1174,6 +1211,38 @@ async fn dispatch(cli: &Cli, client: &mut DaemonClient) -> Result<(), String> {
                     print_response(&resp);
                 }
             },
+            SessionAction::Storage { action: sa } => match sa {
+                SessionStorageAction::Local { action: la } => match la {
+                    SessionLocalStorageAction::Get { key } => {
+                        let mut params = json!({"key": key});
+                        add_session_target_params(&mut params, cli);
+                        let resp = send_cmd(client, "session.storage.local.get", params).await?;
+                        print_response(&resp);
+                    }
+                    SessionLocalStorageAction::Set { key, value } => {
+                        let mut params = json!({"key": key, "value": value});
+                        add_session_target_params(&mut params, cli);
+                        let resp = send_cmd(client, "session.storage.local.set", params).await?;
+                        print_response(&resp);
+                    }
+                },
+                SessionStorageAction::Export => {
+                    let mut params = json!({});
+                    add_session_target_params(&mut params, cli);
+                    let resp = send_cmd(client, "session.storage.export", params).await?;
+                    print_response(&resp);
+                }
+                SessionStorageAction::Import { file } => {
+                    let content = std::fs::read_to_string(file)
+                        .map_err(|e| format!("failed to read storage file: {}", e))?;
+                    let state: serde_json::Value = serde_json::from_str(&content)
+                        .map_err(|e| format!("invalid storage JSON: {}", e))?;
+                    let mut params = json!({"state": state});
+                    add_session_target_params(&mut params, cli);
+                    let resp = send_cmd(client, "session.storage.import", params).await?;
+                    print_response(&resp);
+                }
+            },
         },
 
         Command::StatusV2 => {
@@ -1881,6 +1950,23 @@ mod tests {
         if let Command::Session { action } = &cli.command {
             assert!(matches!(action, SessionAction::List));
         } else { panic!("wrong variant"); }
+    }
+
+    #[test]
+    fn cli_parses_session_storage_local_get() {
+        let cli = try_parse(&["bk", "session", "storage", "local", "get", "token"]).unwrap();
+        if let Command::Session { action } = &cli.command {
+            assert!(matches!(
+                action,
+                SessionAction::Storage {
+                    action: SessionStorageAction::Local {
+                        action: SessionLocalStorageAction::Get { key }
+                    }
+                } if key == "token"
+            ));
+        } else {
+            panic!("wrong variant");
+        }
     }
 
     #[test]

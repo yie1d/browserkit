@@ -14,14 +14,14 @@ use super::common::{handler, resolve_context, touch_workspace};
 
 #[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
-struct StorageGetCookies {
+pub(crate) struct StorageGetCookies {
     #[serde(skip_serializing_if = "Option::is_none")]
-    browser_context_id: Option<String>,
+    pub(crate) browser_context_id: Option<String>,
 }
 
 #[derive(Debug, serde::Deserialize)]
-struct StorageGetCookiesResponse {
-    cookies: Vec<serde_json::Value>,
+pub(crate) struct StorageGetCookiesResponse {
+    pub(crate) cookies: Vec<serde_json::Value>,
 }
 
 impl cdpkit::Method for StorageGetCookies {
@@ -31,10 +31,10 @@ impl cdpkit::Method for StorageGetCookies {
 
 #[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
-struct StorageSetCookies {
-    cookies: Vec<serde_json::Value>,
+pub(crate) struct StorageSetCookies {
+    pub(crate) cookies: Vec<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    browser_context_id: Option<String>,
+    pub(crate) browser_context_id: Option<String>,
 }
 
 impl cdpkit::Method for StorageSetCookies {
@@ -44,9 +44,9 @@ impl cdpkit::Method for StorageSetCookies {
 
 #[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
-struct StorageClearCookies {
+pub(crate) struct StorageClearCookies {
     #[serde(skip_serializing_if = "Option::is_none")]
-    browser_context_id: Option<String>,
+    pub(crate) browser_context_id: Option<String>,
 }
 
 impl cdpkit::Method for StorageClearCookies {

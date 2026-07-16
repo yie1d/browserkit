@@ -54,6 +54,10 @@ pub async fn handle_request(
         "session.cookies.get" => session::handle_session_cookies_get(req, state).await,
         "session.cookies.set" => session::handle_session_cookies_set(req, state).await,
         "session.cookies.clear" => session::handle_session_cookies_clear(req, state).await,
+        "session.storage.local.get" => session::handle_session_storage_local_get(req, state).await,
+        "session.storage.local.set" => session::handle_session_storage_local_set(req, state).await,
+        "session.storage.export" => session::handle_session_storage_export(req, state).await,
+        "session.storage.import" => session::handle_session_storage_import(req, state).await,
         "evaluate" | "v2.evaluate" => evaluate::handle_evaluate(req, state).await,
         "screenshot" | "v2.screenshot" => screenshot::handle_screenshot(req, state).await,
         "wait" | "v2.wait" => wait::handle_wait(req, state).await,
@@ -289,5 +293,25 @@ mod tests {
     #[tokio::test]
     async fn dispatch_removed_click_and_type_routes_are_unknown() {
         assert_prefixed_routes_removed("act", &["click", "type"]).await;
+    }
+
+    #[tokio::test]
+    async fn session_storage_routes_require_session_target() {
+        let state = Arc::new(DaemonState::new());
+        for cmd in [
+            "session.storage.local.get",
+            "session.storage.local.set",
+            "session.storage.export",
+            "session.storage.import",
+        ] {
+            let req = Request {
+                cmd: cmd.into(),
+                params: serde_json::json!({}),
+                token: None,
+            };
+            let value =
+                serde_json::to_value(handle_request(&req, &state, &test_context()).await).unwrap();
+            assert_eq!(value["error"]["code"], "SESSION_NOT_FOUND");
+        }
     }
 }

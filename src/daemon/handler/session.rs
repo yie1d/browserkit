@@ -2,15 +2,18 @@
 //
 // `bk session list`    — list all active sessions
 // `bk session close`   — close a session (owned tabs close; attached tabs detach)
-// `bk session cookies get`   — get cookies via CDP Network.getCookies
-// `bk session cookies set`   — set cookies via CDP Network.setCookies
-// `bk session cookies clear` — clear cookies via CDP Network.clearBrowserCookies
+// `bk session cookies get`   — get cookies via CDP Storage.getCookies
+// `bk session cookies set`   — set cookies via CDP Storage.setCookies
+// `bk session cookies clear` — clear cookies via CDP Storage.clearCookies
 
 use std::sync::Arc;
 
-use serde_json::json;
-use tracing;
+use serde_json::{json, Map, Value};
 
+use cdpkit::Sender;
+
+use super::common::resolve_session_target;
+use super::storage::{StorageClearCookies, StorageGetCookies, StorageSetCookies};
 use crate::daemon::protocol::{Request, Response};
 use crate::daemon::session::{Session, SessionMode};
 use crate::daemon::state::DaemonState;
@@ -19,6 +22,7 @@ use crate::daemon::target_close::{
 };
 use crate::daemon::target_lifecycle::remove_session_tab;
 use crate::error::ErrorCode;
+use crate::page::exception_message;
 
 /// Build a session list response containing all active sessions.
 fn build_session_list_response(state: &Arc<DaemonState>) -> Response {
@@ -114,6 +118,117 @@ pub(crate) fn check_session_limit(state: &Arc<DaemonState>, max: usize) -> Resul
     Ok(())
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum CookieScope {
+    BrowserContext(String),
+    DefaultContext,
+}
+
+impl CookieScope {
+    fn browser_context_id(self) -> Option<String> {
+        match self {
+            Self::BrowserContext(id) => Some(id),
+            Self::DefaultContext => None,
+        }
+    }
+}
+
+fn cookie_scope(session: &Session) -> Result<CookieScope, Response> {
+    match session.mode {
+        SessionMode::Default => Ok(CookieScope::DefaultContext),
+        SessionMode::Isolated => session
+            .browser_context_id
+            .clone()
+            .map(CookieScope::BrowserContext)
+            .ok_or_else(|| Response::error_detail(
+                ErrorCode::ChromeDisconnected,
+                format!("isolated session '{}' has no BrowserContext", session.name),
+                None,
+            )),
+    }
+}
+
+#[derive(Debug)]
+struct StorageImportState {
+    cookies: Vec<Value>,
+    local_storage: Map<String, Value>,
+}
+
+fn invalid_argument(message: impl Into<String>) -> Response {
+    Response::error_detail(ErrorCode::InvalidArgument, message.into(), None)
+}
+
+fn daemon_error(message: impl Into<String>) -> Response {
+    Response::error_detail(ErrorCode::DaemonError, message.into(), None)
+}
+
+fn js_error(message: impl Into<String>) -> Response {
+    Response::error_detail(ErrorCode::JsError, message.into(), None)
+}
+
+fn required_string_param<'a>(
+    params: &'a Value,
+    field: &str,
+    command: &str,
+) -> Result<&'a str, Response> {
+    match params.get(field) {
+        Some(Value::String(value)) => Ok(value),
+        Some(_) => Err(invalid_argument(format!("{command} requires '{field}' string param"))),
+        None => Err(invalid_argument(format!("{command} requires '{field}' param"))),
+    }
+}
+
+fn validate_storage_import_state(value: &Value) -> Result<StorageImportState, Response> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| invalid_argument("session.storage.import state must be an object"))?;
+
+    let cookies_value = object
+        .get("cookies")
+        .ok_or_else(|| invalid_argument("session.storage.import state requires 'cookies' array"))?;
+    let cookies = cookies_value
+        .as_array()
+        .ok_or_else(|| invalid_argument("session.storage.import state requires 'cookies' array"))?
+        .clone();
+    if let Err(error) = serde_json::from_value::<Vec<cdpkit::network::types::CookieParam>>(
+        Value::Array(cookies.clone()),
+    ) {
+        return Err(invalid_argument(format!("invalid cookie format: {error}")));
+    }
+
+    let local_storage_value = object.get("local_storage").ok_or_else(|| {
+        invalid_argument("session.storage.import state requires 'local_storage' object")
+    })?;
+    let local_storage = local_storage_value
+        .as_object()
+        .ok_or_else(|| {
+            invalid_argument("session.storage.import state requires 'local_storage' object")
+        })?
+        .clone();
+    if let Some((key, _)) = local_storage.iter().find(|(_, value)| !value.is_string()) {
+        return Err(invalid_argument(format!(
+            "local_storage values must be strings; '{key}' is not a string"
+        )));
+    }
+
+    Ok(StorageImportState {
+        cookies,
+        local_storage,
+    })
+}
+
+fn session_cookie_context_id(
+    state: &DaemonState,
+    session_name: &str,
+) -> Result<Option<String>, Response> {
+    let session = state.sessions.get(session_name).ok_or_else(|| Response::error_detail(
+        ErrorCode::SessionNotFound,
+        format!("session '{}' not found", session_name),
+        None,
+    ))?;
+    cookie_scope(&session).map(CookieScope::browser_context_id)
+}
+
 /// Handle `bk session list` — list all active sessions.
 pub async fn handle_session_list(_req: &Request, state: &Arc<DaemonState>) -> Response {
     build_session_list_response(state)
@@ -199,7 +314,7 @@ pub async fn handle_session_close(req: &Request, state: &Arc<DaemonState>) -> Re
     }))
 }
 
-/// Handle `bk session cookies get` — retrieve cookies via CDP Network.getCookies.
+/// Handle `bk session cookies get` — retrieve cookies via CDP Storage.getCookies.
 pub async fn handle_session_cookies_get(req: &Request, state: &Arc<DaemonState>) -> Response {
     let session_name = req
         .params
@@ -223,12 +338,10 @@ pub async fn handle_session_cookies_get(req: &Request, state: &Arc<DaemonState>)
     }
 
     let browser_host = session.browser_host.clone();
-    // Get CDP session ID from active tab for proper BrowserContext isolation
-    let cdp_session_id = session
-        .active_target
-        .as_ref()
-        .and_then(|tid| session.tabs.get(tid))
-        .map(|tab| tab.cdp_session_id.clone());
+    let browser_context_id = match cookie_scope(&session) {
+        Ok(scope) => scope.browser_context_id(),
+        Err(resp) => return resp,
+    };
     drop(session);
 
     let cdp = match state.browsers.get(&browser_host) {
@@ -242,25 +355,10 @@ pub async fn handle_session_cookies_get(req: &Request, state: &Arc<DaemonState>)
         }
     };
 
-    let result = if let Some(session_id) = cdp_session_id {
-        let session = cdp.session(&session_id);
-        cdpkit::network::methods::GetCookies::new()
-            .send(&session)
-            .await
-    } else {
-        // No active tab — fallback to browser level
-        tracing::warn!(session = session_name, "no active tab; getting cookies at browser level (no BrowserContext isolation)");
-        cdpkit::network::methods::GetCookies::new()
-            .send(cdp.as_ref())
-            .await
-    };
+    let result = cdp.send_cmd(StorageGetCookies { browser_context_id }).await;
 
     match result {
-        Ok(result) => {
-            // Serialize cookies to JSON value
-            let cookies = serde_json::to_value(&result.cookies).unwrap_or(json!([]));
-            Response::ok(json!({ "cookies": cookies }))
-        }
+        Ok(result) => Response::ok(json!({ "cookies": result.cookies })),
         Err(e) => Response::error_detail(
             ErrorCode::DaemonError,
             format!("get cookies failed: {e}"),
@@ -269,7 +367,7 @@ pub async fn handle_session_cookies_get(req: &Request, state: &Arc<DaemonState>)
     }
 }
 
-/// Handle `bk session cookies set` — set cookies via CDP Network.setCookies.
+/// Handle `bk session cookies set` — set cookies via CDP Storage.setCookies.
 ///
 /// Accepts a `cookies` array in params or reads from a file path.
 pub async fn handle_session_cookies_set(req: &Request, state: &Arc<DaemonState>) -> Response {
@@ -330,17 +428,14 @@ pub async fn handle_session_cookies_set(req: &Request, state: &Arc<DaemonState>)
         );
     };
 
-    // Deserialize into CookieParam vec
-    let cookies: Vec<cdpkit::network::types::CookieParam> = match serde_json::from_value(cookies_value) {
-        Ok(c) => c,
-        Err(e) => {
-            return Response::error_detail(
-                ErrorCode::InvalidArgument,
-                format!("invalid cookie format: {e}"),
-                Some("each cookie needs at least 'name' and 'value' fields".into()),
-            );
-        }
-    };
+    let cookies: Vec<serde_json::Value> = cookies_value.as_array().cloned().unwrap_or_default();
+    if let Err(e) = serde_json::from_value::<Vec<cdpkit::network::types::CookieParam>>(cookies_value) {
+        return Response::error_detail(
+            ErrorCode::InvalidArgument,
+            format!("invalid cookie format: {e}"),
+            Some("each cookie needs at least 'name' and 'value' fields".into()),
+        );
+    }
 
     let cookie_count = cookies.len();
 
@@ -360,12 +455,10 @@ pub async fn handle_session_cookies_set(req: &Request, state: &Arc<DaemonState>)
     }
 
     let browser_host = session.browser_host.clone();
-    // Get CDP session ID from active tab for proper BrowserContext isolation
-    let cdp_session_id = session
-        .active_target
-        .as_ref()
-        .and_then(|tid| session.tabs.get(tid))
-        .map(|tab| tab.cdp_session_id.clone());
+    let browser_context_id = match cookie_scope(&session) {
+        Ok(scope) => scope.browser_context_id(),
+        Err(resp) => return resp,
+    };
     drop(session);
 
     let cdp = match state.browsers.get(&browser_host) {
@@ -379,18 +472,7 @@ pub async fn handle_session_cookies_set(req: &Request, state: &Arc<DaemonState>)
         }
     };
 
-    let result = if let Some(session_id) = cdp_session_id {
-        let session = cdp.session(&session_id);
-        cdpkit::network::methods::SetCookies::new(cookies)
-            .send(&session)
-            .await
-    } else {
-        // No active tab — fallback to browser level
-        tracing::warn!(session = session_name, "no active tab; setting cookies at browser level (no BrowserContext isolation)");
-        cdpkit::network::methods::SetCookies::new(cookies)
-            .send(cdp.as_ref())
-            .await
-    };
+    let result = cdp.send_cmd(StorageSetCookies { cookies, browser_context_id }).await;
 
     match result {
         Ok(_) => Response::ok(json!({ "set": true, "count": cookie_count })),
@@ -402,7 +484,7 @@ pub async fn handle_session_cookies_set(req: &Request, state: &Arc<DaemonState>)
     }
 }
 
-/// Handle `bk session cookies clear` — clear all browser cookies via CDP Network.clearBrowserCookies.
+/// Handle `bk session cookies clear` — clear all cookies via CDP Storage.clearCookies.
 pub async fn handle_session_cookies_clear(req: &Request, state: &Arc<DaemonState>) -> Response {
     let session_name = req
         .params
@@ -426,12 +508,10 @@ pub async fn handle_session_cookies_clear(req: &Request, state: &Arc<DaemonState
     }
 
     let browser_host = session.browser_host.clone();
-    // Get CDP session ID from active tab for proper BrowserContext isolation
-    let cdp_session_id = session
-        .active_target
-        .as_ref()
-        .and_then(|tid| session.tabs.get(tid))
-        .map(|tab| tab.cdp_session_id.clone());
+    let browser_context_id = match cookie_scope(&session) {
+        Ok(scope) => scope.browser_context_id(),
+        Err(resp) => return resp,
+    };
     drop(session);
 
     let cdp = match state.browsers.get(&browser_host) {
@@ -445,18 +525,7 @@ pub async fn handle_session_cookies_clear(req: &Request, state: &Arc<DaemonState
         }
     };
 
-    let result = if let Some(session_id) = cdp_session_id {
-        let session = cdp.session(&session_id);
-        cdpkit::network::methods::ClearBrowserCookies::new()
-            .send(&session)
-            .await
-    } else {
-        // No active tab — fallback to browser level
-        tracing::warn!(session = session_name, "no active tab; clearing cookies at browser level (no BrowserContext isolation)");
-        cdpkit::network::methods::ClearBrowserCookies::new()
-            .send(cdp.as_ref())
-            .await
-    };
+    let result = cdp.send_cmd(StorageClearCookies { browser_context_id }).await;
 
     match result {
         Ok(_) => Response::ok(json!({ "cleared": true })),
@@ -466,6 +535,209 @@ pub async fn handle_session_cookies_clear(req: &Request, state: &Arc<DaemonState
             None,
         ),
     }
+}
+
+pub async fn handle_session_storage_local_get(
+    req: &Request,
+    state: &Arc<DaemonState>,
+) -> Response {
+    let ctx = match resolve_session_target(state, &req.params) {
+        Ok(ctx) => ctx,
+        Err(response) => return response,
+    };
+    let key = match required_string_param(&req.params, "key", "session.storage.local.get") {
+        Ok(key) => key,
+        Err(response) => return response,
+    };
+    let json_key = match serde_json::to_string(key) {
+        Ok(value) => value,
+        Err(error) => return daemon_error(format!("failed to serialize key: {error}")),
+    };
+    let js = format!("window.localStorage.getItem({json_key})");
+    let session = ctx.cdp.session(&ctx.cdp_session_id);
+    let resp = match cdpkit::runtime::methods::Evaluate::new(&js)
+        .with_return_by_value(true)
+        .send(&session)
+        .await
+    {
+        Ok(resp) => resp,
+        Err(error) => return daemon_error(format!("localStorage get failed: {error}")),
+    };
+    if let Some(details) = &resp.exception_details {
+        return js_error(format!("localStorage get failed: {}", exception_message(details)));
+    }
+    let value = resp.result.value.unwrap_or(Value::Null);
+    Response::ok(json!({
+        "session": ctx.session_name,
+        "target": ctx.target_id,
+        "key": key,
+        "value": value,
+    }))
+}
+
+pub async fn handle_session_storage_local_set(
+    req: &Request,
+    state: &Arc<DaemonState>,
+) -> Response {
+    let ctx = match resolve_session_target(state, &req.params) {
+        Ok(ctx) => ctx,
+        Err(response) => return response,
+    };
+    let key = match required_string_param(&req.params, "key", "session.storage.local.set") {
+        Ok(key) => key,
+        Err(response) => return response,
+    };
+    let value = match required_string_param(&req.params, "value", "session.storage.local.set") {
+        Ok(value) => value,
+        Err(response) => return response,
+    };
+    let json_key = match serde_json::to_string(key) {
+        Ok(value) => value,
+        Err(error) => return daemon_error(format!("failed to serialize key: {error}")),
+    };
+    let json_value = match serde_json::to_string(value) {
+        Ok(value) => value,
+        Err(error) => return daemon_error(format!("failed to serialize value: {error}")),
+    };
+    let js = format!("window.localStorage.setItem({json_key}, {json_value})");
+    let session = ctx.cdp.session(&ctx.cdp_session_id);
+    let resp = match cdpkit::runtime::methods::Evaluate::new(&js)
+        .with_return_by_value(true)
+        .send(&session)
+        .await
+    {
+        Ok(resp) => resp,
+        Err(error) => return daemon_error(format!("localStorage set failed: {error}")),
+    };
+    if let Some(details) = &resp.exception_details {
+        return js_error(format!("localStorage set failed: {}", exception_message(details)));
+    }
+    Response::ok(json!({
+        "session": ctx.session_name,
+        "target": ctx.target_id,
+        "key": key,
+        "value": value,
+        "status": "set",
+    }))
+}
+
+pub async fn handle_session_storage_export(
+    req: &Request,
+    state: &Arc<DaemonState>,
+) -> Response {
+    let ctx = match resolve_session_target(state, &req.params) {
+        Ok(ctx) => ctx,
+        Err(response) => return response,
+    };
+    let browser_context_id = match session_cookie_context_id(state, &ctx.session_name) {
+        Ok(id) => id,
+        Err(response) => return response,
+    };
+    let cookie_resp = match ctx.cdp.send_cmd(StorageGetCookies { browser_context_id }).await {
+        Ok(resp) => resp,
+        Err(error) => return daemon_error(format!("storage export cookies failed: {error}")),
+    };
+    let session = ctx.cdp.session(&ctx.cdp_session_id);
+    let ls_resp = match cdpkit::runtime::methods::Evaluate::new(
+        "JSON.stringify(Object.fromEntries(Object.entries(window.localStorage)))",
+    )
+    .with_return_by_value(true)
+    .send(&session)
+    .await
+    {
+        Ok(resp) => resp,
+        Err(error) => return daemon_error(format!("localStorage export failed: {error}")),
+    };
+    if let Some(details) = &ls_resp.exception_details {
+        return js_error(format!("localStorage export failed: {}", exception_message(details)));
+    }
+    let local_storage = match ls_resp.result.value {
+        Some(Value::String(ref raw)) => match serde_json::from_str::<Value>(raw) {
+            Ok(Value::Object(object)) => Value::Object(object),
+            Ok(_) => json!({}),
+            Err(_) => json!({}),
+        },
+        _ => json!({}),
+    };
+    Response::ok(json!({
+        "session": ctx.session_name,
+        "target": ctx.target_id,
+        "cookies": cookie_resp.cookies,
+        "local_storage": local_storage,
+    }))
+}
+
+pub async fn handle_session_storage_import(
+    req: &Request,
+    state: &Arc<DaemonState>,
+) -> Response {
+    let ctx = match resolve_session_target(state, &req.params) {
+        Ok(ctx) => ctx,
+        Err(response) => return response,
+    };
+    let import_state = match req.params.get("state") {
+        Some(state) => match validate_storage_import_state(state) {
+            Ok(state) => state,
+            Err(response) => return response,
+        },
+        None => return invalid_argument("session.storage.import requires 'state' param"),
+    };
+    let browser_context_id = match session_cookie_context_id(state, &ctx.session_name) {
+        Ok(id) => id,
+        Err(response) => return response,
+    };
+
+    if let Err(error) = ctx
+        .cdp
+        .send_cmd(StorageClearCookies { browser_context_id: browser_context_id.clone() })
+        .await
+    {
+        return daemon_error(format!("storage import clear cookies failed: {error}"));
+    }
+    if !import_state.cookies.is_empty() {
+        if let Err(error) = ctx
+            .cdp
+            .send_cmd(StorageSetCookies {
+                cookies: import_state.cookies.clone(),
+                browser_context_id,
+            })
+            .await
+        {
+            return daemon_error(format!("storage import set cookies failed: {error}"));
+        }
+    }
+
+    let json_str = match serde_json::to_string(&import_state.local_storage) {
+        Ok(value) => value,
+        Err(error) => return daemon_error(format!("failed to serialize localStorage import: {error}")),
+    };
+    let json_literal = match serde_json::to_string(&json_str) {
+        Ok(value) => value,
+        Err(error) => return daemon_error(format!("failed to escape localStorage import: {error}")),
+    };
+    let js = format!(
+        "(() => {{ window.localStorage.clear(); const d = JSON.parse({json_literal}); for (const [k, v] of Object.entries(d)) {{ window.localStorage.setItem(k, v); }} }})()"
+    );
+    let session = ctx.cdp.session(&ctx.cdp_session_id);
+    let resp = match cdpkit::runtime::methods::Evaluate::new(&js)
+        .with_return_by_value(true)
+        .send(&session)
+        .await
+    {
+        Ok(resp) => resp,
+        Err(error) => return daemon_error(format!("localStorage import failed: {error}")),
+    };
+    if let Some(details) = &resp.exception_details {
+        return js_error(format!("localStorage import failed: {}", exception_message(details)));
+    }
+
+    Response::ok(json!({
+        "session": ctx.session_name,
+        "target": ctx.target_id,
+        "status": "imported",
+        "cookies": import_state.cookies.len(),
+        "local_storage": import_state.local_storage.len(),
+    }))
 }
 
 #[cfg(test)]
@@ -630,6 +902,28 @@ mod tests {
         // 0 = unlimited
         let result = check_session_limit(&state, 0);
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn isolated_cookie_scope_never_falls_back_to_browser() {
+        let isolated =
+            Session::new_isolated("agent".into(), "localhost:9222".into(), "CTX1".into());
+
+        assert_eq!(
+            cookie_scope(&isolated).unwrap(),
+            CookieScope::BrowserContext("CTX1".into())
+        );
+    }
+
+    #[test]
+    fn isolated_cookie_scope_requires_context_id() {
+        let mut isolated =
+            Session::new_isolated("agent".into(), "localhost:9222".into(), "CTX1".into());
+        isolated.browser_context_id = None;
+
+        let value = serde_json::to_value(cookie_scope(&isolated).unwrap_err()).unwrap();
+
+        assert_eq!(value["error"]["code"], "CHROME_DISCONNECTED");
     }
 
     #[test]
@@ -920,5 +1214,65 @@ mod tests {
         let json = serde_json::to_value(&resp).unwrap();
         assert_eq!(json["ok"], false);
         assert_eq!(json["error"]["code"], "SESSION_NOT_FOUND");
+    }
+
+    #[test]
+    fn storage_import_state_requires_complete_shape() {
+        for state in [
+            json!({}),
+            json!({"cookies": []}),
+            json!({"local_storage": {}}),
+        ] {
+            let value =
+                serde_json::to_value(validate_storage_import_state(&state).unwrap_err()).unwrap();
+            assert_eq!(value["error"]["code"], "INVALID_ARGUMENT");
+        }
+    }
+
+    #[test]
+    fn storage_import_state_rejects_malformed_cookies_before_mutation() {
+        let state = json!({
+            "cookies": [{"value": "missing-name"}],
+            "local_storage": {},
+        });
+
+        let value =
+            serde_json::to_value(validate_storage_import_state(&state).unwrap_err()).unwrap();
+
+        assert_eq!(value["error"]["code"], "INVALID_ARGUMENT");
+        assert!(value["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("invalid cookie format"));
+    }
+
+    #[test]
+    fn storage_import_state_rejects_non_string_local_storage_values() {
+        let state = json!({
+            "cookies": [],
+            "local_storage": {"token": 42},
+        });
+
+        let value =
+            serde_json::to_value(validate_storage_import_state(&state).unwrap_err()).unwrap();
+
+        assert_eq!(value["error"]["code"], "INVALID_ARGUMENT");
+        assert!(value["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("local_storage values must be strings"));
+    }
+
+    #[test]
+    fn storage_import_state_accepts_canonical_json_shape() {
+        let state = json!({
+            "cookies": [{"name": "sid", "value": "1", "url": "https://example.test"}],
+            "local_storage": {"token": "abc"},
+        });
+
+        let parsed = validate_storage_import_state(&state).unwrap();
+
+        assert_eq!(parsed.cookies.len(), 1);
+        assert_eq!(parsed.local_storage["token"], "abc");
     }
 }
