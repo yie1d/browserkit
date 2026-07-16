@@ -163,12 +163,27 @@ pub fn resolve_target_selection(
     }
 }
 
+fn optional_string_field<'a>(
+    params: &'a serde_json::Value,
+    field: &str,
+) -> Result<Option<&'a str>, Response> {
+    match params.get(field) {
+        None => Ok(None),
+        Some(serde_json::Value::String(value)) => Ok(Some(value.as_str())),
+        Some(_) => Err(Response::error_detail(
+            ErrorCode::InvalidArgument,
+            format!("'{field}' must be a string when provided"),
+            None,
+        )),
+    }
+}
+
 pub fn resolve_session_target(
     state: &DaemonState,
     params: &serde_json::Value,
 ) -> Result<SessionTargetContext, Response> {
-    let session_param = params.get("session").and_then(|value| value.as_str());
-    let target_param = params.get("target").and_then(|value| value.as_str());
+    let session_param = optional_string_field(params, "session")?;
+    let target_param = optional_string_field(params, "target")?;
     let session_name = resolve_session_selection(state, session_param)?;
     let target_id = resolve_target_selection(state, &session_name, target_param)?;
 
@@ -325,6 +340,50 @@ mod tests {
         state.sessions.insert("default".into(), session);
         let error = resolve_target_selection(&state, "default", Some("missing")).unwrap_err();
         assert_eq!(error_code(&error), "TARGET_NOT_FOUND");
+    }
+
+    #[test]
+    fn non_string_session_is_invalid_argument() {
+        let state = DaemonState::new();
+        let mut session = Session::new_default("localhost:9222".into());
+        session.add_tab("T1".into(), "https://a.test".into(), "A".into());
+        state.sessions.insert("default".into(), session);
+
+        let result = resolve_session_target(
+            &state,
+            &serde_json::json!({
+                "session": 42,
+                "target": "T1",
+            }),
+        );
+        let error = match result {
+            Ok(_) => panic!("non-string session should fail"),
+            Err(error) => error,
+        };
+
+        assert_eq!(error_code(&error), "INVALID_ARGUMENT");
+    }
+
+    #[test]
+    fn non_string_target_is_invalid_argument() {
+        let state = DaemonState::new();
+        let mut session = Session::new_default("localhost:9222".into());
+        session.add_tab("T1".into(), "https://a.test".into(), "A".into());
+        state.sessions.insert("default".into(), session);
+
+        let result = resolve_session_target(
+            &state,
+            &serde_json::json!({
+                "session": "default",
+                "target": 42,
+            }),
+        );
+        let error = match result {
+            Ok(_) => panic!("non-string target should fail"),
+            Err(error) => error,
+        };
+
+        assert_eq!(error_code(&error), "INVALID_ARGUMENT");
     }
 
     // ─── resolve_tab: alias resolution ───────────────────────────────────
