@@ -2,14 +2,14 @@
 
 use std::{collections::HashSet, sync::Arc};
 
-use tokio::io::{BufReader, BufWriter};
+use tokio::io::{AsyncWrite, BufReader, BufWriter};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::watch;
 use tracing::{error, info};
 
 use crate::daemon::console::cancel_all_legacy_console_for_workspace;
 use crate::daemon::handler::{handle_request, HandlerContext};
-use crate::daemon::protocol::{read_request, write_response, Response};
+use crate::daemon::protocol::{read_request, write_response, Request, Response};
 use crate::daemon::session::Session;
 use crate::daemon::state::DaemonState;
 use crate::daemon::target_close::{
@@ -388,7 +388,14 @@ async fn handle_connection(
                 }
 
                 let resp = handle_request(&req, &state, &ctx).await;
-                if write_response(&mut writer, &resp).await.is_err() {
+                let is_daemon_stop = req.cmd == "daemon.stop";
+                if write_response_then_shutdown_if_daemon_stop(&mut writer, &req, &resp, &ctx)
+                    .await
+                    .is_err()
+                {
+                    break;
+                }
+                if is_daemon_stop {
                     break;
                 }
             }
@@ -401,13 +408,84 @@ async fn handle_connection(
     }
 }
 
+async fn write_response_then_shutdown_if_daemon_stop<W>(
+    writer: &mut BufWriter<W>,
+    req: &Request,
+    resp: &Response,
+    ctx: &HandlerContext,
+) -> std::io::Result<()>
+where
+    W: AsyncWrite + Unpin,
+{
+    write_response(writer, resp).await?;
+    if req.cmd == "daemon.stop" {
+        let _ = ctx.shutdown.send(true);
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::daemon::protocol::Response;
+    use crate::daemon::protocol::{Request, Response};
     use serde_json::json;
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use std::pin::Pin;
+    use std::task::{Context, Poll};
+    use tokio::io::{AsyncReadExt, AsyncWrite, AsyncWriteExt};
     use tokio::net::TcpStream;
+
+    struct FailingWriter;
+
+    impl AsyncWrite for FailingWriter {
+        fn poll_write(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            _buf: &[u8],
+        ) -> Poll<std::io::Result<usize>> {
+            Poll::Ready(Err(std::io::Error::new(
+                std::io::ErrorKind::BrokenPipe,
+                "write failed",
+            )))
+        }
+
+        fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+
+        fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    struct FlushObservingWriter {
+        shutdown_rx: watch::Receiver<bool>,
+        bytes: Vec<u8>,
+        flushed: bool,
+    }
+
+    impl AsyncWrite for FlushObservingWriter {
+        fn poll_write(
+            mut self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            buf: &[u8],
+        ) -> Poll<std::io::Result<usize>> {
+            self.bytes.extend_from_slice(buf);
+            Poll::Ready(Ok(buf.len()))
+        }
+
+        fn poll_flush(mut self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+            assert!(
+                !*self.shutdown_rx.borrow(),
+                "daemon.stop shutdown was signaled before the response flush completed"
+            );
+            self.flushed = true;
+            Poll::Ready(Ok(()))
+        }
+
+        fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+    }
 
     async fn start_server() -> u16 {
         let state = Arc::new(DaemonState::new());
@@ -423,6 +501,78 @@ mod tests {
             .await
             .unwrap();
         server.port
+    }
+
+    fn daemon_stop_request() -> Request {
+        Request {
+            cmd: "daemon.stop".into(),
+            params: json!({}),
+            token: None,
+        }
+    }
+
+    fn handler_context_with_shutdown() -> (HandlerContext, watch::Receiver<bool>) {
+        let (shutdown, rx) = watch::channel(false);
+        (
+            HandlerContext {
+                port: 0,
+                pid: 0,
+                shutdown,
+                daemon_token: None,
+            },
+            rx,
+        )
+    }
+
+    #[tokio::test]
+    async fn daemon_stop_response_write_failure_does_not_signal_shutdown() {
+        let (ctx, rx) = handler_context_with_shutdown();
+        let mut writer = BufWriter::new(FailingWriter);
+        let response = Response::ok(json!({"status": "stopping"}));
+
+        let error = write_response_then_shutdown_if_daemon_stop(
+            &mut writer,
+            &daemon_stop_request(),
+            &response,
+            &ctx,
+        )
+        .await
+        .unwrap_err();
+
+        assert_eq!(error.kind(), std::io::ErrorKind::BrokenPipe);
+        assert!(
+            !*rx.borrow(),
+            "daemon.stop shutdown must not be signaled when the response write fails"
+        );
+    }
+
+    #[tokio::test]
+    async fn daemon_stop_response_flush_success_signals_shutdown_after_flush() {
+        let (ctx, rx) = handler_context_with_shutdown();
+        let mut writer = BufWriter::new(FlushObservingWriter {
+            shutdown_rx: rx.clone(),
+            bytes: Vec::new(),
+            flushed: false,
+        });
+        let response = Response::ok(json!({"status": "stopping"}));
+
+        write_response_then_shutdown_if_daemon_stop(
+            &mut writer,
+            &daemon_stop_request(),
+            &response,
+            &ctx,
+        )
+        .await
+        .unwrap();
+
+        assert!(writer.get_ref().flushed);
+        assert!(
+            *rx.borrow(),
+            "daemon.stop shutdown must be signaled after a successful response flush"
+        );
+        let wire = std::str::from_utf8(&writer.get_ref().bytes).unwrap();
+        let response: Response = serde_json::from_str(wire.trim()).unwrap();
+        assert!(response.ok);
     }
 
     #[tokio::test]
@@ -651,7 +801,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cleanup_keeps_expired_isolated_sessions_when_browser_missing() {
+    async fn cleanup_expired_sessions_keeps_expired_isolated_when_browser_missing() {
         let state = Arc::new(DaemonState::new());
         let now = now_ts();
         state.sessions.insert(

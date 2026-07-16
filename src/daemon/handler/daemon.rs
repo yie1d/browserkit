@@ -38,8 +38,10 @@ pub async fn handle_daemon_status(state: &Arc<DaemonState>, ctx: &HandlerContext
 }
 
 /// Trigger a graceful daemon shutdown.
-pub async fn handle_daemon_stop(state: &Arc<DaemonState>, ctx: &HandlerContext) -> Response {
+pub async fn handle_daemon_stop(state: &Arc<DaemonState>, _ctx: &HandlerContext) -> Response {
     info!("daemon.stop requested, closing all sessions...");
+
+    super::browser::cancel_all_browser_background_tasks(state);
 
     let hosts: HashSet<String> = state
         .sessions
@@ -47,22 +49,28 @@ pub async fn handle_daemon_stop(state: &Arc<DaemonState>, ctx: &HandlerContext) 
         .map(|entry| entry.value().browser_host.clone())
         .collect();
 
-    let mut sessions_closed = 0;
+    let mut reports = Vec::new();
     for host in hosts {
-        sessions_closed += super::browser::cleanup_browser_sessions_for_host(state, &host).await;
+        reports.push(super::browser::cleanup_browser_sessions_for_host(state, &host).await);
     }
 
-    super::browser::cancel_all_browser_background_tasks(state);
+    let browsers_removed = super::browser::drain_browsers_for_shutdown(state);
     state.request_persist();
     persist::persist_now(state).await;
 
-    // Shutdown proceeds. Browser::drop will kill managed (bk-launched) browsers.
-    // Unmanaged browsers (user-connected) have child=None, so drop is harmless.
-    let _ = ctx.shutdown.send(true);
+    let sessions_closed: usize = reports.iter().map(|report| report.sessions_closed()).sum();
+    let targets_closed: usize = reports.iter().map(|report| report.targets_closed()).sum();
+    let cleanup_errors: Vec<_> = reports
+        .iter()
+        .flat_map(|report| report.cleanup_errors.clone())
+        .collect();
 
     Response::ok(json!({
         "status": "stopping",
         "sessions_closed": sessions_closed,
+        "targets_closed": targets_closed,
+        "browsers_removed": browsers_removed,
+        "cleanup_errors": cleanup_errors,
     }))
 }
 
@@ -72,14 +80,35 @@ mod tests {
     use crate::daemon::session::Session;
     use tokio_util::sync::CancellationToken;
 
+    fn test_context_with_shutdown() -> (HandlerContext, tokio::sync::watch::Receiver<bool>) {
+        let (shutdown, rx) = tokio::sync::watch::channel(false);
+        (
+            HandlerContext {
+                port: 0,
+                pid: 0,
+                shutdown,
+                daemon_token: None,
+            },
+            rx,
+        )
+    }
+
     fn test_context() -> HandlerContext {
-        let (shutdown, _rx) = tokio::sync::watch::channel(false);
-        HandlerContext {
-            port: 0,
-            pid: 0,
-            shutdown,
-            daemon_token: None,
-        }
+        test_context_with_shutdown().0
+    }
+
+    #[tokio::test]
+    async fn daemon_stop_handler_prepares_response_without_signaling_shutdown() {
+        let state = Arc::new(DaemonState::new());
+        let (ctx, rx) = test_context_with_shutdown();
+
+        let value = serde_json::to_value(handle_daemon_stop(&state, &ctx).await).unwrap();
+
+        assert_eq!(value["data"]["status"], "stopping");
+        assert!(
+            !*rx.borrow(),
+            "handler must not signal shutdown before the JSON response is flushed"
+        );
     }
 
     #[tokio::test]
@@ -117,5 +146,31 @@ mod tests {
         assert!(watcher.is_cancelled());
         assert!(!state.target_watchers.contains_key("localhost:9222"));
         assert!(state.sessions.get("default").unwrap().disconnected);
+    }
+
+    #[tokio::test]
+    async fn daemon_stop_reports_cleanup_errors_without_claiming_failed_sessions_closed() {
+        let state = Arc::new(DaemonState::new());
+        let mut session = Session::new_default("localhost:9222".into());
+        session.add_tab(
+            "target-default".into(),
+            "https://example.test".into(),
+            "Example".into(),
+        );
+        state.sessions.insert("default".into(), session);
+
+        let value =
+            serde_json::to_value(handle_daemon_stop(&state, &test_context()).await).unwrap();
+
+        assert_eq!(value["data"]["status"], "stopping");
+        assert_eq!(value["data"]["sessions_closed"], 0);
+        assert_eq!(value["data"]["cleanup_errors"][0]["session"], "default");
+        assert_eq!(
+            value["data"]["cleanup_errors"][0]["target_id"],
+            "target-default"
+        );
+        let session = state.sessions.get("default").unwrap();
+        assert!(session.disconnected);
+        assert!(session.tabs.contains_key("target-default"));
     }
 }

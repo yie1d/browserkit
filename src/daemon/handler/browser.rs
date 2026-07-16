@@ -3,6 +3,7 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
+use serde::Serialize;
 use serde_json::json;
 use tracing::{info, warn};
 
@@ -11,11 +12,12 @@ use crate::daemon::protocol::{Request, Response};
 use crate::daemon::session::SessionMode;
 use crate::daemon::state::DaemonState;
 use crate::daemon::target_close::{
-    close_session_target, session_tab_close_requests, SessionTargetCloseRequest,
+    close_session_target, session_tab_close_requests, SessionTargetCloseError,
+    SessionTargetCloseRequest,
 };
 use crate::daemon::target_lifecycle::ensure_target_watcher;
 use crate::daemon::target_lifecycle::remove_session_tab;
-use crate::error::BkError;
+use crate::error::{BkError, ErrorCode};
 
 use super::common::handler;
 
@@ -148,6 +150,73 @@ struct BrowserSessionCleanupPlan {
     targets: Vec<SessionTargetCloseRequest>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub(crate) struct BrowserCleanupError {
+    pub session: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target_id: Option<String>,
+    pub action: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub(crate) struct BrowserCleanupReport {
+    pub successful_sessions: Vec<String>,
+    pub successful_targets: Vec<String>,
+    pub cleanup_errors: Vec<BrowserCleanupError>,
+}
+
+impl BrowserCleanupReport {
+    pub(crate) fn sessions_closed(&self) -> usize {
+        self.successful_sessions.len()
+    }
+
+    pub(crate) fn targets_closed(&self) -> usize {
+        self.successful_targets.len()
+    }
+
+    pub(crate) fn has_errors(&self) -> bool {
+        !self.cleanup_errors.is_empty()
+    }
+
+    fn push_error(&mut self, error: BrowserCleanupError) {
+        self.cleanup_errors.push(error);
+    }
+}
+
+fn cleanup_error_from_target(
+    session: &str,
+    error: &SessionTargetCloseError,
+) -> BrowserCleanupError {
+    match error {
+        SessionTargetCloseError::BrowserDisconnected { target_id, action } => {
+            BrowserCleanupError {
+                session: session.to_string(),
+                target_id: Some(target_id.clone()),
+                action: (*action).to_string(),
+                message: error.to_string(),
+            }
+        }
+        SessionTargetCloseError::Cdp {
+            target_id, action, ..
+        } => BrowserCleanupError {
+            session: session.to_string(),
+            target_id: Some(target_id.clone()),
+            action: (*action).to_string(),
+            message: error.to_string(),
+        },
+    }
+}
+
+fn cleanup_error_for_context(session: &str, message: String) -> BrowserCleanupError {
+    BrowserCleanupError {
+        session: session.to_string(),
+        target_id: None,
+        action: "dispose BrowserContext".into(),
+        message,
+    }
+}
+
 fn cleanup_plans_for_host(state: &DaemonState, host: &str) -> Vec<BrowserSessionCleanupPlan> {
     state
         .sessions
@@ -205,40 +274,70 @@ pub(crate) fn cancel_all_browser_background_tasks(state: &DaemonState) {
 pub(crate) async fn cleanup_browser_sessions_for_host(
     state: &Arc<DaemonState>,
     host: &str,
-) -> usize {
+) -> BrowserCleanupReport {
+    cancel_browser_background_tasks(state, host);
+
     let plans = cleanup_plans_for_host(state, host);
     let cdp = state.browsers.get(host).map(|b| Arc::clone(&b.cdp));
+    let mut report = BrowserCleanupReport::default();
 
     for plan in &plans {
+        let mut success = true;
+
         for target in &plan.targets {
             match close_session_target(cdp.as_deref(), target).await {
                 Ok(_) => {
+                    report.successful_targets.push(target.target_id.clone());
                     remove_session_tab(state, &target.target_id);
                 }
                 Err(error) => {
+                    report.push_error(cleanup_error_from_target(&plan.name, &error));
                     warn!(
                         session = %plan.name,
                         target = %target.target_id,
                         error = %error,
                         "browser cleanup target action failed"
                     );
+                    success = false;
                 }
             }
         }
 
-        if plan.mode == SessionMode::Isolated {
-            if let (Some(ctx_id), Some(cdp)) = (&plan.browser_context_id, cdp.as_deref()) {
-                if let Err(error) = cdpkit::target::methods::DisposeBrowserContext::new(
-                    ctx_id.clone(),
-                )
-                .send(cdp)
-                .await
-                {
+        if success && plan.mode == SessionMode::Isolated {
+            if let Some(ctx_id) = &plan.browser_context_id {
+                if let Some(cdp) = cdp.as_deref() {
+                    if let Err(error) =
+                        cdpkit::target::methods::DisposeBrowserContext::new(ctx_id.clone())
+                            .send(cdp)
+                            .await
+                    {
+                        report.push_error(cleanup_error_for_context(
+                            &plan.name,
+                            format!(
+                                "failed to dispose BrowserContext for session '{}': {}",
+                                plan.name, error
+                            ),
+                        ));
+                        warn!(
+                            session = %plan.name,
+                            error = %error,
+                            "browser cleanup BrowserContext dispose failed"
+                        );
+                        success = false;
+                    }
+                } else {
+                    report.push_error(cleanup_error_for_context(
+                        &plan.name,
+                        format!(
+                            "browser for session '{}' disconnected before disposing BrowserContext",
+                            plan.name
+                        ),
+                    ));
                     warn!(
                         session = %plan.name,
-                        error = %error,
-                        "browser cleanup BrowserContext dispose failed"
+                        "browser cleanup cannot dispose BrowserContext without browser connection"
                     );
+                    success = false;
                 }
             }
         }
@@ -248,14 +347,58 @@ pub(crate) async fn cleanup_browser_sessions_for_host(
         if let Some(mut session) = state.sessions.get_mut(&plan.name) {
             session.mark_disconnected();
         }
+
+        if success {
+            report.successful_sessions.push(plan.name.clone());
+        }
     }
 
-    cancel_browser_background_tasks(state, host);
     if !plans.is_empty() {
         state.request_persist();
     }
 
-    plans.len()
+    report
+}
+
+pub(crate) fn drain_browsers_for_shutdown(state: &DaemonState) -> usize {
+    let hosts: Vec<String> = state
+        .browsers
+        .iter()
+        .map(|entry| entry.key().clone())
+        .collect();
+    let removed = hosts.len();
+    for host in hosts {
+        state.browsers.remove(&host);
+    }
+    removed
+}
+
+fn cleanup_report_data(report: &BrowserCleanupReport) -> serde_json::Value {
+    json!({
+        "sessions_closed": report.sessions_closed(),
+        "targets_closed": report.targets_closed(),
+        "successful_sessions": &report.successful_sessions,
+        "successful_targets": &report.successful_targets,
+        "cleanup_errors": &report.cleanup_errors,
+    })
+}
+
+fn browser_disconnect_response(host: String, report: BrowserCleanupReport) -> Response {
+    let mut data = cleanup_report_data(&report);
+    data["host"] = json!(host);
+    data["status"] = json!("disconnected");
+
+    if report.has_errors() {
+        let mut response = Response::error_detail(
+            ErrorCode::DaemonError,
+            "browser.disconnect cleanup incomplete".into(),
+            Some("some session targets could not be closed; reconnect or retry cleanup".into()),
+        );
+        response.data = Some(data);
+        response
+    } else {
+        Response::ok(data)
+    }
 }
 
 handler!(handle_browser_disconnect, do_browser_disconnect(req, state));
@@ -275,7 +418,7 @@ async fn do_browser_disconnect(
         return Err(BkError::BrowserConnectionFailed(format!("no connection for host: {}", host)));
     }
 
-    let sessions_closed = cleanup_browser_sessions_for_host(state, &host).await;
+    let report = cleanup_browser_sessions_for_host(state, &host).await;
 
     // Remove the browser entry. Safety: Browser.managed=false for user-connected
     // browsers means child=None, so Browser::drop won't kill anything.
@@ -285,11 +428,7 @@ async fn do_browser_disconnect(
     state.request_persist();
     info!(host = %host, "browser disconnected");
 
-    Ok(Response::ok(json!({
-        "host": host,
-        "status": "disconnected",
-        "sessions_closed": sessions_closed,
-    })))
+    Ok(browser_disconnect_response(host, report))
 }
 
 #[cfg(test)]
@@ -325,12 +464,65 @@ mod tests {
             .target_watchers
             .insert("localhost:9222".into(), watcher.clone());
 
-        let closed = cleanup_browser_sessions_for_host(&state, "localhost:9222").await;
+        let report = cleanup_browser_sessions_for_host(&state, "localhost:9222").await;
 
-        assert_eq!(closed, 1);
+        assert_eq!(report.sessions_closed(), 1);
         assert!(watcher.is_cancelled());
         assert!(!state.target_watchers.contains_key("localhost:9222"));
         assert!(state.sessions.get("default").unwrap().disconnected);
         assert!(!state.sessions.get("other").unwrap().disconnected);
+    }
+
+    #[tokio::test]
+    async fn browser_session_cleanup_reports_failed_targets_without_counting_session_closed() {
+        let state = Arc::new(DaemonState::new());
+        let mut session = Session::new_default("localhost:9222".into());
+        session.add_tab(
+            "target-default".into(),
+            "https://example.test".into(),
+            "Example".into(),
+        );
+        state.sessions.insert("default".into(), session);
+
+        let report = cleanup_browser_sessions_for_host(&state, "localhost:9222").await;
+
+        assert_eq!(report.sessions_closed(), 0);
+        assert!(report.successful_sessions.is_empty());
+        assert!(report.successful_targets.is_empty());
+        assert_eq!(report.cleanup_errors.len(), 1);
+        assert_eq!(report.cleanup_errors[0].session, "default");
+        assert_eq!(
+            report.cleanup_errors[0].target_id.as_deref(),
+            Some("target-default")
+        );
+        let session = state.sessions.get("default").unwrap();
+        assert!(session.disconnected);
+        assert!(session.tabs.contains_key("target-default"));
+    }
+
+    #[test]
+    fn browser_disconnect_partial_cleanup_response_is_structured_daemon_error() {
+        let report = BrowserCleanupReport {
+            successful_sessions: Vec::new(),
+            successful_targets: Vec::new(),
+            cleanup_errors: vec![BrowserCleanupError {
+                session: "default".into(),
+                target_id: Some("target-default".into()),
+                action: "close target".into(),
+                message: "browser disconnected".into(),
+            }],
+        };
+
+        let response = browser_disconnect_response("localhost:9222".into(), report);
+
+        assert!(!response.ok);
+        let error = response.error.unwrap();
+        assert_eq!(error["code"], "DAEMON_ERROR");
+        let data = response.data.unwrap();
+        assert_eq!(data["host"], "localhost:9222");
+        assert_eq!(data["status"], "disconnected");
+        assert_eq!(data["sessions_closed"], 0);
+        assert_eq!(data["cleanup_errors"][0]["session"], "default");
+        assert_eq!(data["cleanup_errors"][0]["target_id"], "target-default");
     }
 }
