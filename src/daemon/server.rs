@@ -92,16 +92,19 @@ impl DaemonServer {
     }
 }
 
-/// Spawn a background task that periodically cleans up expired workspaces.
+/// Spawn a background task that periodically cleans up expired sessions.
 pub fn spawn_cleanup_task(state: Arc<DaemonState>, interval_seconds: u64) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(interval_seconds));
         loop {
             interval.tick().await;
-            cleanup_expired_workspaces(&state).await;
-            cleanup_expired_sessions(&state).await;
+            cleanup_idle_once(&state).await;
         }
     })
+}
+
+async fn cleanup_idle_once(state: &Arc<DaemonState>) {
+    cleanup_expired_sessions(state).await;
 }
 
 async fn cleanup_expired_sessions(state: &Arc<DaemonState>) {
@@ -235,6 +238,7 @@ fn expired_session_close_requests(session: &Session) -> Vec<SessionTargetCloseRe
 }
 
 /// Check all workspaces and remove those inactive for more than the configured timeout.
+#[allow(dead_code)]
 async fn cleanup_expired_workspaces(state: &Arc<DaemonState>) {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -338,6 +342,7 @@ async fn cleanup_expired_workspaces(state: &Arc<DaemonState>) {
     }
 }
 
+#[allow(dead_code)]
 struct ExpiredWorkspace {
     wid: String,
     browser_host: String,
@@ -504,7 +509,8 @@ mod tests {
         assert!(resp.ok);
         let data = resp.data.unwrap();
         assert_eq!(data["status"], "stopping");
-        assert!(data.get("workspaces_closed").is_some());
+        assert!(data.get("sessions_closed").is_some());
+        assert!(data.get("workspaces_closed").is_none());
         drop(stream);
 
         let mut failed = false;
@@ -532,7 +538,8 @@ mod tests {
         assert_eq!(data["port"], port);
         assert!(data["pid"].as_u64().unwrap() > 0);
         assert_eq!(data["browsers"], 0);
-        assert_eq!(data["workspaces"], 0);
+        assert_eq!(data["sessions"], 0);
+        assert!(data.get("workspaces").is_none());
     }
 
     use crate::workspace::Workspace;
@@ -609,6 +616,20 @@ mod tests {
         let state = Arc::new(DaemonState::new());
         cleanup_expired_workspaces(&state).await;
         assert!(state.workspaces.is_empty());
+    }
+
+    #[tokio::test]
+    async fn cleanup_idle_once_does_not_remove_expired_workspaces() {
+        let state = Arc::new(DaemonState::new());
+        let now = now_ts();
+        state.workspaces.insert(
+            "legacy".to_string(),
+            make_workspace("legacy", "localhost:9222", now - 31 * 60),
+        );
+
+        cleanup_idle_once(&state).await;
+
+        assert!(state.workspaces.contains_key("legacy"));
     }
 
     #[tokio::test]

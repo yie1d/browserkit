@@ -1581,20 +1581,23 @@ fn base64_decode_and_save(data: &str, path: &str) -> Result<(), String> {
 
 // ── Status command ─────────────────────────────────────────────
 
-/// Implement `bk status` (v1 legacy): show daemon + browsers + workspaces overview as JSON.
+fn status_commands() -> [&'static str; 3] {
+    ["daemon.status", "browser.list", "session.list"]
+}
+
+/// Implement `bk status`: show daemon + browsers + sessions overview as JSON.
 async fn dispatch_status(client: &mut DaemonClient) -> Result<(), String> {
-    let daemon_resp = send_cmd(client, "daemon.status", json!({})).await?;
-    let browser_resp = send_cmd(client, "browser.list", json!({})).await?;
-    let ws_resp = send_cmd(client, "ws.list", json!({})).await?;
-    let default_resp = send_cmd(client, "ws.default", json!({})).await?;
+    let commands = status_commands();
+    let daemon_resp = send_cmd(client, commands[0], json!({})).await?;
+    let browser_resp = send_cmd(client, commands[1], json!({})).await?;
+    let session_resp = send_cmd(client, commands[2], json!({})).await?;
 
     let result = json!({
         "ok": true,
         "data": {
             "daemon": daemon_resp.data,
             "browsers": browser_resp.data,
-            "workspaces": ws_resp.data,
-            "default_workspace": default_resp.data,
+            "sessions": session_resp.data,
         }
     });
     println!("{}", serde_json::to_string(&result).unwrap_or_default());
@@ -1928,6 +1931,14 @@ mod tests {
     fn cli_parses_status() {
         let cli = try_parse(&["bk", "status"]).unwrap();
         assert!(matches!(cli.command, Command::StatusV2));
+    }
+
+    #[test]
+    fn top_level_status_uses_session_only_admin_commands() {
+        let commands = status_commands();
+        assert_eq!(commands, ["daemon.status", "browser.list", "session.list"]);
+        assert!(!commands.contains(&"ws.list"));
+        assert!(!commands.contains(&"ws.default"));
     }
 
     #[test]

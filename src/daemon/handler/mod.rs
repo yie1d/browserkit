@@ -65,7 +65,7 @@ pub async fn handle_request(
         "daemon.status" => daemon::handle_daemon_status(state, ctx).await,
         "daemon.stop" => daemon::handle_daemon_stop(state, ctx).await,
         "browser.connect" => browser::handle_browser_connect(req, state).await,
-        "browser.discover" => workspace::handle_browser_discover(req, state).await,
+        "browser.discover" => browser::handle_browser_discover(req, state).await,
         "browser.list" => browser::handle_browser_list(state).await,
         "browser.disconnect" => browser::handle_browser_disconnect(req, state).await,
         "ws.new" => workspace::handle_ws_new(req, state).await,

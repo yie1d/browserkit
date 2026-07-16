@@ -998,68 +998,6 @@ async fn do_ws_attach(
     })))
 }
 
-// ── browser.discover: auto-discover user's Chrome via DevToolsActivePort ──────
-
-handler!(handle_browser_discover, do_browser_discover(req, state));
-
-/// Connect to the user's Chrome by reading DevToolsActivePort.
-///
-/// Params:
-///   - `path` (optional): custom path to DevToolsActivePort file
-async fn do_browser_discover(
-    req: &Request,
-    state: &Arc<DaemonState>,
-) -> Result<Response, BkError> {
-    let custom_path = req.params.get("path").and_then(|v| v.as_str());
-
-    let discovered = crate::browser::discover::discover_chrome(custom_path)?;
-
-    // Check if already connected
-    if let Some(b) = state.browsers.get(&discovered.host) {
-        info!(host = %discovered.host, "browser already connected (via discover)");
-        return Ok(Response::ok(json!({
-            "host": b.host,
-            "managed": b.managed,
-            "status": "already_connected",
-        })));
-    }
-
-    // Connect — this is a user-owned browser, so managed=false.
-    // Chrome 136+ with toggle-enabled debugging disables the /json/* HTTP endpoints,
-    // so we must use the ws path from DevToolsActivePort for direct WebSocket connection.
-    let connect_target = if !discovered.ws_path.is_empty() {
-        Some(crate::browser::build_ws_url(&discovered.host, &discovered.ws_path))
-    } else {
-        None // fallback: use host, which queries /json/version
-    };
-
-    state
-        .get_or_connect_browser_with_url(
-            &discovered.host,
-            connect_target.as_deref(),
-            false,
-            None,
-        )
-        .await
-        .map_err(|e| {
-            BkError::Other(format!(
-                "DevToolsActivePort file found (port {}), but connection failed: {}. \
-                 The file may be stale — Chrome may have exited without cleaning it up. \
-                 Try restarting Chrome or deleting the DevToolsActivePort file.",
-                discovered.host, e
-            ))
-        })?;
-    state.request_persist();
-    info!(host = %discovered.host, ws_path = %discovered.ws_path, "connected to user's Chrome via DevToolsActivePort");
-
-    Ok(Response::ok(json!({
-        "host": discovered.host,
-        "ws_path": discovered.ws_path,
-        "managed": false,
-        "status": "connected",
-    })))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

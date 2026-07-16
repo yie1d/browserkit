@@ -944,6 +944,14 @@ async fn do_persist(state: &Arc<DaemonState>) {
     }).await;
 }
 
+#[cfg(not(test))]
+pub(crate) async fn persist_now(state: &Arc<DaemonState>) {
+    do_persist(state).await;
+}
+
+#[cfg(test)]
+pub(crate) async fn persist_now(_state: &Arc<DaemonState>) {}
+
 #[cfg(test)]
 mod tests {
     use super::*;

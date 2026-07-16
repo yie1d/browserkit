@@ -210,7 +210,7 @@ pub async fn start_daemon() -> Result<DaemonStartResult, crate::error::BkError> 
     write_port_file(server.port).map_err(crate::error::BkError::Io)?;
     tracing::info!(port = server.port, "daemon started (ready for connections)");
 
-    // Spawn background cleanup task for expired workspaces
+    // Spawn background cleanup task for expired sessions.
     let _cleanup_handle = server::spawn_cleanup_task(state.clone(), cleanup_interval);
 
     // Spawn background restore: reconnect managed browsers + re-attach tabs
