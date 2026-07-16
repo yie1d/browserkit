@@ -24,7 +24,7 @@ use tracing::warn;
 
 use crate::daemon::bk_home;
 use crate::daemon::dialog::spawn_dialog_subscription;
-use crate::daemon::session::{Session, SessionMode, SessionTab};
+use crate::daemon::session::{Session, SessionMode, SessionTab, TabOwnership};
 use crate::daemon::state::{Browser, DaemonState};
 use crate::page::Tab;
 use crate::workspace::Workspace;
@@ -99,6 +99,8 @@ pub struct PersistedSessionTab {
     pub target_id: String,
     pub url: String,
     pub title: String,
+    #[serde(default)]
+    pub ownership: TabOwnership,
 }
 
 /// Serializable representation of a v2 session.
@@ -283,6 +285,7 @@ impl PersistedSession {
                 target_id: tab.target_id.clone(),
                 url: tab.url.clone(),
                 title: tab.title.clone(),
+                ownership: tab.ownership,
             })
             .collect();
 
@@ -306,15 +309,14 @@ impl PersistedSession {
     pub fn into_session(self) -> Session {
         let mut tabs = HashMap::new();
         for tab in self.tabs {
-            tabs.insert(
-                tab.target_id.clone(),
-                SessionTab {
-                    target_id: tab.target_id,
-                    url: tab.url,
-                    title: tab.title,
-                    cdp_session_id: String::new(),
-                },
-            );
+            let target_id = tab.target_id.clone();
+            let session_tab = match tab.ownership {
+                TabOwnership::Owned => SessionTab::new_owned(tab.target_id, tab.url, tab.title),
+                TabOwnership::Attached => {
+                    SessionTab::new_attached(tab.target_id, tab.url, tab.title, String::new())
+                }
+            };
+            tabs.insert(target_id, session_tab);
         }
 
         Session {
@@ -1065,6 +1067,33 @@ mod tests {
         assert_eq!(tab.url, "https://example.com");
         assert_eq!(tab.title, "Example");
         assert_eq!(tab.cdp_session_id, "");
+    }
+
+    #[test]
+    fn persisted_session_roundtrip_preserves_tab_ownership() {
+        let mut session = make_session("agent-a", "localhost:9222");
+        session.tabs.insert(
+            "target-2".to_string(),
+            crate::daemon::session::SessionTab::new_attached(
+                "target-2".to_string(),
+                "https://attached.test".to_string(),
+                "Attached".to_string(),
+                "transient-attached-session".to_string(),
+            ),
+        );
+
+        let persisted = PersistedSession::from_session(&session);
+        let restored = persisted.into_session();
+
+        assert_eq!(
+            restored.tabs["target-1"].ownership,
+            crate::daemon::session::TabOwnership::Owned
+        );
+        assert_eq!(
+            restored.tabs["target-2"].ownership,
+            crate::daemon::session::TabOwnership::Attached
+        );
+        assert_eq!(restored.tabs["target-2"].cdp_session_id, "");
     }
 
     #[test]

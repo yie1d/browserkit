@@ -4,7 +4,8 @@
 // Default mode shares the browser's default context; Isolated mode creates a dedicated
 // BrowserContext via CDP for full cookie/storage separation.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
+use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
@@ -19,6 +20,31 @@ pub enum SessionMode {
     Isolated,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum TabOwnership {
+    #[default]
+    Owned,
+    Attached,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TabClosePolicy {
+    CloseTarget,
+    DetachSession,
+}
+
+impl TabOwnership {
+    pub fn close_policy(self) -> TabClosePolicy {
+        match self {
+            Self::Owned => TabClosePolicy::CloseTarget,
+            Self::Attached => TabClosePolicy::DetachSession,
+        }
+    }
+}
+
+pub type ConsoleLog = Arc<parking_lot::Mutex<VecDeque<crate::page::ConsoleEntry>>>;
+
 /// A tab within a session.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionTab {
@@ -26,6 +52,43 @@ pub struct SessionTab {
     pub url: String,
     pub title: String,
     pub cdp_session_id: String,
+    #[serde(default)]
+    pub ownership: TabOwnership,
+    #[serde(skip, default = "new_console_log")]
+    pub console_log: ConsoleLog,
+}
+
+impl SessionTab {
+    pub fn new_owned(target_id: String, url: String, title: String) -> Self {
+        Self {
+            target_id,
+            url,
+            title,
+            cdp_session_id: String::new(),
+            ownership: TabOwnership::Owned,
+            console_log: new_console_log(),
+        }
+    }
+
+    pub fn new_attached(
+        target_id: String,
+        url: String,
+        title: String,
+        cdp_session_id: String,
+    ) -> Self {
+        Self {
+            target_id,
+            url,
+            title,
+            cdp_session_id,
+            ownership: TabOwnership::Attached,
+            console_log: new_console_log(),
+        }
+    }
+}
+
+pub fn new_console_log() -> ConsoleLog {
+    Arc::new(parking_lot::Mutex::new(VecDeque::with_capacity(200)))
 }
 
 /// Session: the v2 isolation unit replacing workspace.
@@ -81,12 +144,7 @@ impl Session {
     pub fn add_tab(&mut self, target_id: String, url: String, title: String) {
         self.tabs.insert(
             target_id.clone(),
-            SessionTab {
-                target_id: target_id.clone(),
-                url,
-                title,
-                cdp_session_id: String::new(),
-            },
+            SessionTab::new_owned(target_id.clone(), url, title),
         );
         self.active_target = Some(target_id);
         self.touch();
@@ -158,6 +216,34 @@ mod tests {
         assert_eq!(s2.mode, SessionMode::Isolated);
         assert_eq!(s2.browser_context_id, Some("CTX123".into()));
         assert_eq!(s2.name, "agent-a");
+    }
+
+    #[test]
+    fn session_tab_ownership_round_trips() {
+        let owned = SessionTab::new_owned("T1".into(), "https://a.test".into(), "A".into());
+        let attached = SessionTab::new_attached(
+            "T2".into(),
+            "https://b.test".into(),
+            "B".into(),
+            "S2".into(),
+        );
+        assert_eq!(owned.ownership, TabOwnership::Owned);
+        assert_eq!(attached.ownership, TabOwnership::Attached);
+        assert_eq!(
+            serde_json::from_str::<SessionTab>(&serde_json::to_string(&attached).unwrap())
+                .unwrap()
+                .ownership,
+            TabOwnership::Attached
+        );
+    }
+
+    #[test]
+    fn session_tab_close_policy_follows_ownership() {
+        assert_eq!(TabOwnership::Owned.close_policy(), TabClosePolicy::CloseTarget);
+        assert_eq!(
+            TabOwnership::Attached.close_policy(),
+            TabClosePolicy::DetachSession
+        );
     }
 
     #[test]

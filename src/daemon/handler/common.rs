@@ -5,9 +5,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use tokio::sync::watch;
 
-use crate::daemon::protocol::Request;
+use crate::daemon::protocol::{Request, Response};
 use crate::daemon::state::{resolve_wid, DaemonState};
-use crate::error::BkError;
+use crate::error::{BkError, ErrorCode};
 use crate::workspace::Workspace;
 
 /// Macro to eliminate the repeated `match Ok/Err` boilerplate in handler functions.
@@ -45,6 +45,16 @@ pub struct ResolvedContext {
     pub browser_context_id: Option<String>,
     pub cdp_session_id: String,
     pub cdp: Arc<cdpkit::CDP>,
+}
+
+#[derive(Clone)]
+pub struct SessionTargetContext {
+    pub session_name: String,
+    pub target_id: String,
+    pub browser_host: String,
+    pub browser_context_id: Option<String>,
+    pub cdp: Arc<cdpkit::CDP>,
+    pub cdp_session_id: String,
 }
 
 /// Return the current Unix timestamp in seconds.
@@ -103,6 +113,105 @@ pub fn resolve_tab(ws: &Workspace, tab_param: Option<&str>) -> Result<String, Bk
         .ok_or_else(|| BkError::NoActiveTab(ws.wid.clone()))
 }
 
+pub fn resolve_session_selection(
+    state: &DaemonState,
+    session_param: Option<&str>,
+) -> Result<String, Response> {
+    let session_name = session_param.unwrap_or("default");
+    if state.sessions.contains_key(session_name) {
+        Ok(session_name.to_string())
+    } else {
+        Err(Response::error_detail(
+            ErrorCode::SessionNotFound,
+            format!("session not found: {session_name}"),
+            None,
+        ))
+    }
+}
+
+pub fn resolve_target_selection(
+    state: &DaemonState,
+    session_name: &str,
+    target_param: Option<&str>,
+) -> Result<String, Response> {
+    let session = state.sessions.get(session_name).ok_or_else(|| {
+        Response::error_detail(
+            ErrorCode::SessionNotFound,
+            format!("session not found: {session_name}"),
+            None,
+        )
+    })?;
+
+    if let Some(target_id) = target_param {
+        if session.tabs.contains_key(target_id) {
+            Ok(target_id.to_string())
+        } else {
+            Err(Response::error_detail(
+                ErrorCode::TargetNotFound,
+                format!("target not found in session '{session_name}': {target_id}"),
+                None,
+            ))
+        }
+    } else {
+        session.active_target.clone().ok_or_else(|| {
+            Response::error_detail(
+                ErrorCode::SessionNoTab,
+                format!("session '{session_name}' has no active target"),
+                None,
+            )
+        })
+    }
+}
+
+pub fn resolve_session_target(
+    state: &DaemonState,
+    params: &serde_json::Value,
+) -> Result<SessionTargetContext, Response> {
+    let session_param = params.get("session").and_then(|value| value.as_str());
+    let target_param = params.get("target").and_then(|value| value.as_str());
+    let session_name = resolve_session_selection(state, session_param)?;
+    let target_id = resolve_target_selection(state, &session_name, target_param)?;
+
+    let session = state.sessions.get(&session_name).ok_or_else(|| {
+        Response::error_detail(
+            ErrorCode::SessionNotFound,
+            format!("session not found: {session_name}"),
+            None,
+        )
+    })?;
+    session.check_connected()?;
+
+    let tab = session.tabs.get(&target_id).ok_or_else(|| {
+        Response::error_detail(
+            ErrorCode::TargetNotFound,
+            format!("target not found in session '{session_name}': {target_id}"),
+            None,
+        )
+    })?;
+    let browser_host = session.browser_host.clone();
+    let browser_context_id = session.browser_context_id.clone();
+    let cdp_session_id = tab.cdp_session_id.clone();
+    drop(session);
+
+    let browser = state.browsers.get(&browser_host).ok_or_else(|| {
+        Response::error_detail(
+            ErrorCode::ChromeDisconnected,
+            format!("browser for session '{session_name}' is not connected: {browser_host}"),
+            None,
+        )
+    })?;
+    let cdp = Arc::clone(&browser.cdp);
+
+    Ok(SessionTargetContext {
+        session_name,
+        target_id,
+        browser_host,
+        browser_context_id,
+        cdp,
+        cdp_session_id,
+    })
+}
+
 /// Resolve workspace, tab, and CDP connection from a request.
 pub fn resolve_context(
     req: &Request,
@@ -141,8 +250,18 @@ pub fn resolve_context(
 mod tests {
     use super::*;
     use std::collections::HashMap;
+    use crate::daemon::session::Session;
     use crate::page::Tab;
     use crate::workspace::{Workspace, WorkspaceMode};
+
+    fn error_code(response: &crate::daemon::protocol::Response) -> &str {
+        response
+            .error
+            .as_ref()
+            .and_then(|error| error.get("code"))
+            .and_then(|code| code.as_str())
+            .expect("response should contain a structured error code")
+    }
 
     fn make_ws_with_tabs() -> Workspace {
         let mut tabs = HashMap::new();
@@ -188,6 +307,24 @@ mod tests {
             last_active: 2000,
             next_alias_seq: 3,
         }
+    }
+
+    #[test]
+    fn explicit_missing_session_does_not_fall_back() {
+        let state = DaemonState::new();
+        state.sessions.insert("default".into(), Session::new_default("localhost:9222".into()));
+        let error = resolve_session_selection(&state, Some("missing")).unwrap_err();
+        assert_eq!(error_code(&error), "SESSION_NOT_FOUND");
+    }
+
+    #[test]
+    fn explicit_missing_target_does_not_use_active_target() {
+        let state = DaemonState::new();
+        let mut session = Session::new_default("localhost:9222".into());
+        session.add_tab("T1".into(), "https://a.test".into(), "A".into());
+        state.sessions.insert("default".into(), session);
+        let error = resolve_target_selection(&state, "default", Some("missing")).unwrap_err();
+        assert_eq!(error_code(&error), "TARGET_NOT_FOUND");
     }
 
     // ─── resolve_tab: alias resolution ───────────────────────────────────

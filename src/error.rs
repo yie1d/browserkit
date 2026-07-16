@@ -121,6 +121,7 @@ pub enum ErrorCode {
     ElementNotVisible,
     ElementNotInteractable,
     TargetNotFound,
+    TargetAlreadyAttached,
     TargetCrashed,
     JsError,
     InvalidArgument,
@@ -152,6 +153,7 @@ impl ErrorCode {
             Self::ElementNotVisible => "element may be hidden or overlapped; try scrolling or waiting",
             Self::ElementNotInteractable => "element is disabled; check page state",
             Self::TargetNotFound => "tab may have been closed; run bk tabs to see available tabs",
+            Self::TargetAlreadyAttached => "detach the target from its current session first",
             Self::TargetCrashed => "tab has crashed and cannot recover",
             Self::JsError => "check expression syntax",
             Self::InvalidArgument => "check command syntax",
@@ -215,5 +217,18 @@ mod error_code_tests {
         assert!(!ErrorCode::BrowserVersionTooOld.recoverable());
         assert!(!ErrorCode::TargetCrashed.recoverable());
         assert!(!ErrorCode::DaemonError.recoverable());
+    }
+
+    #[test]
+    fn target_already_attached_error_contract() {
+        assert_eq!(
+            serde_json::to_string(&ErrorCode::TargetAlreadyAttached).unwrap(),
+            "\"TARGET_ALREADY_ATTACHED\""
+        );
+        assert!(ErrorCode::TargetAlreadyAttached.recoverable());
+        assert_eq!(
+            ErrorCode::TargetAlreadyAttached.suggestion(),
+            "detach the target from its current session first"
+        );
     }
 }
