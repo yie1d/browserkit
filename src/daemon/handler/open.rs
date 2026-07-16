@@ -11,7 +11,10 @@ use serde_json::json;
 use crate::daemon::protocol::{Request, Response};
 use crate::daemon::session::SessionTab;
 use crate::daemon::state::DaemonState;
-use crate::daemon::target_lifecycle::{find_target_owner, register_session_tab};
+use crate::daemon::target_lifecycle::{
+    emit_session_tab_created, enable_session_tab_domains, register_initialized_session_tab,
+    spawn_session_tab_subscriptions, SessionTabRegistration,
+};
 use crate::error::ErrorCode;
 
 /// Validated parameters for the `open` command.
@@ -34,27 +37,12 @@ fn register_opened_target_if_untracked(
     url: String,
     cdp_session_id: String,
 ) -> Result<OpenTargetRegistration, ErrorCode> {
-    if let Some(owner) = find_target_owner(state, &target_id) {
-        return if owner == session_name {
-            Ok(OpenTargetRegistration::AlreadyTracked)
-        } else {
-            Err(ErrorCode::TargetAlreadyAttached)
-        };
-    }
-
     let mut tab = SessionTab::new_owned(target_id.clone(), url, String::new());
     tab.cdp_session_id = cdp_session_id;
 
-    match register_session_tab(state, session_name, tab) {
-        Ok(()) => Ok(OpenTargetRegistration::Registered),
-        Err(ErrorCode::TargetAlreadyAttached) => {
-            if find_target_owner(state, &target_id).as_deref() == Some(session_name) {
-                Ok(OpenTargetRegistration::AlreadyTracked)
-            } else {
-                Err(ErrorCode::TargetAlreadyAttached)
-            }
-        }
-        Err(code) => Err(code),
+    match register_initialized_session_tab(state, session_name, tab)? {
+        SessionTabRegistration::Registered => Ok(OpenTargetRegistration::Registered),
+        SessionTabRegistration::AlreadyTracked => Ok(OpenTargetRegistration::AlreadyTracked),
     }
 }
 
@@ -211,6 +199,18 @@ pub async fn handle_open(req: &Request, state: &Arc<DaemonState>) -> Response {
         }
     };
 
+    if let Err(error) = enable_session_tab_domains(cdp.as_ref(), &session_id).await {
+        let _ = cdpkit::target::methods::DetachFromTarget::new()
+            .with_session_id(session_id)
+            .send(cdp.as_ref())
+            .await;
+        return Response::error_detail(
+            ErrorCode::DaemonError,
+            format!("failed to initialize new tab session: {error}"),
+            None,
+        );
+    }
+
     let registration = match register_opened_target_if_untracked(
         state,
         &params.session_name,
@@ -237,6 +237,15 @@ pub async fn handle_open(req: &Request, state: &Arc<DaemonState>) -> Response {
             .with_session_id(session_id)
             .send(cdp.as_ref())
             .await;
+    } else {
+        spawn_session_tab_subscriptions(
+            Arc::clone(state),
+            params.session_name.clone(),
+            target_id.clone(),
+            Arc::clone(&cdp),
+            session_id,
+        );
+        emit_session_tab_created(state, &params.session_name, &target_id, None);
     }
 
     Response::ok(json!({

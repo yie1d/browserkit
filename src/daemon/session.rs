@@ -28,21 +28,6 @@ pub enum TabOwnership {
     Attached,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TabClosePolicy {
-    CloseTarget,
-    DetachSession,
-}
-
-impl TabOwnership {
-    pub fn close_policy(self) -> TabClosePolicy {
-        match self {
-            Self::Owned => TabClosePolicy::CloseTarget,
-            Self::Attached => TabClosePolicy::DetachSession,
-        }
-    }
-}
-
 pub type ConsoleLog = Arc<parking_lot::Mutex<VecDeque<crate::page::ConsoleEntry>>>;
 
 /// A tab within a session.
@@ -234,15 +219,6 @@ mod tests {
                 .unwrap()
                 .ownership,
             TabOwnership::Attached
-        );
-    }
-
-    #[test]
-    fn session_tab_close_policy_follows_ownership() {
-        assert_eq!(TabOwnership::Owned.close_policy(), TabClosePolicy::CloseTarget);
-        assert_eq!(
-            TabOwnership::Attached.close_policy(),
-            TabClosePolicy::DetachSession
         );
     }
 

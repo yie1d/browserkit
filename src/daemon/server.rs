@@ -1,6 +1,6 @@
 // TCP server: accepts client connections, dispatches to handler
 
-use std::sync::Arc;
+use std::{collections::HashSet, sync::Arc};
 
 use tokio::io::{BufReader, BufWriter};
 use tokio::net::{TcpListener, TcpStream};
@@ -10,7 +10,12 @@ use tracing::{error, info};
 use crate::daemon::console::cancel_all_legacy_console_for_workspace;
 use crate::daemon::handler::{handle_request, HandlerContext};
 use crate::daemon::protocol::{read_request, write_response, Response};
+use crate::daemon::session::Session;
 use crate::daemon::state::DaemonState;
+use crate::daemon::target_close::{
+    close_session_target, session_tab_close_requests, SessionTargetCloseRequest,
+};
+use crate::daemon::target_lifecycle::remove_session_tab;
 use crate::error::ErrorCode;
 
 /// The running daemon server handle.
@@ -125,31 +130,13 @@ async fn cleanup_expired_sessions(state: &Arc<DaemonState>) {
                 browser_host: session.browser_host.clone(),
                 browser_context_id: session.browser_context_id.clone(),
                 mode: session.mode,
-                targets: session.tabs.keys().cloned().collect(),
+                targets: expired_session_close_requests(session),
                 cdp,
             }
         })
         .collect();
 
-    for expired_session in &expired {
-        if let Some(cdp) = &expired_session.cdp {
-            for target_id in &expired_session.targets {
-                let _ = cdpkit::target::methods::CloseTarget::new(target_id.clone())
-                    .send(cdp.as_ref())
-                    .await;
-            }
-
-            if expired_session.mode == crate::daemon::session::SessionMode::Isolated {
-                if let Some(ctx_id) = &expired_session.browser_context_id {
-                    let _ = cdpkit::target::methods::DisposeBrowserContext::new(ctx_id.clone())
-                        .send(cdp.as_ref())
-                        .await;
-                }
-            }
-        }
-    }
-
-    let mut changed = false;
+    let mut cleanup_completed = HashSet::new();
     for expired_session in &expired {
         let still_expired = state
             .sessions
@@ -165,13 +152,68 @@ async fn cleanup_expired_sessions(state: &Arc<DaemonState>) {
             continue;
         }
 
+        let mut success = true;
+        for target in &expired_session.targets {
+            match close_session_target(expired_session.cdp.as_deref(), target).await {
+                Ok(_) => {
+                    remove_session_tab(state, &target.target_id);
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        session = %expired_session.name,
+                        target = %target.target_id,
+                        error = %error,
+                        "session cleanup target action failed; keeping state"
+                    );
+                    success = false;
+                }
+            }
+        }
+
+        if success && expired_session.mode == crate::daemon::session::SessionMode::Isolated {
+            if let Some(ctx_id) = &expired_session.browser_context_id {
+                if let Some(cdp) = expired_session.cdp.as_deref() {
+                    if let Err(error) =
+                        cdpkit::target::methods::DisposeBrowserContext::new(ctx_id.clone())
+                            .send(cdp)
+                            .await
+                    {
+                        tracing::warn!(
+                            session = %expired_session.name,
+                            error = %error,
+                            "session cleanup BrowserContext dispose failed; keeping state"
+                        );
+                        success = false;
+                    }
+                } else {
+                    tracing::warn!(
+                        session = %expired_session.name,
+                        "session cleanup cannot dispose BrowserContext without browser connection"
+                    );
+                    success = false;
+                }
+            }
+        }
+
+        if success {
+            cleanup_completed.insert(expired_session.name.clone());
+        }
+    }
+
+    let mut changed = false;
+    for expired_session in &expired {
+        if !cleanup_completed.contains(&expired_session.name) {
+            continue;
+        }
+
         if expired_session.mode == crate::daemon::session::SessionMode::Default {
             if let Some(mut session) = state.sessions.get_mut(&expired_session.name) {
-                session.tabs.clear();
-                session.active_target = None;
                 session.touch();
             }
         } else {
+            state
+                .dialog_state
+                .cancel_all_for_session(&expired_session.name);
             state.sessions.remove(&expired_session.name);
         }
 
@@ -186,6 +228,10 @@ async fn cleanup_expired_sessions(state: &Arc<DaemonState>) {
     if changed {
         state.request_persist();
     }
+}
+
+fn expired_session_close_requests(session: &Session) -> Vec<SessionTargetCloseRequest> {
+    session_tab_close_requests(session.tabs.values())
 }
 
 /// Check all workspaces and remove those inactive for more than the configured timeout.
@@ -306,7 +352,7 @@ struct ExpiredSession {
     browser_host: String,
     browser_context_id: Option<String>,
     mode: crate::daemon::session::SessionMode,
-    targets: Vec<String>,
+    targets: Vec<SessionTargetCloseRequest>,
     cdp: Option<Arc<cdpkit::CDP>>,
 }
 
@@ -584,7 +630,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cleanup_removes_expired_isolated_sessions() {
+    async fn cleanup_keeps_expired_isolated_sessions_when_browser_missing() {
         let state = Arc::new(DaemonState::new());
         let now = now_ts();
         state.sessions.insert(
@@ -598,25 +644,66 @@ mod tests {
 
         cleanup_expired_sessions(&state).await;
 
-        assert!(!state.sessions.contains_key("agent-a"));
+        assert!(state.sessions.contains_key("agent-a"));
         assert!(state.sessions.contains_key("agent-b"));
     }
 
     #[tokio::test]
-    async fn cleanup_clears_expired_default_session_tabs_but_keeps_session() {
+    async fn cleanup_removes_only_successfully_closed_default_tabs() {
         let state = Arc::new(DaemonState::new());
         let now = now_ts();
-        state.sessions.insert(
-            "default".to_string(),
-            make_default_session("localhost:9222", now - 73 * 60 * 60),
+        let mut session = make_default_session("localhost:9222", now - 73 * 60 * 60);
+        session.tabs.insert(
+            "already-detached".to_string(),
+            crate::daemon::session::SessionTab::new_attached(
+                "already-detached".to_string(),
+                "https://attached.test".to_string(),
+                "Attached".to_string(),
+                String::new(),
+            ),
         );
+        state.sessions.insert("default".to_string(), session);
 
         cleanup_expired_sessions(&state).await;
 
         let session = state.sessions.get("default").unwrap();
-        assert_eq!(session.tab_count(), 0);
-        assert!(session.active_target.is_none());
-        assert!(session.last_active >= now);
+        assert!(session.tabs.contains_key("target-default"));
+        assert!(!session.tabs.contains_key("already-detached"));
+    }
+
+    #[test]
+    fn cleanup_expired_session_plan_preserves_mixed_tab_ownership() {
+        let mut session = crate::daemon::session::Session::new_default("localhost:9222".into());
+        let mut owned = crate::daemon::session::SessionTab::new_owned(
+            "OWNED".into(),
+            "https://owned.test".into(),
+            "Owned".into(),
+        );
+        owned.cdp_session_id = "CDP-OWNED".into();
+        session.tabs.insert(owned.target_id.clone(), owned);
+        session.tabs.insert(
+            "ATTACHED".into(),
+            crate::daemon::session::SessionTab::new_attached(
+                "ATTACHED".into(),
+                "https://attached.test".into(),
+                "Attached".into(),
+                "CDP-ATTACHED".into(),
+            ),
+        );
+
+        let mut actions: Vec<_> = expired_session_close_requests(&session)
+            .iter()
+            .map(crate::daemon::target_close::session_target_close_action)
+            .collect();
+        actions.sort_by(|left, right| format!("{left:?}").cmp(&format!("{right:?}")));
+
+        assert_eq!(actions.len(), 2);
+        assert!(actions.contains(&crate::daemon::target_close::SessionTargetCloseAction::CloseTarget {
+            target_id: "OWNED".into(),
+        }));
+        assert!(actions.contains(&crate::daemon::target_close::SessionTargetCloseAction::DetachFromTarget {
+            cdp_session_id: "CDP-ATTACHED".into(),
+        }));
     }
 
     #[tokio::test]

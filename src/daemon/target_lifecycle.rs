@@ -32,6 +32,12 @@ pub enum TargetLifecycleEvent {
     },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionTabRegistration {
+    Registered,
+    AlreadyTracked,
+}
+
 pub fn subscribe_target_events(state: &DaemonState) -> broadcast::Receiver<TargetLifecycleEvent> {
     state.target_events.subscribe()
 }
@@ -89,10 +95,25 @@ pub fn register_session_tab(
     session_name: &str,
     tab: SessionTab,
 ) -> Result<(), ErrorCode> {
+    match register_initialized_session_tab(state, session_name, tab)? {
+        SessionTabRegistration::Registered => Ok(()),
+        SessionTabRegistration::AlreadyTracked => Err(ErrorCode::TargetAlreadyAttached),
+    }
+}
+
+pub fn register_initialized_session_tab(
+    state: &DaemonState,
+    session_name: &str,
+    tab: SessionTab,
+) -> Result<SessionTabRegistration, ErrorCode> {
     let _registration_guard = state.target_registration_lock.lock();
 
-    if find_target_owner(state, &tab.target_id).is_some() {
-        return Err(ErrorCode::TargetAlreadyAttached);
+    if let Some(owner) = find_target_owner(state, &tab.target_id) {
+        return if owner == session_name {
+            Ok(SessionTabRegistration::AlreadyTracked)
+        } else {
+            Err(ErrorCode::TargetAlreadyAttached)
+        };
     }
 
     let mut session = state
@@ -101,12 +122,62 @@ pub fn register_session_tab(
         .ok_or(ErrorCode::SessionNotFound)?;
     let target_id = tab.target_id.clone();
     session.tabs.insert(target_id.clone(), tab);
-    session.active_target = Some(target_id);
+    session.active_target = Some(target_id.clone());
     session.touch();
     drop(session);
 
     state.request_persist();
+    Ok(SessionTabRegistration::Registered)
+}
+
+pub fn emit_session_tab_created(
+    state: &DaemonState,
+    session_name: &str,
+    target_id: &str,
+    opener_id: Option<String>,
+) {
+    let _ = state.target_events.send(TargetLifecycleEvent::Created {
+        session: session_name.to_string(),
+        target_id: target_id.to_string(),
+        opener_id,
+    });
+}
+
+pub async fn enable_session_tab_domains(
+    cdp: &cdpkit::CDP,
+    cdp_session_id: &str,
+) -> Result<(), cdpkit::CdpError> {
+    let cdp_session = cdp.session(cdp_session_id);
+    cdpkit::page::methods::Enable::new()
+        .send(&cdp_session)
+        .await?;
+    cdpkit::page::methods::SetLifecycleEventsEnabled::new(true)
+        .send(&cdp_session)
+        .await?;
+    cdpkit::runtime::methods::Enable::new()
+        .send(&cdp_session)
+        .await?;
+    cdpkit::network::methods::Enable::new()
+        .send(&cdp_session)
+        .await?;
     Ok(())
+}
+
+pub fn spawn_session_tab_subscriptions(
+    state: Arc<DaemonState>,
+    session_name: String,
+    target_id: String,
+    cdp: Arc<cdpkit::CDP>,
+    cdp_session_id: String,
+) {
+    spawn_dialog_subscription(
+        Arc::clone(&state),
+        session_name.clone(),
+        target_id.clone(),
+        Arc::clone(&cdp),
+        cdp_session_id.clone(),
+    );
+    spawn_console_subscription(state, session_name, target_id, cdp, cdp_session_id);
 }
 
 pub fn remove_session_tab(
@@ -335,19 +406,19 @@ async fn handle_target_created_event(
         }
     };
 
-    let owned_session = cdp.owned_session(&cdp_session_id);
-    let _ = cdpkit::page::methods::Enable::new()
-        .send(&owned_session)
-        .await;
-    let _ = cdpkit::page::methods::SetLifecycleEventsEnabled::new(true)
-        .send(&owned_session)
-        .await;
-    let _ = cdpkit::runtime::methods::Enable::new()
-        .send(&owned_session)
-        .await;
-    let _ = cdpkit::network::methods::Enable::new()
-        .send(&owned_session)
-        .await;
+    if let Err(error) = enable_session_tab_domains(cdp.as_ref(), &cdp_session_id).await {
+        let _ = cdpkit::target::methods::DetachFromTarget::new()
+            .with_session_id(cdp_session_id)
+            .send(cdp.as_ref())
+            .await;
+        debug!(
+            host = %host,
+            target_id = %target_info.target_id,
+            error = %error,
+            "target watcher: failed to enable target session domains"
+        );
+        return;
+    }
 
     let mut tab = SessionTab::new_owned(
         target_info.target_id.clone(),
@@ -356,40 +427,48 @@ async fn handle_target_created_event(
     );
     tab.cdp_session_id = cdp_session_id.clone();
 
-    if let Err(error) = register_session_tab(state, &session_name, tab) {
-        let _ = cdpkit::target::methods::DetachFromTarget::new()
-            .with_session_id(cdp_session_id)
-            .send(cdp.as_ref())
-            .await;
-        debug!(
-            host = %host,
-            target_id = %target_info.target_id,
-            error = ?error,
-            "target watcher: target registration skipped"
-        );
-        return;
+    match register_initialized_session_tab(state, &session_name, tab) {
+        Ok(SessionTabRegistration::Registered) => {
+            spawn_session_tab_subscriptions(
+                Arc::clone(state),
+                session_name.clone(),
+                target_info.target_id.clone(),
+                Arc::clone(cdp),
+                cdp_session_id,
+            );
+            emit_session_tab_created(
+                state,
+                &session_name,
+                &target_info.target_id,
+                target_info.opener_id.clone(),
+            );
+        }
+        Ok(SessionTabRegistration::AlreadyTracked) => {
+            let _ = cdpkit::target::methods::DetachFromTarget::new()
+                .with_session_id(cdp_session_id)
+                .send(cdp.as_ref())
+                .await;
+            debug!(
+                host = %host,
+                target_id = %target_info.target_id,
+                "target watcher: target already tracked by session"
+            );
+            return;
+        }
+        Err(error) => {
+            let _ = cdpkit::target::methods::DetachFromTarget::new()
+                .with_session_id(cdp_session_id)
+                .send(cdp.as_ref())
+                .await;
+            debug!(
+                host = %host,
+                target_id = %target_info.target_id,
+                error = ?error,
+                "target watcher: target registration skipped"
+            );
+            return;
+        }
     }
-
-    spawn_dialog_subscription(
-        Arc::clone(state),
-        session_name.clone(),
-        target_info.target_id.clone(),
-        Arc::clone(cdp),
-        cdp_session_id.clone(),
-    );
-    spawn_console_subscription(
-        Arc::clone(state),
-        session_name.clone(),
-        target_info.target_id.clone(),
-        Arc::clone(cdp),
-        cdp_session_id,
-    );
-
-    let _ = state.target_events.send(TargetLifecycleEvent::Created {
-        session: session_name.clone(),
-        target_id: target_info.target_id.clone(),
-        opener_id: target_info.opener_id.clone(),
-    });
     info!(
         host = %host,
         session = %session_name,
@@ -405,9 +484,10 @@ mod tests {
     use crate::error::ErrorCode;
 
     use super::{
-        ensure_target_watcher_token, find_target_owner, register_session_tab, remove_session_tab,
+        emit_session_tab_created, ensure_target_watcher_token, find_target_owner,
+        register_initialized_session_tab, register_session_tab, remove_session_tab,
         session_for_created_target, subscribe_target_events, update_session_tab_info,
-        TargetLifecycleEvent,
+        SessionTabRegistration, TargetLifecycleEvent,
     };
     use std::sync::{Arc, Barrier};
     use std::thread;
@@ -663,5 +743,78 @@ mod tests {
                 title: "New".into(),
             }
         );
+    }
+
+    #[test]
+    fn open_wins_registration_emits_created_once_and_tracks_owned_tab() {
+        let state = DaemonState::new();
+        state
+            .sessions
+            .insert("default".into(), Session::new_default("localhost:9222".into()));
+        let mut events = subscribe_target_events(&state);
+        let mut tab = SessionTab::new_owned("T-OPEN".into(), "https://open.test".into(), String::new());
+        tab.cdp_session_id = "CDP-OPEN".into();
+
+        let outcome = register_initialized_session_tab(&state, "default", tab).unwrap();
+
+        assert_eq!(outcome, SessionTabRegistration::Registered);
+        let session = state.sessions.get("default").unwrap();
+        let stored = session.tabs.get("T-OPEN").unwrap();
+        assert_eq!(stored.cdp_session_id, "CDP-OPEN");
+        assert_eq!(stored.ownership, crate::daemon::session::TabOwnership::Owned);
+        drop(session);
+        emit_session_tab_created(&state, "default", "T-OPEN", None);
+        assert_eq!(
+            events.try_recv().unwrap(),
+            TargetLifecycleEvent::Created {
+                session: "default".into(),
+                target_id: "T-OPEN".into(),
+                opener_id: None,
+            }
+        );
+        assert!(matches!(
+            events.try_recv(),
+            Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+        ));
+    }
+
+    #[test]
+    fn watcher_wins_registration_is_idempotent_without_ownership_overwrite() {
+        let state = DaemonState::new();
+        state
+            .sessions
+            .insert("default".into(), Session::new_default("localhost:9222".into()));
+        let mut events = subscribe_target_events(&state);
+        let mut watcher_tab = SessionTab::new_owned(
+            "T-RACE".into(),
+            "https://race.test".into(),
+            "Race".into(),
+        );
+        watcher_tab.cdp_session_id = "CDP-WATCHER".into();
+        let mut open_tab =
+            SessionTab::new_owned("T-RACE".into(), "https://race.test".into(), String::new());
+        open_tab.cdp_session_id = "CDP-OPEN".into();
+
+        assert_eq!(
+            register_initialized_session_tab(&state, "default", watcher_tab).unwrap(),
+            SessionTabRegistration::Registered
+        );
+        emit_session_tab_created(&state, "default", "T-RACE", Some("OPENER".into()));
+        let _ = events.try_recv().unwrap();
+
+        assert_eq!(
+            register_initialized_session_tab(&state, "default", open_tab).unwrap(),
+            SessionTabRegistration::AlreadyTracked
+        );
+
+        let session = state.sessions.get("default").unwrap();
+        let stored = session.tabs.get("T-RACE").unwrap();
+        assert_eq!(stored.cdp_session_id, "CDP-WATCHER");
+        assert_eq!(stored.ownership, crate::daemon::session::TabOwnership::Owned);
+        drop(session);
+        assert!(matches!(
+            events.try_recv(),
+            Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+        ));
     }
 }

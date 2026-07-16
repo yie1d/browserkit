@@ -9,6 +9,7 @@ use crate::browser::normalize_browser_key;
 use crate::daemon::console::cancel_all_legacy_console_for_workspace;
 use crate::daemon::protocol::{Request, Response};
 use crate::daemon::state::DaemonState;
+use crate::daemon::target_lifecycle::ensure_target_watcher;
 use crate::error::BkError;
 
 use super::common::handler;
@@ -31,6 +32,7 @@ async fn do_browser_connect(
 
     if let Some(b) = state.browsers.get(&key) {
         info!(key = %key, "browser already connected");
+        ensure_target_watcher(state, &key, Arc::clone(&b.cdp));
         return Ok(Response::ok(json!({ "host": b.host, "managed": b.managed })));
     }
 
@@ -38,9 +40,10 @@ async fn do_browser_connect(
     // but only when it differs from the normalized key.
     let connect_target = if arg != key { Some(arg.as_str()) } else { None };
 
-    state
+    let cdp = state
         .get_or_connect_browser_with_url(&key, connect_target, false, None)
         .await?;
+    ensure_target_watcher(state, &key, Arc::clone(&cdp));
     state.request_persist();
     info!(key = %key, "connected to unmanaged browser");
 

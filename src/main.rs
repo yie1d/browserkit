@@ -26,6 +26,7 @@ Primary:
   act         Execute interaction (click/type/fill/press/scroll/hover/focus/select/options/upload/drag)
   navigate    Navigate to URL or back/forward/reload
   open        Open URL in new tab
+  attach      Attach existing browser tab to session
   close       Close tab
   tabs        List tabs in session
   wait        Wait for page condition
@@ -2070,6 +2071,14 @@ mod tests {
         ] {
             assert!(!HELP_TEXT.contains(removed), "{removed}");
         }
+    }
+
+    #[test]
+    fn top_level_help_primary_includes_attach() {
+        assert!(
+            HELP_TEXT.contains("  attach"),
+            "custom primary help should list attach"
+        );
     }
 
     // ── Removed flags ────────────────────────────────────────────

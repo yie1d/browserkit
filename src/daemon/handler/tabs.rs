@@ -8,23 +8,10 @@ use std::sync::Arc;
 use serde_json::json;
 
 use crate::daemon::protocol::{Request, Response};
-use crate::daemon::session::{SessionTab, TabClosePolicy};
 use crate::daemon::state::DaemonState;
+use crate::daemon::target_close::{close_session_target, SessionTargetCloseRequest};
 use crate::daemon::target_lifecycle::remove_session_tab;
 use crate::error::ErrorCode;
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum CloseAction {
-    CloseTarget(String),
-    DetachSession(String),
-}
-
-fn close_action(tab: &SessionTab) -> CloseAction {
-    match tab.ownership.close_policy() {
-        TabClosePolicy::CloseTarget => CloseAction::CloseTarget(tab.target_id.clone()),
-        TabClosePolicy::DetachSession => CloseAction::DetachSession(tab.cdp_session_id.clone()),
-    }
-}
 
 /// Build a `tabs` response for the given session.
 ///
@@ -147,50 +134,14 @@ pub async fn handle_close(req: &Request, state: &Arc<DaemonState>) -> Response {
             )
         }
     };
-    let action = close_action(&tab);
+    let close_request = SessionTargetCloseRequest::from_tab(&tab);
 
     let browser_host = session.browser_host.clone();
     drop(session); // Release DashMap ref before async operations
 
-    // Close via CDP Target.closeTarget
-    let cdp = match state.browsers.get(&browser_host) {
-        Some(b) => Arc::clone(&b.cdp),
-        None => {
-            return Response::error_detail(
-                ErrorCode::ChromeDisconnected,
-                "browser disconnected".into(),
-                None,
-            )
-        }
-    };
-
-    match action {
-        CloseAction::CloseTarget(target_id) => {
-            if let Err(error) = cdpkit::target::methods::CloseTarget::new(target_id.clone())
-                .send(cdp.as_ref())
-                .await
-            {
-                return Response::error_detail(
-                    ErrorCode::DaemonError,
-                    format!("failed to close target '{}': {error}", target_id),
-                    None,
-                );
-            }
-        }
-        CloseAction::DetachSession(session_id) if !session_id.is_empty() => {
-            if let Err(error) = cdpkit::target::methods::DetachFromTarget::new()
-                .with_session_id(session_id.clone())
-                .send(cdp.as_ref())
-                .await
-            {
-                return Response::error_detail(
-                    ErrorCode::DaemonError,
-                    format!("failed to detach target session '{}': {error}", session_id),
-                    None,
-                );
-            }
-        }
-        CloseAction::DetachSession(_) => {}
+    let cdp = state.browsers.get(&browser_host).map(|b| Arc::clone(&b.cdp));
+    if let Err(error) = close_session_target(cdp.as_deref(), &close_request).await {
+        return Response::error_detail(ErrorCode::DaemonError, error.to_string(), None);
     }
 
     // Update session state
@@ -206,22 +157,6 @@ pub async fn handle_close(req: &Request, state: &Arc<DaemonState>) -> Response {
 mod tests {
     use super::*;
     use crate::daemon::session::Session;
-
-    #[test]
-    fn close_action_uses_tab_ownership() {
-        let owned = SessionTab::new_owned("T1".into(), "about:blank".into(), String::new());
-        let attached = SessionTab::new_attached(
-            "T2".into(),
-            "https://a.test".into(),
-            "A".into(),
-            "S2".into(),
-        );
-        assert_eq!(close_action(&owned), CloseAction::CloseTarget("T1".into()));
-        assert_eq!(
-            close_action(&attached),
-            CloseAction::DetachSession("S2".into())
-        );
-    }
 
     #[test]
     fn tabs_response_format() {

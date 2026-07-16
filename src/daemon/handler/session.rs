@@ -12,8 +12,12 @@ use serde_json::json;
 use tracing;
 
 use crate::daemon::protocol::{Request, Response};
-use crate::daemon::session::SessionMode;
+use crate::daemon::session::{Session, SessionMode};
 use crate::daemon::state::DaemonState;
+use crate::daemon::target_close::{
+    close_session_target, session_tab_close_requests, SessionTargetCloseRequest,
+};
+use crate::daemon::target_lifecycle::remove_session_tab;
 use crate::error::ErrorCode;
 
 /// Build a session list response containing all active sessions.
@@ -51,10 +55,42 @@ fn remove_session(state: &Arc<DaemonState>, name: &str) {
 }
 
 /// Clear all tabs from the default session without removing it.
+#[cfg(test)]
 fn clear_default_session_tabs(state: &Arc<DaemonState>) {
     if let Some(mut session) = state.sessions.get_mut("default") {
         session.tabs.clear();
         session.active_target = None;
+    }
+}
+
+fn session_close_requests(session: &Session) -> Vec<SessionTargetCloseRequest> {
+    session_tab_close_requests(session.tabs.values())
+}
+
+struct SessionClosePlan {
+    browser_host: String,
+    browser_context_id: Option<String>,
+    mode: SessionMode,
+    targets: Vec<SessionTargetCloseRequest>,
+}
+
+fn build_session_close_plan(
+    state: &Arc<DaemonState>,
+    session_name: &str,
+) -> Result<Option<SessionClosePlan>, Response> {
+    match state.sessions.get(session_name) {
+        Some(session) => Ok(Some(SessionClosePlan {
+            browser_host: session.browser_host.clone(),
+            browser_context_id: session.browser_context_id.clone(),
+            mode: session.mode,
+            targets: session_close_requests(&session),
+        })),
+        None if session_name == "default" => Ok(None),
+        None => Err(Response::error_detail(
+            ErrorCode::SessionNotFound,
+            format!("session '{}' not found", session_name),
+            None,
+        )),
     }
 }
 
@@ -94,71 +130,64 @@ pub async fn handle_session_close(req: &Request, state: &Arc<DaemonState>) -> Re
         .and_then(|v| v.as_str())
         .unwrap_or("default");
 
-    let tabs_closed;
+    let Some(plan) = (match build_session_close_plan(state, session_name) {
+        Ok(plan) => plan,
+        Err(response) => return response,
+    }) else {
+        return Response::ok(json!({
+            "closed": "default",
+            "tabs_closed": 0,
+        }));
+    };
 
-    if session_name == "default" {
-        // Close all tabs in default session, but keep session alive
-        let (targets, browser_host) = match state.sessions.get("default") {
-            Some(session) => {
-                let targets: Vec<String> = session.tabs.keys().cloned().collect();
-                let host = session.browser_host.clone();
-                (targets, host)
+    let tabs_closed = plan.targets.len();
+    let cdp = state.browsers.get(&plan.browser_host).map(|b| Arc::clone(&b.cdp));
+
+    let mut first_close_error = None;
+    for target in &plan.targets {
+        match close_session_target(cdp.as_deref(), target).await {
+            Ok(_) => {
+                remove_session_tab(state, &target.target_id);
             }
-            None => {
-                return Response::ok(json!({
-                    "closed": "default",
-                    "tabs_closed": 0,
-                }));
-            }
-        };
-
-        tabs_closed = targets.len();
-
-        // Close tabs via CDP
-        if let Some(browser) = state.browsers.get(&browser_host) {
-            for tid in &targets {
-                let _ = cdpkit::target::methods::CloseTarget::new(tid.clone())
-                    .send(browser.cdp.as_ref())
-                    .await;
+            Err(error) => {
+                if first_close_error.is_none() {
+                    first_close_error = Some(error.to_string());
+                }
             }
         }
+    }
 
-        clear_default_session_tabs(state);
-    } else {
-        // Close isolated session: close tabs + dispose BrowserContext
-        let (targets, browser_host, ctx_id) = match state.sessions.get(session_name) {
-            Some(session) => {
-                let targets: Vec<String> = session.tabs.keys().cloned().collect();
-                let host = session.browser_host.clone();
-                let ctx = session.browser_context_id.clone();
-                (targets, host, ctx)
-            }
-            None => {
+    if let Some(error) = first_close_error {
+        return Response::error_detail(ErrorCode::DaemonError, error, None);
+    }
+
+    if plan.mode == SessionMode::Isolated {
+        if let Some(ctx) = plan.browser_context_id {
+            let Some(cdp) = cdp.as_deref() else {
                 return Response::error_detail(
-                    ErrorCode::SessionNotFound,
-                    format!("session '{}' not found", session_name),
+                    ErrorCode::ChromeDisconnected,
+                    format!(
+                        "browser for session '{}' disconnected before disposing BrowserContext",
+                        session_name
+                    ),
+                    None,
+                );
+            };
+            if let Err(error) = cdpkit::target::methods::DisposeBrowserContext::new(ctx)
+                .send(cdp)
+                .await
+            {
+                return Response::error_detail(
+                    ErrorCode::DaemonError,
+                    format!(
+                        "failed to dispose BrowserContext for session '{session_name}': {error}"
+                    ),
                     None,
                 );
             }
-        };
-
-        tabs_closed = targets.len();
-
-        if let Some(browser) = state.browsers.get(&browser_host) {
-            // Close all tabs
-            for tid in &targets {
-                let _ = cdpkit::target::methods::CloseTarget::new(tid.clone())
-                    .send(browser.cdp.as_ref())
-                    .await;
-            }
-            // Dispose BrowserContext
-            if let Some(ctx) = ctx_id {
-                let _ = cdpkit::target::methods::DisposeBrowserContext::new(ctx)
-                    .send(browser.cdp.as_ref())
-                    .await;
-            }
         }
 
+        state.dialog_state.cancel_all_for_session(session_name);
         remove_session(state, session_name);
     }
 
@@ -442,7 +471,8 @@ pub async fn handle_session_cookies_clear(req: &Request, state: &Arc<DaemonState
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::daemon::session::Session;
+    use crate::daemon::session::{Session, SessionTab};
+    use crate::daemon::target_close::{session_target_close_action, SessionTargetCloseAction};
 
     #[test]
     fn session_list_response_format() {
@@ -513,6 +543,48 @@ mod tests {
     }
 
     #[test]
+    fn session_close_plan_preserves_mixed_tab_ownership() {
+        let mut session = Session::new_default("localhost:9222".into());
+        let mut owned =
+            SessionTab::new_owned("OWNED".into(), "https://owned.test".into(), "O".into());
+        owned.cdp_session_id = "CDP-OWNED".into();
+        session.tabs.insert(owned.target_id.clone(), owned);
+        session.tabs.insert(
+            "ATTACHED".into(),
+            SessionTab::new_attached(
+                "ATTACHED".into(),
+                "https://attached.test".into(),
+                "A".into(),
+                "CDP-ATTACHED".into(),
+            ),
+        );
+        session.tabs.insert(
+            "DETACHED".into(),
+            SessionTab::new_attached(
+                "DETACHED".into(),
+                "https://detached.test".into(),
+                "D".into(),
+                String::new(),
+            ),
+        );
+
+        let mut actions: Vec<_> = session_close_requests(&session)
+            .iter()
+            .map(session_target_close_action)
+            .collect();
+        actions.sort_by(|left, right| format!("{left:?}").cmp(&format!("{right:?}")));
+
+        assert!(actions.contains(&SessionTargetCloseAction::CloseTarget {
+            target_id: "OWNED".into(),
+        }));
+        assert!(actions.contains(&SessionTargetCloseAction::DetachFromTarget {
+            cdp_session_id: "CDP-ATTACHED".into(),
+        }));
+        assert!(actions.contains(&SessionTargetCloseAction::AlreadyDetached));
+        assert_eq!(actions.len(), 3);
+    }
+
+    #[test]
     fn session_limit_check_at_limit() {
         let state = Arc::new(DaemonState::new());
         for i in 0..10 {
@@ -525,7 +597,7 @@ mod tests {
         }
         let result = check_session_limit(&state, 10);
         assert!(result.is_err());
-        let json = serde_json::to_value(&result.unwrap_err()).unwrap();
+        let json = serde_json::to_value(result.unwrap_err()).unwrap();
         assert_eq!(json["error"]["code"], "SESSION_LIMIT_EXCEEDED");
     }
 
@@ -622,6 +694,42 @@ mod tests {
         assert_eq!(json["ok"], true);
         assert_eq!(json["data"]["closed"], "default");
         assert_eq!(json["data"]["tabs_closed"], 0);
+    }
+
+    #[tokio::test]
+    async fn handle_session_close_removes_only_successful_mixed_tab_actions() {
+        let state = Arc::new(DaemonState::new());
+        let mut session = Session::new_default("localhost:9222".into());
+        let mut owned = SessionTab::new_owned(
+            "OWNED".into(),
+            "https://owned.test".into(),
+            "Owned".into(),
+        );
+        owned.cdp_session_id = "CDP-OWNED".into();
+        session.tabs.insert(owned.target_id.clone(), owned);
+        session.tabs.insert(
+            "DETACHED".into(),
+            SessionTab::new_attached(
+                "DETACHED".into(),
+                "https://detached.test".into(),
+                "Detached".into(),
+                String::new(),
+            ),
+        );
+        state.sessions.insert("default".into(), session);
+
+        let req = Request {
+            cmd: "session.close".into(),
+            params: json!({}),
+            token: None,
+        };
+        let resp = handle_session_close(&req, &state).await;
+
+        let json = serde_json::to_value(&resp).unwrap();
+        assert_eq!(json["ok"], false);
+        let session = state.sessions.get("default").unwrap();
+        assert!(session.tabs.contains_key("OWNED"));
+        assert!(!session.tabs.contains_key("DETACHED"));
     }
 
     #[tokio::test]
