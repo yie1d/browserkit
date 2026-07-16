@@ -1,5 +1,7 @@
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
+use std::fs::OpenOptions;
+use std::io::Write;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -195,8 +197,7 @@ pub fn load_state_from_path(path: &Path) -> Result<LoadStateResult, MigrationErr
 
     match version {
         2 => {
-            let backup_path = path.with_file_name("state.v2.backup.json");
-            std::fs::write(&backup_path, &content).map_err(MigrationError::Backup)?;
+            let backup_path = create_v2_backup(path, &content).map_err(MigrationError::Backup)?;
 
             let (mut state, mut report) = migrate_v2_json(&content)?;
             report.backup_path = Some(backup_path.to_string_lossy().to_string());
@@ -221,6 +222,37 @@ pub fn load_state_from_path(path: &Path) -> Result<LoadStateResult, MigrationErr
         other => Err(MigrationError::InvalidState(format!(
             "unsupported state version {other}"
         ))),
+    }
+}
+
+fn create_v2_backup(path: &Path, content: &str) -> Result<PathBuf, std::io::Error> {
+    let mut suffix = 0u64;
+    loop {
+        let file_name = if suffix == 0 {
+            "state.v2.backup.json".to_string()
+        } else {
+            format!("state.v2.backup.{suffix}.json")
+        };
+        let candidate = path.with_file_name(file_name);
+
+        match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&candidate)
+        {
+            Ok(mut file) => {
+                if let Err(error) = file.write_all(content.as_bytes()) {
+                    drop(file);
+                    let _ = std::fs::remove_file(&candidate);
+                    return Err(error);
+                }
+                return Ok(candidate);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                suffix += 1;
+            }
+            Err(error) => return Err(error),
+        }
     }
 }
 
@@ -434,6 +466,96 @@ mod tests {
         assert!(dir.path().join("state.v2.backup.json").exists());
         assert!(!loaded.persist_disabled);
         assert!(loaded.migration_report.is_some());
+    }
+
+    #[test]
+    fn v3_direct_load_preserves_file_and_migration_metadata_without_backup() {
+        let dir = tempfile::tempdir().unwrap();
+        let state_path = dir.path().join("state.json");
+        let report = MigrationReport {
+            source_version: 2,
+            backup_path: Some("prior-state.v2.backup.json".into()),
+            existing_sessions_preserved: 1,
+            isolated_workspaces_migrated: 2,
+            attached_tabs_merged: 3,
+            duplicate_targets_dropped: 4,
+            conflicting_hosts_dropped: 5,
+            warnings: vec!["stable migration warning".into()],
+        };
+        let state = PersistedStateV3 {
+            version: PersistedStateV3::CURRENT_VERSION,
+            browsers: Vec::new(),
+            sessions: Vec::new(),
+            migration: Some(report.clone()),
+        };
+        let original = serde_json::to_string_pretty(&state).unwrap();
+        std::fs::write(&state_path, &original).unwrap();
+
+        let loaded = load_state_from_path(&state_path).unwrap();
+
+        assert!(!loaded.persist_disabled);
+        assert_eq!(loaded.state, state);
+        assert_eq!(loaded.migration_report, Some(report));
+        assert_eq!(std::fs::read_to_string(&state_path).unwrap(), original);
+        assert!(!dir.path().join("state.v2.backup.json").exists());
+    }
+
+    #[test]
+    fn v2_load_preserves_existing_backup_and_reports_numbered_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let state_path = dir.path().join("state.json");
+        let existing_backup_path = dir.path().join("state.v2.backup.json");
+        let existing_numbered_path = dir.path().join("state.v2.backup.1.json");
+        let numbered_backup_path = dir.path().join("state.v2.backup.2.json");
+        let v2 = include_str!("fixtures/state-v2-mixed.json");
+        std::fs::write(&state_path, v2).unwrap();
+        std::fs::write(
+            &existing_backup_path,
+            "existing backup must remain unchanged",
+        )
+        .unwrap();
+        std::fs::write(
+            &existing_numbered_path,
+            "existing numbered backup must remain unchanged",
+        )
+        .unwrap();
+
+        let loaded = load_state_from_path(&state_path).unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(existing_backup_path).unwrap(),
+            "existing backup must remain unchanged"
+        );
+        assert_eq!(
+            std::fs::read_to_string(existing_numbered_path).unwrap(),
+            "existing numbered backup must remain unchanged"
+        );
+        assert_eq!(std::fs::read_to_string(&numbered_backup_path).unwrap(), v2);
+        assert_eq!(
+            loaded
+                .migration_report
+                .expect("v2 load should report migration")
+                .backup_path,
+            Some(numbered_backup_path.to_string_lossy().into_owned())
+        );
+    }
+
+    #[test]
+    fn v2_write_failure_preserves_original_and_created_backup() {
+        let dir = tempfile::tempdir().unwrap();
+        let state_path = dir.path().join("state.json");
+        let backup_path = dir.path().join("state.v2.backup.json");
+        let tmp_path = dir.path().join("state.tmp");
+        let v2 = include_str!("fixtures/state-v2-mixed.json");
+        std::fs::write(&state_path, v2).unwrap();
+        std::fs::create_dir(&tmp_path).unwrap();
+
+        let error = load_state_from_path(&state_path).unwrap_err();
+
+        assert!(matches!(error, MigrationError::Write(_)));
+        assert_eq!(std::fs::read_to_string(&state_path).unwrap(), v2);
+        assert_eq!(std::fs::read_to_string(&backup_path).unwrap(), v2);
+        assert!(tmp_path.is_dir());
     }
 
     #[test]
