@@ -9,6 +9,7 @@ mod daemon;
 mod debug;
 mod dialog;
 mod evaluate;
+mod inspect;
 mod nav;
 mod navigate;
 mod network;
@@ -56,6 +57,7 @@ pub async fn handle_request(
         "evaluate" | "v2.evaluate" => evaluate::handle_evaluate(req, state).await,
         "screenshot" | "v2.screenshot" => screenshot::handle_screenshot(req, state).await,
         "wait" | "v2.wait" => wait::handle_wait(req, state).await,
+        "find" | "search" | "html" | "console" | "pdf" => inspect::handle_inspect(req, state).await,
         "daemon.status" => daemon::handle_daemon_status(state, ctx).await,
         "daemon.stop" => daemon::handle_daemon_stop(state, ctx).await,
         "browser.connect" => browser::handle_browser_connect(req, state).await,

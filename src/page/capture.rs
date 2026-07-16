@@ -1,5 +1,6 @@
 // Capture: screenshot, PDF, HTML
 
+use std::path::Path;
 use std::sync::Arc;
 
 use cdpkit::CDP;
@@ -168,6 +169,40 @@ pub async fn capture_pdf(cdp: &Arc<CDP>, session_id: &str) -> Result<String, BkE
         .await?;
 
     Ok(resp.data)
+}
+
+/// Validate that a PDF output path is safe for daemon-side writes.
+///
+/// The PDF command only accepts relative paths without parent traversal.
+pub fn validate_pdf_output_path(path: &str) -> Result<(), BkError> {
+    let p = Path::new(path);
+    for component in p.components() {
+        if component == std::path::Component::ParentDir {
+            return Err(BkError::InvalidRequest(format!(
+                "output path '{}' contains '..' (path traversal not allowed)",
+                path
+            )));
+        }
+    }
+    if p.is_absolute() {
+        return Err(BkError::InvalidRequest(format!(
+            "output path '{}' must be a relative path",
+            path
+        )));
+    }
+    Ok(())
+}
+
+/// Decode base64 PDF data and write it to a validated output path.
+pub async fn save_pdf_output(data: &str, path: &str) -> Result<usize, BkError> {
+    validate_pdf_output_path(path)?;
+    use base64::Engine;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(data)
+        .map_err(|e| BkError::Other(format!("base64 decode error: {}", e)))?;
+    let size = bytes.len();
+    tokio::fs::write(path, &bytes).await?;
+    Ok(size)
 }
 
 /// Generate a PDF with landscape/background options.
@@ -582,5 +617,33 @@ mod tests {
         let inject_class = "_bk_label";
         assert!(INJECT_LABELS_VIEWPORT_JS.contains(&format!("className = '{}'", inject_class)));
         assert!(REMOVE_LABELS_JS.contains(&format!("querySelectorAll('.{}')", inject_class)));
+    }
+
+    #[test]
+    fn pdf_output_path_rejects_parent_traversal() {
+        let err = super::validate_pdf_output_path("../page.pdf").unwrap_err();
+        assert!(
+            err.to_string().contains("path traversal"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn pdf_output_path_rejects_absolute_path() {
+        let path = if cfg!(windows) {
+            "C:\\temp\\page.pdf"
+        } else {
+            "/tmp/page.pdf"
+        };
+        let err = super::validate_pdf_output_path(path).unwrap_err();
+        assert!(
+            err.to_string().contains("must be a relative path"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn pdf_output_path_allows_relative_file() {
+        super::validate_pdf_output_path("out/page.pdf").unwrap();
     }
 }

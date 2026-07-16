@@ -32,12 +32,16 @@ Primary:
   wait        Wait for page condition
   evaluate    Execute JavaScript
   screenshot  Take a screenshot
+  find        Find elements by CSS selector
+  search      Search text in page
+  html        Get page HTML
+  console     Show console log buffer
+  pdf         Generate PDF of current target
   session     Session management (close/list/cookies)
   status      Connection status
 
 Legacy (v1, will be removed in Phase 3):
-  find/search/html/url/title/console
-  pdf/open/fetch/ws/tab/browser/daemon/storage/dialog/debug
+  url/title/fetch/ws/tab/browser/daemon/storage/dialog/debug
 
 Removed aliases:
   goto -> use navigate    info -> use snapshot
@@ -278,7 +282,6 @@ pub enum Command {
     // ══════════════════════════════════════════════════════════════
 
     /// Find elements by CSS selector
-    #[command(hide = true)]
     Find {
         selector: String,
         #[arg(long)]
@@ -289,7 +292,6 @@ pub enum Command {
         include_text: bool,
     },
     /// Search text in page
-    #[command(hide = true)]
     Search {
         text: String,
         #[arg(long)]
@@ -302,23 +304,19 @@ pub enum Command {
         max: Option<usize>,
     },
     /// Get page HTML
-    #[command(hide = true)]
     Html {
         #[arg(short, long)]
         selector: Option<String>,
     },
     /// Show console log buffer
-    #[command(hide = true)]
     Console {
         #[arg(long, default_value = "all")]
         level: String,
         #[arg(long)]
         limit: Option<usize>,
     },
-    /// Generate PDF
-    #[command(hide = true)]
+    /// Generate PDF of current target
     Pdf {
-        url: Option<String>,
         #[arg(short, long)]
         output: Option<String>,
     },
@@ -949,6 +947,11 @@ fn build_screenshot_params(
     params
 }
 
+fn add_session_target_params(params: &mut serde_json::Value, cli: &Cli) {
+    if let Some(s) = &cli.session { params["session"] = json!(s); }
+    if let Some(t) = &cli.target { params["target"] = json!(t); }
+}
+
 async fn dispatch(cli: &Cli, client: &mut DaemonClient) -> Result<(), String> {
     match &cli.command {
         // ══════════════════════════════════════════════════════════
@@ -1293,53 +1296,49 @@ async fn dispatch(cli: &Cli, client: &mut DaemonClient) -> Result<(), String> {
 
         // ── Page State (top-level, v1 legacy) ────────────────────────
         Command::Find { selector, attributes, max, include_text } => {
-            let wid = resolve_workspace(client).await?;
-            let mut params = json!({"wid": wid, "selector": selector, "include_text": include_text});
+            let mut params = json!({"selector": selector, "include_text": include_text});
             if let Some(attrs) = attributes {
                 let attr_list: Vec<&str> = attrs.split(',').map(|s| s.trim()).collect();
                 params["attributes"] = json!(attr_list);
             }
             if let Some(m) = max { params["max"] = json!(m); }
-            let resp = send_cmd(client, "page.find_elements", params).await?;
+            add_session_target_params(&mut params, cli);
+            let resp = send_cmd(client, "find", params).await?;
             print_response(&resp);
         }
 
         Command::Search { text, regex, scope, context, max } => {
-            let wid = resolve_workspace(client).await?;
-            let mut params = json!({"wid": wid, "text": text, "regex": regex});
+            let mut params = json!({"text": text, "regex": regex});
             if let Some(s) = scope { params["scope"] = json!(s); }
             if let Some(c) = context { params["context"] = json!(c); }
             if let Some(m) = max { params["max"] = json!(m); }
-            let resp = send_cmd(client, "page.search", params).await?;
+            add_session_target_params(&mut params, cli);
+            let resp = send_cmd(client, "search", params).await?;
             print_response(&resp);
         }
 
         Command::Html { selector } => {
-            let wid = resolve_workspace(client).await?;
-            let mut params = json!({"wid": wid});
+            let mut params = json!({});
             if let Some(s) = selector { params["selector"] = json!(s); }
-            let resp = send_cmd(client, "page.html", params).await?;
+            add_session_target_params(&mut params, cli);
+            let resp = send_cmd(client, "html", params).await?;
             print_response(&resp);
         }
 
         Command::Console { level, limit } => {
-            let wid = resolve_workspace(client).await?;
-            let mut params = json!({"wid": wid, "level": level});
+            let mut params = json!({"level": level});
             if let Some(n) = limit { params["limit"] = json!(n); }
-            let resp = send_cmd(client, "page.console", params).await?;
+            add_session_target_params(&mut params, cli);
+            let resp = send_cmd(client, "console", params).await?;
             print_response(&resp);
         }
 
-        Command::Pdf { url, output } => {
-            if let Some(target_url) = url {
-                dispatch_oneshot_pdf(client, target_url, output).await?;
-            } else {
-                let wid = resolve_workspace(client).await?;
-                let mut params = json!({"wid": wid});
-                if let Some(o) = output { params["output"] = json!(o); }
-                let resp = send_cmd(client, "page.pdf", params).await?;
-                handle_binary_response(&resp, output.as_deref(), "page.pdf");
-            }
+        Command::Pdf { output } => {
+            let mut params = json!({});
+            if let Some(o) = output { params["output"] = json!(o); }
+            add_session_target_params(&mut params, cli);
+            let resp = send_cmd(client, "pdf", params).await?;
+            handle_binary_response(&resp, output.as_deref(), "page.pdf");
         }
 
 
@@ -1614,36 +1613,6 @@ async fn wait_for_daemon_exit() {
             }
         }
     }
-}
-
-// ── One-shot helpers ───────────────────────────────────────────
-
-/// One-shot PDF: create ws -> goto -> pdf -> close ws.
-async fn dispatch_oneshot_pdf(
-    client: &mut DaemonClient,
-    url: &str,
-    output: &Option<String>,
-) -> Result<(), String> {
-    let resp = send_cmd(client, "ws.new", json!({})).await?;
-    if !resp.ok {
-        print_response(&resp);
-        return Ok(());
-    }
-    let wid = resp.data.as_ref()
-        .and_then(|d| d.get("wid"))
-        .and_then(|v| v.as_str())
-        .ok_or("failed to get wid")?
-        .to_string();
-
-    let _ = send_cmd(client, "nav.goto", json!({"wid": wid, "url": url})).await?;
-
-    let mut params = json!({"wid": wid});
-    if let Some(o) = output { params["output"] = json!(o); }
-    let resp = send_cmd(client, "page.pdf", params).await?;
-    handle_binary_response(&resp, output.as_deref(), "page.pdf");
-
-    let _ = send_cmd(client, "ws.close", json!({"wid": wid})).await;
-    Ok(())
 }
 
 // ── CLI Argument Validation Tests ─────────────────────────────────────────────
@@ -2132,6 +2101,12 @@ mod tests {
     fn find_with_selector_succeeds() {
         let result = try_parse(&["bk", "find", "a[href]"]);
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn pdf_no_longer_accepts_a_url() {
+        assert!(try_parse(&["bk", "pdf", "https://example.com"]).is_err());
+        assert!(try_parse(&["bk", "pdf", "--output", "page.pdf"]).is_ok());
     }
 
     #[test]
