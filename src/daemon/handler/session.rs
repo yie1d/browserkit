@@ -1,7 +1,7 @@
 // Handler for v2 session lifecycle commands.
 //
 // `bk session list`    — list all active sessions
-// `bk session close`   — close a session (isolated: dispose BrowserContext; default: close tabs only)
+// `bk session close`   — close a session (owned tabs close; attached tabs detach)
 // `bk session cookies get`   — get cookies via CDP Network.getCookies
 // `bk session cookies set`   — set cookies via CDP Network.setCookies
 // `bk session cookies clear` — clear cookies via CDP Network.clearBrowserCookies
@@ -121,8 +121,8 @@ pub async fn handle_session_list(_req: &Request, state: &Arc<DaemonState>) -> Re
 
 /// Handle `bk session close` — close a session.
 ///
-/// For isolated sessions: closes all tabs via CDP, disposes the BrowserContext, removes the session.
-/// For the default session: closes agent-created tabs but keeps the session itself alive.
+/// For isolated sessions: closes owned tabs, detaches attached tabs, then disposes the BrowserContext.
+/// For the default session: applies the same per-tab close/detach policy but keeps the session alive.
 pub async fn handle_session_close(req: &Request, state: &Arc<DaemonState>) -> Response {
     let session_name = req
         .params

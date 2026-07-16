@@ -81,8 +81,9 @@ pub async fn handle_tabs(req: &Request, state: &Arc<DaemonState>) -> Response {
 /// Handle `bk close` — close a tab in the session.
 ///
 /// If no `target` param is provided, closes the session's active tab.
-/// Sends CDP `Target.closeTarget`, removes the tab from session state,
-/// and updates `active_target` to fallback.
+/// Owned tabs send `Target.closeTarget`; attached tabs send
+/// `Target.detachFromTarget`. Successful actions remove local state and update
+/// `active_target` to fallback.
 pub async fn handle_close(req: &Request, state: &Arc<DaemonState>) -> Response {
     let session_name = req
         .params

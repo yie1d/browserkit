@@ -6,7 +6,7 @@ use crate::daemon::auto_attach::should_exclude_target;
 use crate::daemon::console::spawn_console_subscription;
 use crate::daemon::dialog::spawn_dialog_subscription;
 use crate::daemon::protocol::{Request, Response};
-use crate::daemon::session::{Session, SessionTab};
+use crate::daemon::session::{Session, SessionMode, SessionTab};
 use crate::daemon::state::DaemonState;
 use crate::daemon::target_lifecycle::{find_target_owner, register_session_tab};
 use crate::error::ErrorCode;
@@ -60,6 +60,14 @@ fn validate_attach_context(
     }
 }
 
+fn validate_attach_session_mode(session: &Session) -> Result<(), ErrorCode> {
+    if session.mode == SessionMode::Default {
+        Ok(())
+    } else {
+        Err(ErrorCode::InvalidArgument)
+    }
+}
+
 fn validate_attach_ownership(state: &DaemonState, target_id: &str) -> Result<(), ErrorCode> {
     if find_target_owner(state, target_id).is_some() {
         Err(ErrorCode::TargetAlreadyAttached)
@@ -104,6 +112,16 @@ pub async fn handle_attach(req: &Request, state: &Arc<DaemonState>) -> Response 
 
     if let Err(response) = session.check_connected() {
         return response;
+    }
+
+    if let Err(code) = validate_attach_session_mode(&session) {
+        return error_response(
+            code,
+            format!(
+                "attach requires the default session; isolated session '{}' must use bk open",
+                session_name
+            ),
+        );
     }
 
     let browser_host = session.browser_host.clone();
@@ -280,8 +298,8 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        handle_attach, select_attach_target, validate_attach_context, validate_attach_ownership,
-        AttachCandidate,
+        handle_attach, select_attach_target, validate_attach_context,
+        validate_attach_ownership, validate_attach_session_mode, AttachCandidate,
     };
     use crate::daemon::protocol::Request;
     use crate::daemon::session::{Session, SessionTab};
@@ -324,17 +342,55 @@ mod tests {
 
     #[test]
     fn attach_rejects_target_from_another_browser_context() {
-        let session = Session::new_isolated("agent".into(), "localhost:9222".into(), "CTX1".into());
+        let session = Session::new_default("localhost:9222".into());
         let candidate = AttachCandidate {
             target_id: "T1".into(),
             url: "https://a.test".into(),
             title: "A".into(),
-            browser_context_id: None,
+            browser_context_id: Some("CTX1".into()),
         };
         assert_eq!(
             validate_attach_context(&session, &candidate).unwrap_err(),
             ErrorCode::InvalidArgument
         );
+    }
+
+    #[test]
+    fn attach_rejects_isolated_session_even_when_browser_context_matches() {
+        let session = Session::new_isolated("agent".into(), "localhost:9222".into(), "CTX1".into());
+        let candidate = AttachCandidate {
+            target_id: "T1".into(),
+            url: "https://a.test".into(),
+            title: "A".into(),
+            browser_context_id: Some("CTX1".into()),
+        };
+
+        assert!(validate_attach_context(&session, &candidate).is_ok());
+        assert_eq!(
+            validate_attach_session_mode(&session).unwrap_err(),
+            ErrorCode::InvalidArgument
+        );
+    }
+
+    #[tokio::test]
+    async fn attach_handler_rejects_isolated_session_before_browser_lookup() {
+        let state = Arc::new(DaemonState::new());
+        state.sessions.insert(
+            "agent".into(),
+            Session::new_isolated("agent".into(), "localhost:9222".into(), "CTX1".into()),
+        );
+        let req = Request {
+            cmd: "attach".into(),
+            params: json!({"session": "agent", "target": "T1"}),
+            token: None,
+        };
+
+        let value = serde_json::to_value(handle_attach(&req, &state).await).unwrap();
+
+        assert_eq!(value["error"]["code"], "INVALID_ARGUMENT");
+        let message = value["error"]["message"].as_str().unwrap();
+        assert!(message.contains("attach requires the default session"));
+        assert!(message.contains("bk open"));
     }
 
     #[test]
