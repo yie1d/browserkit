@@ -60,8 +60,8 @@ async fn do_dialog_accept(
     let target_param = optional_string_field(&req.params, "target")?;
     let prompt_text = optional_string_field(&req.params, "text")?;
     let target_id = resolve_dialog_target_for_action(state, &session_name, target_param)?;
+    let dialog = pending_dialog_for_target(state, &session_name, &target_id)?;
     let ctx = resolve_dialog_action_context(state, &session_name, &target_id)?;
-    let dialog = pending_dialog_for_target(state, &ctx.session_name, &ctx.target_id)?;
 
     let cmd = build_handle_params(true, prompt_text);
     let session = ctx.cdp.session(&ctx.cdp_session_id);
@@ -96,8 +96,8 @@ async fn do_dialog_dismiss(
     let session_name = resolve_dialog_session(state, &req.params)?;
     let target_param = optional_string_field(&req.params, "target")?;
     let target_id = resolve_dialog_target_for_action(state, &session_name, target_param)?;
+    let dialog = pending_dialog_for_target(state, &session_name, &target_id)?;
     let ctx = resolve_dialog_action_context(state, &session_name, &target_id)?;
-    let dialog = pending_dialog_for_target(state, &ctx.session_name, &ctx.target_id)?;
 
     let cmd = build_handle_params(false, None);
     let session = ctx.cdp.session(&ctx.cdp_session_id);
@@ -195,13 +195,13 @@ fn resolve_dialog_target_for_action(
 
     let pending = state.dialog_state.list_pending_for_session(session_name);
     match pending.len() {
-        0 => Err(Response::from(BkError::Other(
-            "no pending dialogs in session".into(),
-        ))),
+        0 => Err(invalid_argument(
+            "no pending dialogs in session; trigger a dialog or specify a target with a pending dialog",
+        )),
         1 => Ok(pending[0].0.clone()),
-        n => Err(Response::from(BkError::Other(format!(
+        n => Err(invalid_argument(format!(
             "{n} pending dialogs in session, specify --target to choose one"
-        )))),
+        ))),
     }
 }
 
@@ -228,9 +228,9 @@ fn pending_dialog_for_target(
         .dialog_state
         .get_pending(session_name, target_id)
         .ok_or_else(|| {
-            Response::from(BkError::Other(format!(
-                "target {target_id} has no pending dialog"
-            )))
+            invalid_argument(format!(
+                "target {target_id} has no pending dialog; use dialog.list to see pending dialogs"
+            ))
         })
 }
 
@@ -314,7 +314,30 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn dialog_accept_omitted_target_rejects_ambiguous_pending_dialogs() {
+    async fn dialog_accept_omitted_target_rejects_zero_pending_dialogs_with_structured_error() {
+        let state = Arc::new(DaemonState::new());
+        state
+            .sessions
+            .insert("agent".into(), Session::new_default("localhost:9222".into()));
+
+        let req = Request {
+            cmd: "dialog.accept".into(),
+            params: json!({"session": "agent"}),
+            token: None,
+        };
+
+        let value = serde_json::to_value(handle_dialog_accept(&req, &state).await).unwrap();
+
+        assert_eq!(value["ok"], false);
+        assert_eq!(value["error"]["code"], "INVALID_ARGUMENT");
+        assert!(value["error"]["message"]
+            .as_str()
+            .expect("error message should be a string")
+            .contains("no pending dialogs in session"));
+    }
+
+    #[tokio::test]
+    async fn dialog_accept_omitted_target_rejects_ambiguous_pending_dialogs_with_structured_error() {
         let state = Arc::new(DaemonState::new());
         state
             .sessions
@@ -335,10 +358,32 @@ mod tests {
         let value = serde_json::to_value(handle_dialog_accept(&req, &state).await).unwrap();
 
         assert_eq!(value["ok"], false);
-        assert!(value["error"]
+        assert_eq!(value["error"]["code"], "INVALID_ARGUMENT");
+        assert!(value["error"]["message"]
             .as_str()
-            .expect("ambiguous pending error should be a string")
+            .expect("error message should be a string")
             .contains("2 pending dialogs in session, specify --target"));
+    }
+
+    #[tokio::test]
+    async fn dialog_accept_explicit_target_without_pending_dialog_is_structured_error() {
+        let state = Arc::new(DaemonState::new());
+        state.sessions.insert("agent".into(), session_with_tab("T1"));
+
+        let req = Request {
+            cmd: "dialog.accept".into(),
+            params: json!({"session": "agent", "target": "T1"}),
+            token: None,
+        };
+
+        let value = serde_json::to_value(handle_dialog_accept(&req, &state).await).unwrap();
+
+        assert_eq!(value["ok"], false);
+        assert_eq!(value["error"]["code"], "INVALID_ARGUMENT");
+        assert!(value["error"]["message"]
+            .as_str()
+            .expect("error message should be a string")
+            .contains("target T1 has no pending dialog"));
     }
 
     #[tokio::test]
