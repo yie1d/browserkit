@@ -1,7 +1,7 @@
 // DaemonState: global state management for the daemon process
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::Arc;
 
 use cdpkit::CDP;
 use dashmap::DashMap;
@@ -11,7 +11,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::config::Config;
 use crate::daemon::dialog::DialogState;
-use crate::daemon::persist::PersistTx;
+use crate::daemon::persist::{MigrationReport, PersistTx};
 use crate::daemon::session::Session;
 use crate::daemon::target_lifecycle::TargetLifecycleEvent;
 use crate::workspace::Workspace;
@@ -75,6 +75,8 @@ pub struct DaemonState {
     /// Set when a newer-version state.json is detected on disk to avoid
     /// clobbering data written by a newer binary.
     pub persist_disabled: AtomicBool,
+    /// Report from a v2 -> v3 startup migration, retained for status and future persists.
+    pub migration_report: Mutex<Option<MigrationReport>>,
     /// v2 sessions: name -> Session.
     /// Sessions coexist with workspaces during the transition period (Phase 3 removes workspaces).
     pub sessions: DashMap<String, Session>,
@@ -111,6 +113,7 @@ impl DaemonState {
             console_subscription_tokens: DashMap::new(),
             dialog_state: DialogState::new(),
             persist_disabled: AtomicBool::new(false),
+            migration_report: Mutex::new(None),
             sessions: DashMap::new(),
         }
     }
@@ -224,9 +227,7 @@ pub fn resolve_wid(state: &DaemonState, prefix: &str) -> Result<String, crate::e
         .map(|entry| entry.key().clone())
         .collect();
     match matches.len() {
-        0 => Err(crate::error::BkError::WorkspaceNotFound(
-            prefix.to_string(),
-        )),
+        0 => Err(crate::error::BkError::WorkspaceNotFound(prefix.to_string())),
         1 => Ok(matches[0].clone()),
         _ => Err(crate::error::BkError::AmbiguousWid(
             prefix.to_string(),
@@ -238,8 +239,8 @@ pub fn resolve_wid(state: &DaemonState, prefix: &str) -> Result<String, crate::e
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
     use crate::workspace::Workspace;
+    use std::collections::HashMap;
 
     // Compile-time assertions: DaemonState must be Send + Sync for Arc<DaemonState>
     static_assertions::assert_impl_all!(DaemonState: Send, Sync);
@@ -318,7 +319,10 @@ mod tests {
 
         let err = resolve_wid(&state, "a3").unwrap_err();
         let msg = err.to_string();
-        assert!(msg.contains("ambiguous"), "expected ambiguous error, got: {msg}");
+        assert!(
+            msg.contains("ambiguous"),
+            "expected ambiguous error, got: {msg}"
+        );
         assert!(msg.contains("a3"));
     }
 
@@ -360,7 +364,9 @@ mod tests {
         // For this test we skip inserting an actual Browser (requires real CDP).
         // Instead, we test that sessions are marked disconnected and auto_attach_tasks cleaned.
         let token = CancellationToken::new();
-        state.auto_attach_tasks.insert("localhost:9222".into(), token.clone());
+        state
+            .auto_attach_tasks
+            .insert("localhost:9222".into(), token.clone());
 
         // Call handle_browser_disconnect
         state.handle_browser_disconnect("localhost:9222");

@@ -1,0 +1,148 @@
+{
+  "version": 2,
+  "browsers": [
+    {
+      "host": "localhost:9222",
+      "managed": true,
+      "pid": 1234
+    },
+    {
+      "host": "localhost:9333",
+      "managed": true,
+      "pid": null
+    }
+  ],
+  "sessions": [
+    {
+      "name": "default",
+      "mode": "default",
+      "browser_host": "localhost:9222",
+      "browser_context_id": null,
+      "tabs": [
+        {
+          "target_id": "T-EXISTING",
+          "url": "https://existing.test",
+          "title": "Existing",
+          "ownership": "owned"
+        }
+      ],
+      "active_target": "T-EXISTING",
+      "created_at": 1000,
+      "last_active": 1100,
+      "disconnected": false
+    },
+    {
+      "name": "agent",
+      "mode": "isolated",
+      "browser_host": "localhost:9222",
+      "browser_context_id": "CTX-AGENT",
+      "tabs": [
+        {
+          "target_id": "T-AGENT",
+          "url": "https://agent.test",
+          "title": "Agent",
+          "ownership": "owned"
+        }
+      ],
+      "active_target": "T-AGENT",
+      "created_at": 1200,
+      "last_active": 1300,
+      "disconnected": false
+    }
+  ],
+  "workspaces": [
+    {
+      "wid": "abcdef1234567890",
+      "browser_host": "localhost:9222",
+      "browser_context_id": "CTX-LEGACY",
+      "mode": "isolated",
+      "label": "legacy isolated",
+      "tabs": [
+        {
+          "tid": "legacy-tab-1",
+          "target_id": "T-ISOLATED-1",
+          "url": "https://isolated.test",
+          "title": "Isolated",
+          "managed": true,
+          "alias": "t1"
+        }
+      ],
+      "active_tab": "legacy-tab-1",
+      "created_at": 2000,
+      "last_active": 2100,
+      "next_alias_seq": 1
+    },
+    {
+      "wid": "attached111111111",
+      "browser_host": "localhost:9222",
+      "browser_context_id": null,
+      "mode": "attached",
+      "label": "attached one",
+      "tabs": [
+        {
+          "tid": "attached-tab-1",
+          "target_id": "T-ATTACHED-1",
+          "url": "https://attached-one.test",
+          "title": "Attached One",
+          "managed": false,
+          "alias": "t1"
+        },
+        {
+          "tid": "attached-tab-dupe",
+          "target_id": "T-EXISTING",
+          "url": "https://duplicate.test",
+          "title": "Duplicate",
+          "managed": false,
+          "alias": "t2"
+        }
+      ],
+      "active_tab": "attached-tab-1",
+      "created_at": 3000,
+      "last_active": 3100,
+      "next_alias_seq": 2
+    },
+    {
+      "wid": "attached222222222",
+      "browser_host": "localhost:9222",
+      "browser_context_id": null,
+      "mode": "attached",
+      "label": "attached two",
+      "tabs": [
+        {
+          "tid": "attached-tab-2",
+          "target_id": "T-ATTACHED-2",
+          "url": "https://attached-two.test",
+          "title": "Attached Two",
+          "managed": true,
+          "alias": "t1"
+        }
+      ],
+      "active_tab": "attached-tab-2",
+      "created_at": 4000,
+      "last_active": 4100,
+      "next_alias_seq": 1
+    },
+    {
+      "wid": "conflict33333333",
+      "browser_host": "localhost:9333",
+      "browser_context_id": null,
+      "mode": "attached",
+      "label": "conflicting host",
+      "tabs": [
+        {
+          "tid": "conflict-tab-1",
+          "target_id": "T-CONFLICT",
+          "url": "https://conflict.test",
+          "title": "Conflict",
+          "managed": false,
+          "alias": "t1"
+        }
+      ],
+      "active_tab": "conflict-tab-1",
+      "created_at": 5000,
+      "last_active": 5100,
+      "next_alias_seq": 1
+    }
+  ],
+  "default_ws": "attached111111111"
+}

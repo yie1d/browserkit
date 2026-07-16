@@ -6,10 +6,10 @@ use std::sync::Arc;
 use serde_json::json;
 use tracing::info;
 
-use crate::daemon::protocol::Response;
-use crate::daemon::persist;
-use crate::daemon::state::DaemonState;
 use super::common::{now_ts, HandlerContext};
+use crate::daemon::persist;
+use crate::daemon::protocol::Response;
+use crate::daemon::state::DaemonState;
 
 /// Health-check endpoint.
 pub fn handle_ping() -> Response {
@@ -20,6 +20,7 @@ pub fn handle_ping() -> Response {
 pub async fn handle_daemon_status(state: &Arc<DaemonState>, ctx: &HandlerContext) -> Response {
     let now = now_ts();
     let uptime_seconds = now.saturating_sub(state.started_at);
+    let migration = state.migration_report.lock().clone();
 
     Response::ok(json!({
         "pid": ctx.pid,
@@ -28,6 +29,7 @@ pub async fn handle_daemon_status(state: &Arc<DaemonState>, ctx: &HandlerContext
         "sessions": state.sessions.len(),
         "uptime_seconds": uptime_seconds,
         "request_count": state.request_count.load(std::sync::atomic::Ordering::Relaxed),
+        "migration": migration,
         "config": {
             "session_timeout_hours": state.config.limits.session_timeout_hours,
             "max_sessions": state.config.limits.max_sessions,
@@ -114,12 +116,13 @@ mod tests {
     #[tokio::test]
     async fn daemon_status_reports_sessions_without_workspaces() {
         let state = Arc::new(DaemonState::new());
-        state
-            .sessions
-            .insert("default".into(), Session::new_default("localhost:9222".into()));
+        state.sessions.insert(
+            "default".into(),
+            Session::new_default("localhost:9222".into()),
+        );
 
-        let value = serde_json::to_value(handle_daemon_status(&state, &test_context()).await)
-            .unwrap();
+        let value =
+            serde_json::to_value(handle_daemon_status(&state, &test_context()).await).unwrap();
 
         assert_eq!(value["data"]["sessions"], 1);
         assert!(value["data"].get("workspaces").is_none());
@@ -127,11 +130,34 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn daemon_status_exposes_migration_report() {
+        let state = Arc::new(DaemonState::new());
+        *state.migration_report.lock() =
+            Some(crate::daemon::persist::migrate_v2::MigrationReport {
+                source_version: 2,
+                backup_path: Some("state.v2.backup.json".into()),
+                existing_sessions_preserved: 1,
+                isolated_workspaces_migrated: 1,
+                attached_tabs_merged: 2,
+                duplicate_targets_dropped: 1,
+                conflicting_hosts_dropped: 1,
+                warnings: vec!["dropped duplicate".into()],
+            });
+
+        let value =
+            serde_json::to_value(handle_daemon_status(&state, &test_context()).await).unwrap();
+
+        assert_eq!(value["data"]["migration"]["source_version"], 2);
+        assert_eq!(value["data"]["migration"]["duplicate_targets_dropped"], 1);
+    }
+
+    #[tokio::test]
     async fn daemon_stop_reports_sessions_and_cancels_watchers() {
         let state = Arc::new(DaemonState::new());
-        state
-            .sessions
-            .insert("default".into(), Session::new_default("localhost:9222".into()));
+        state.sessions.insert(
+            "default".into(),
+            Session::new_default("localhost:9222".into()),
+        );
         let watcher = CancellationToken::new();
         state
             .target_watchers
