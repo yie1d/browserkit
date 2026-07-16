@@ -11,7 +11,9 @@ use futures::StreamExt;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
-use crate::daemon::console::spawn_legacy_console_subscription;
+use crate::daemon::console::{
+    cancel_legacy_console_subscription, spawn_legacy_console_subscription,
+};
 use crate::daemon::dialog::spawn_legacy_dialog_subscription;
 use crate::daemon::state::{generate_hex_id, DaemonState};
 use crate::page::Tab;
@@ -153,6 +155,9 @@ pub fn handle_target_destroyed(state: &DaemonState, target_id: &str) -> Option<(
             ws.active_tab = ws.tabs.keys().next().cloned();
         }
     }
+
+    state.dialog_state.cancel_subscription(&wid, &tid);
+    cancel_legacy_console_subscription(state, &wid, &tid);
 
     info!(wid = %wid, tid = %tid, target_id, "auto-attach: tab removed (target destroyed)");
     Some((wid, tid))
@@ -318,8 +323,7 @@ pub fn spawn_auto_attach_task(
                         "auto-attach: TargetDestroyed event received"
                     );
                     let removed = handle_target_destroyed(&state, &ev.target_id);
-                    if let Some((ref wid, ref tid)) = removed {
-                        state.dialog_state.cancel_subscription(wid, tid);
+                    if removed.is_some() {
                         state.request_persist();
                     }
                 }
@@ -361,8 +365,7 @@ pub fn spawn_auto_attach_task(
                     // This handles cases where Chrome detaches a target (e.g. tab crash).
                     let session_id = &ev.session_id;
                     let removed = handle_session_detached(&state, session_id);
-                    if let Some((ref wid, ref tid)) = removed {
-                        state.dialog_state.cancel_subscription(wid, tid);
+                    if removed.is_some() {
                         state.request_persist();
                     }
                 }
@@ -475,6 +478,9 @@ pub fn handle_session_detached(state: &DaemonState, session_id: &str) -> Option<
             ws.active_tab = ws.tabs.keys().next().cloned();
         }
     }
+
+    state.dialog_state.cancel_subscription(&wid, &tid);
+    cancel_legacy_console_subscription(state, &wid, &tid);
 
     debug!(wid = %wid, tid = %tid, session_id, "auto-attach: tab removed (session detached)");
     Some((wid, tid))
@@ -743,6 +749,27 @@ mod tests {
     }
 
     #[test]
+    fn destroyed_target_cancels_legacy_console_subscription() {
+        let state = DaemonState::new();
+        state.workspaces.insert(
+            "ws1".to_string(),
+            make_attached_workspace_with_tab("ws1", "localhost:9222", "tid1", "TARGET_DEL"),
+        );
+        let token = CancellationToken::new();
+        state
+            .console_subscription_tokens
+            .insert(("ws1".into(), "tid1".into()), token.clone());
+
+        let result = handle_target_destroyed(&state, "TARGET_DEL");
+
+        assert_eq!(result, Some(("ws1".to_string(), "tid1".to_string())));
+        assert!(token.is_cancelled());
+        assert!(!state
+            .console_subscription_tokens
+            .contains_key(&("ws1".to_string(), "tid1".to_string())));
+    }
+
+    #[test]
     fn destroy_unknown_target_returns_none() {
         let state = DaemonState::new();
         state.workspaces.insert("ws1".to_string(), make_attached_workspace("ws1", "localhost:9222"));
@@ -888,6 +915,27 @@ mod tests {
 
         let ws = state.workspaces.get("ws1").unwrap();
         assert!(ws.tabs.is_empty());
+    }
+
+    #[test]
+    fn detached_session_cancels_legacy_console_subscription() {
+        let state = DaemonState::new();
+        state.workspaces.insert(
+            "ws1".to_string(),
+            make_attached_workspace_with_tab("ws1", "localhost:9222", "tid1", "TGT_DET"),
+        );
+        let token = CancellationToken::new();
+        state
+            .console_subscription_tokens
+            .insert(("ws1".into(), "tid1".into()), token.clone());
+
+        let result = handle_session_detached(&state, "session_tid1");
+
+        assert_eq!(result, Some(("ws1".to_string(), "tid1".to_string())));
+        assert!(token.is_cancelled());
+        assert!(!state
+            .console_subscription_tokens
+            .contains_key(&("ws1".to_string(), "tid1".to_string())));
     }
 
     #[test]

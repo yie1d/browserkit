@@ -7,7 +7,9 @@ use serde_json::json;
 use tracing::{debug, info};
 
 use crate::daemon::auto_attach;
-use crate::daemon::console::spawn_legacy_console_subscription;
+use crate::daemon::console::{
+    cancel_all_legacy_console_for_workspace, spawn_legacy_console_subscription,
+};
 use crate::daemon::dialog::spawn_legacy_dialog_subscription;
 use crate::daemon::protocol::{Request, Response};
 use crate::daemon::state::{generate_hex_id, resolve_wid, DaemonState};
@@ -722,9 +724,10 @@ async fn do_ws_close(
         }
     }
 
-    // Cancel all dialog subscriptions for this workspace BEFORE removing it
-    // (prevents race where tasks write to a removed workspace)
+    // Cancel legacy subscriptions for this workspace BEFORE removing it
+    // (prevents races where tasks write to a removed workspace).
     state.dialog_state.cancel_all_for_ws(&wid);
+    cancel_all_legacy_console_for_workspace(state, &wid);
 
     state.workspaces.remove(&wid);
 

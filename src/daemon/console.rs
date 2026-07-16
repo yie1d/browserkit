@@ -157,18 +157,44 @@ pub fn cancel_console_subscription(
     state: &DaemonState,
     session_name: &str,
     target_id: &str,
-) {
+) -> bool {
     if let Some((_, token)) = state
         .console_subscription_tokens
         .remove(&(session_name.to_string(), target_id.to_string()))
     {
         token.cancel();
+        true
+    } else {
+        false
     }
+}
+
+pub fn cancel_legacy_console_subscription(state: &DaemonState, wid: &str, tid: &str) -> bool {
+    cancel_console_subscription(state, wid, tid)
+}
+
+pub fn cancel_all_legacy_console_for_workspace(state: &DaemonState, wid: &str) -> usize {
+    let keys: Vec<_> = state
+        .console_subscription_tokens
+        .iter()
+        .filter(|entry| entry.key().0.as_str() == wid)
+        .map(|entry| entry.key().clone())
+        .collect();
+
+    let mut cancelled = 0;
+    for key in keys {
+        if let Some((_, token)) = state.console_subscription_tokens.remove(&key) {
+            token.cancel();
+            cancelled += 1;
+        }
+    }
+    cancelled
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
+        cancel_all_legacy_console_for_workspace, cancel_legacy_console_subscription,
         record_console_entry_for_session, record_console_entry_for_workspace,
         spawn_legacy_console_subscription,
     };
@@ -264,5 +290,54 @@ mod tests {
             String,
             String,
         ) -> CancellationToken = spawn_legacy_console_subscription;
+    }
+
+    #[test]
+    fn target_level_legacy_console_cancellation_removes_entry_and_cancels_token() {
+        let state = DaemonState::new();
+        let token = CancellationToken::new();
+        state
+            .console_subscription_tokens
+            .insert(("ws1".into(), "tid1".into()), token.clone());
+
+        assert!(cancel_legacy_console_subscription(&state, "ws1", "tid1"));
+
+        assert!(token.is_cancelled());
+        assert!(!state
+            .console_subscription_tokens
+            .contains_key(&("ws1".to_string(), "tid1".to_string())));
+    }
+
+    #[test]
+    fn workspace_level_legacy_console_cancellation_removes_only_workspace_entries() {
+        let state = DaemonState::new();
+        let ws_token_a = CancellationToken::new();
+        let ws_token_b = CancellationToken::new();
+        let other_token = CancellationToken::new();
+        state
+            .console_subscription_tokens
+            .insert(("ws1".into(), "tid1".into()), ws_token_a.clone());
+        state
+            .console_subscription_tokens
+            .insert(("ws1".into(), "tid2".into()), ws_token_b.clone());
+        state
+            .console_subscription_tokens
+            .insert(("ws2".into(), "tid3".into()), other_token.clone());
+
+        let cancelled = cancel_all_legacy_console_for_workspace(&state, "ws1");
+
+        assert_eq!(cancelled, 2);
+        assert!(ws_token_a.is_cancelled());
+        assert!(ws_token_b.is_cancelled());
+        assert!(!other_token.is_cancelled());
+        assert!(!state
+            .console_subscription_tokens
+            .contains_key(&("ws1".to_string(), "tid1".to_string())));
+        assert!(!state
+            .console_subscription_tokens
+            .contains_key(&("ws1".to_string(), "tid2".to_string())));
+        assert!(state
+            .console_subscription_tokens
+            .contains_key(&("ws2".to_string(), "tid3".to_string())));
     }
 }

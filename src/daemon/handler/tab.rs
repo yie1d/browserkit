@@ -5,6 +5,7 @@ use std::sync::Arc;
 use serde_json::json;
 use tracing::info;
 
+use crate::daemon::console::cancel_legacy_console_subscription;
 use crate::daemon::dialog::spawn_legacy_dialog_subscription;
 use crate::daemon::protocol::{Request, Response};
 use crate::daemon::state::{generate_hex_id, resolve_wid, DaemonState};
@@ -249,8 +250,9 @@ async fn do_tab_close(
         ws.last_active = now_ts();
     }
 
-    // Cancel dialog subscription for this tab
+    // Cancel legacy subscriptions for this tab.
     state.dialog_state.cancel_subscription(&wid, &tid);
+    cancel_legacy_console_subscription(state, &wid, &tid);
 
     state.request_persist();
     info!(wid = %wid, tid = %tid, "tab closed");

@@ -6,6 +6,7 @@ use serde_json::json;
 use tracing::info;
 
 use crate::browser::normalize_browser_key;
+use crate::daemon::console::cancel_all_legacy_console_for_workspace;
 use crate::daemon::protocol::{Request, Response};
 use crate::daemon::state::DaemonState;
 use crate::error::BkError;
@@ -135,6 +136,8 @@ async fn do_browser_disconnect(
                 }
             }
         }
+        state.dialog_state.cancel_all_for_ws(&info.wid);
+        cancel_all_legacy_console_for_workspace(state, &info.wid);
         state.workspaces.remove(&info.wid);
     }
 

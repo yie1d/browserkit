@@ -7,6 +7,7 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::watch;
 use tracing::{error, info};
 
+use crate::daemon::console::cancel_all_legacy_console_for_workspace;
 use crate::daemon::handler::{handle_request, HandlerContext};
 use crate::daemon::protocol::{read_request, write_response, Response};
 use crate::daemon::state::DaemonState;
@@ -267,6 +268,8 @@ async fn cleanup_expired_workspaces(state: &Arc<DaemonState>) {
             continue;
         }
 
+        state.dialog_state.cancel_all_for_ws(&ew.wid);
+        cancel_all_legacy_console_for_workspace(state, &ew.wid);
         state.workspaces.remove(&ew.wid);
 
         // Remove managed browser if no workspaces remain on it.
