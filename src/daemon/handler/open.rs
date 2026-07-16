@@ -9,7 +9,9 @@ use std::sync::Arc;
 use serde_json::json;
 
 use crate::daemon::protocol::{Request, Response};
+use crate::daemon::session::SessionTab;
 use crate::daemon::state::DaemonState;
+use crate::daemon::target_lifecycle::{find_target_owner, register_session_tab};
 use crate::error::ErrorCode;
 
 /// Validated parameters for the `open` command.
@@ -17,6 +19,43 @@ use crate::error::ErrorCode;
 struct OpenParams {
     url: String,
     session_name: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OpenTargetRegistration {
+    Registered,
+    AlreadyTracked,
+}
+
+fn register_opened_target_if_untracked(
+    state: &Arc<DaemonState>,
+    session_name: &str,
+    target_id: String,
+    url: String,
+    cdp_session_id: String,
+) -> Result<OpenTargetRegistration, ErrorCode> {
+    if let Some(owner) = find_target_owner(state, &target_id) {
+        return if owner == session_name {
+            Ok(OpenTargetRegistration::AlreadyTracked)
+        } else {
+            Err(ErrorCode::TargetAlreadyAttached)
+        };
+    }
+
+    let mut tab = SessionTab::new_owned(target_id.clone(), url, String::new());
+    tab.cdp_session_id = cdp_session_id;
+
+    match register_session_tab(state, session_name, tab) {
+        Ok(()) => Ok(OpenTargetRegistration::Registered),
+        Err(ErrorCode::TargetAlreadyAttached) => {
+            if find_target_owner(state, &target_id).as_deref() == Some(session_name) {
+                Ok(OpenTargetRegistration::AlreadyTracked)
+            } else {
+                Err(ErrorCode::TargetAlreadyAttached)
+            }
+        }
+        Err(code) => Err(code),
+    }
 }
 
 /// Validate and extract open command parameters from the request.
@@ -172,14 +211,33 @@ pub async fn handle_open(req: &Request, state: &Arc<DaemonState>) -> Response {
         }
     };
 
-    // Update session state: add the new tab and set as active
-    if let Some(mut session) = state.sessions.get_mut(&params.session_name) {
-        session.add_tab(target_id.clone(), params.url.clone(), String::new());
-        if let Some(tab) = session.tabs.get_mut(&target_id) {
-            tab.cdp_session_id = session_id;
+    let registration = match register_opened_target_if_untracked(
+        state,
+        &params.session_name,
+        target_id.clone(),
+        params.url.clone(),
+        session_id.clone(),
+    ) {
+        Ok(registration) => registration,
+        Err(code) => {
+            let _ = cdpkit::target::methods::DetachFromTarget::new()
+                .with_session_id(session_id)
+                .send(cdp.as_ref())
+                .await;
+            return Response::error_detail(
+                code,
+                format!("failed to register opened target '{}'", target_id),
+                None,
+            );
         }
+    };
+
+    if registration == OpenTargetRegistration::AlreadyTracked {
+        let _ = cdpkit::target::methods::DetachFromTarget::new()
+            .with_session_id(session_id)
+            .send(cdp.as_ref())
+            .await;
     }
-    state.request_persist();
 
     Response::ok(json!({
         "target": target_id,
@@ -191,9 +249,59 @@ pub async fn handle_open(req: &Request, state: &Arc<DaemonState>) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::daemon::session::Session;
+    use crate::daemon::session::{Session, SessionTab};
     use crate::daemon::state::DaemonState;
     use std::sync::Arc;
+
+    #[test]
+    fn register_opened_target_adds_owned_tab_when_untracked() {
+        let state = Arc::new(DaemonState::new());
+        let session = Session::new_default("localhost:9222".into());
+        state.sessions.insert("default".into(), session);
+
+        let result = register_opened_target_if_untracked(
+            &state,
+            "default",
+            "T1".into(),
+            "https://a.test".into(),
+            "S1".into(),
+        )
+        .unwrap();
+
+        assert_eq!(result, OpenTargetRegistration::Registered);
+        let session = state.sessions.get("default").unwrap();
+        let tab = session.tabs.get("T1").unwrap();
+        assert_eq!(tab.target_id, "T1");
+        assert_eq!(tab.cdp_session_id, "S1");
+        assert_eq!(tab.ownership, crate::daemon::session::TabOwnership::Owned);
+    }
+
+    #[test]
+    fn register_opened_target_keeps_watcher_registered_tab() {
+        let state = Arc::new(DaemonState::new());
+        let mut session = Session::new_default("localhost:9222".into());
+        let mut tab =
+            SessionTab::new_owned("T1".into(), "https://a.test".into(), String::new());
+        tab.cdp_session_id = "WATCHER_SESSION".into();
+        session.tabs.insert("T1".into(), tab);
+        state.sessions.insert("default".into(), session);
+
+        let result = register_opened_target_if_untracked(
+            &state,
+            "default",
+            "T1".into(),
+            "https://a.test".into(),
+            "OPEN_SESSION".into(),
+        )
+        .unwrap();
+
+        assert_eq!(result, OpenTargetRegistration::AlreadyTracked);
+        let session = state.sessions.get("default").unwrap();
+        assert_eq!(
+            session.tabs.get("T1").unwrap().cdp_session_id,
+            "WATCHER_SESSION"
+        );
+    }
 
     #[test]
     fn validate_open_params_requires_url() {

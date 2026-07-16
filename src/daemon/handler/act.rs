@@ -12,6 +12,7 @@ use tracing::info;
 
 use crate::daemon::protocol::{Request, Response};
 use crate::daemon::state::DaemonState;
+use crate::daemon::target_lifecycle::{subscribe_target_events, TargetLifecycleEvent};
 use crate::error::{BkError, ErrorCode};
 use crate::page::state_diff::{capture_state_snapshot, compute_state_diff};
 
@@ -599,6 +600,31 @@ where
     }
 }
 
+async fn wait_for_click_new_tab(
+    events: &mut tokio::sync::broadcast::Receiver<TargetLifecycleEvent>,
+    session_name: &str,
+    current_target: &str,
+    timeout_ms: u64,
+) -> Option<String> {
+    let deadline = tokio::time::Instant::now() + Duration::from_millis(timeout_ms);
+
+    loop {
+        let remaining = deadline.checked_duration_since(tokio::time::Instant::now())?;
+        match tokio::time::timeout(remaining, events.recv()).await {
+            Ok(Ok(TargetLifecycleEvent::Created {
+                session,
+                target_id,
+                opener_id: Some(opener_id),
+            })) if session == session_name && opener_id == current_target => {
+                return Some(target_id);
+            }
+            Ok(Ok(_)) => {}
+            Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) => {}
+            Ok(Err(tokio::sync::broadcast::error::RecvError::Closed)) | Err(_) => return None,
+        }
+    }
+}
+
 // ── Main handler ─────────────────────────────────────────────────────────────
 
 /// Handle the `act` / `v2.act` command.
@@ -665,6 +691,7 @@ pub async fn handle_act(req: &Request, state: &Arc<DaemonState>) -> Response {
 
     let cdp_session_id = &session_tab.cdp_session_id;
     let cdp_session = cdp.session(cdp_session_id);
+    let observes_new_tab = params.kind == ActKind::Click;
 
     // Capture before-snapshot for state_diff (unless opted out)
     let before_snapshot = if !params.no_state_diff {
@@ -672,6 +699,8 @@ pub async fn handle_act(req: &Request, state: &Arc<DaemonState>) -> Response {
     } else {
         None
     };
+
+    let mut new_tab_events = observes_new_tab.then(|| subscribe_target_events(state));
 
     // Dispatch by kind
     let action_result = execute_with_timeout(params.timeout, async {
@@ -707,10 +736,18 @@ pub async fn handle_act(req: &Request, state: &Arc<DaemonState>) -> Response {
     })
     .await;
 
-    let action_success = match action_result {
+    let mut action_success = match action_result {
         Ok(success) => success,
         Err(resp) => return resp,
     };
+
+    if let Some(events) = new_tab_events.as_mut() {
+        if let Some(target_id) =
+            wait_for_click_new_tab(events, &params.session_name, &target_id, params.timeout).await
+        {
+            action_success.insert("new_tab", json!(target_id));
+        }
+    }
 
     // Compute state_diff after action (with 500ms DOM settle window)
     let state_diff_json = if let Some(before) = before_snapshot {
@@ -2219,6 +2256,47 @@ mod tests {
     async fn action_execution_timeout_passes_immediate_success() {
         let result = execute_with_timeout(100, async { Ok::<_, Response>(42) }).await;
         assert_eq!(result.unwrap(), 42);
+    }
+
+    #[tokio::test]
+    async fn click_new_tab_timeout_returns_none_without_failing() {
+        let state = DaemonState::new();
+        let mut events = crate::daemon::target_lifecycle::subscribe_target_events(&state);
+
+        let result = wait_for_click_new_tab(&mut events, "default", "T1", 1).await;
+
+        assert_eq!(result, None);
+    }
+
+    #[tokio::test]
+    async fn click_new_tab_matches_session_and_opener() {
+        let state = DaemonState::new();
+        let mut events = crate::daemon::target_lifecycle::subscribe_target_events(&state);
+        let _ = state
+            .target_events
+            .send(crate::daemon::target_lifecycle::TargetLifecycleEvent::Created {
+                session: "other".into(),
+                target_id: "WRONG_SESSION".into(),
+                opener_id: Some("T1".into()),
+            });
+        let _ = state
+            .target_events
+            .send(crate::daemon::target_lifecycle::TargetLifecycleEvent::Created {
+                session: "default".into(),
+                target_id: "WRONG_OPENER".into(),
+                opener_id: Some("T2".into()),
+            });
+        let _ = state
+            .target_events
+            .send(crate::daemon::target_lifecycle::TargetLifecycleEvent::Created {
+                session: "default".into(),
+                target_id: "NEW_TAB".into(),
+                opener_id: Some("T1".into()),
+            });
+
+        let result = wait_for_click_new_tab(&mut events, "default", "T1", 100).await;
+
+        assert_eq!(result, Some("NEW_TAB".into()));
     }
 
     #[test]

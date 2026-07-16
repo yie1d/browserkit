@@ -8,8 +8,23 @@ use std::sync::Arc;
 use serde_json::json;
 
 use crate::daemon::protocol::{Request, Response};
+use crate::daemon::session::{SessionTab, TabClosePolicy};
 use crate::daemon::state::DaemonState;
+use crate::daemon::target_lifecycle::remove_session_tab;
 use crate::error::ErrorCode;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum CloseAction {
+    CloseTarget(String),
+    DetachSession(String),
+}
+
+fn close_action(tab: &SessionTab) -> CloseAction {
+    match tab.ownership.close_policy() {
+        TabClosePolicy::CloseTarget => CloseAction::CloseTarget(tab.target_id.clone()),
+        TabClosePolicy::DetachSession => CloseAction::DetachSession(tab.cdp_session_id.clone()),
+    }
+}
 
 /// Build a `tabs` response for the given session.
 ///
@@ -55,6 +70,7 @@ fn build_tabs_response(state: &Arc<DaemonState>, session_name: &str) -> Result<R
 }
 
 /// Remove a tab from a session's local state (does NOT send CDP command).
+#[cfg(test)]
 fn close_tab_in_session(state: &Arc<DaemonState>, session_name: &str, target_id: &str) {
     if let Some(mut session) = state.sessions.get_mut(session_name) {
         session.remove_tab(target_id);
@@ -121,14 +137,17 @@ pub async fn handle_close(req: &Request, state: &Arc<DaemonState>) -> Response {
         }
     };
 
-    // Verify the target actually exists in the session
-    if !session.tabs.contains_key(&target_id) {
-        return Response::error_detail(
-            ErrorCode::TargetNotFound,
-            format!("target '{}' not found in session '{}'", target_id, session_name),
-            Some("run 'bk tabs' to see available tabs".into()),
-        );
-    }
+    let tab = match session.tabs.get(&target_id) {
+        Some(tab) => tab.clone(),
+        None => {
+            return Response::error_detail(
+                ErrorCode::TargetNotFound,
+                format!("target '{}' not found in session '{}'", target_id, session_name),
+                Some("run 'bk tabs' to see available tabs".into()),
+            )
+        }
+    };
+    let action = close_action(&tab);
 
     let browser_host = session.browser_host.clone();
     drop(session); // Release DashMap ref before async operations
@@ -145,13 +164,37 @@ pub async fn handle_close(req: &Request, state: &Arc<DaemonState>) -> Response {
         }
     };
 
-    let _ = cdpkit::target::methods::CloseTarget::new(target_id.clone())
-        .send(cdp.as_ref())
-        .await;
+    match action {
+        CloseAction::CloseTarget(target_id) => {
+            if let Err(error) = cdpkit::target::methods::CloseTarget::new(target_id.clone())
+                .send(cdp.as_ref())
+                .await
+            {
+                return Response::error_detail(
+                    ErrorCode::DaemonError,
+                    format!("failed to close target '{}': {error}", target_id),
+                    None,
+                );
+            }
+        }
+        CloseAction::DetachSession(session_id) if !session_id.is_empty() => {
+            if let Err(error) = cdpkit::target::methods::DetachFromTarget::new()
+                .with_session_id(session_id.clone())
+                .send(cdp.as_ref())
+                .await
+            {
+                return Response::error_detail(
+                    ErrorCode::DaemonError,
+                    format!("failed to detach target session '{}': {error}", session_id),
+                    None,
+                );
+            }
+        }
+        CloseAction::DetachSession(_) => {}
+    }
 
     // Update session state
-    close_tab_in_session(state, session_name, &target_id);
-    state.request_persist();
+    remove_session_tab(state, &target_id);
 
     Response::ok(json!({
         "closed": target_id,
@@ -163,6 +206,22 @@ pub async fn handle_close(req: &Request, state: &Arc<DaemonState>) -> Response {
 mod tests {
     use super::*;
     use crate::daemon::session::Session;
+
+    #[test]
+    fn close_action_uses_tab_ownership() {
+        let owned = SessionTab::new_owned("T1".into(), "about:blank".into(), String::new());
+        let attached = SessionTab::new_attached(
+            "T2".into(),
+            "https://a.test".into(),
+            "A".into(),
+            "S2".into(),
+        );
+        assert_eq!(close_action(&owned), CloseAction::CloseTarget("T1".into()));
+        assert_eq!(
+            close_action(&attached),
+            CloseAction::DetachSession("S2".into())
+        );
+    }
 
     #[test]
     fn tabs_response_format() {

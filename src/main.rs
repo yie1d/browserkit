@@ -202,6 +202,13 @@ pub enum Command {
     #[command(about = "List tabs")]
     Tabs,
 
+    /// Attach an existing browser tab to the current session
+    #[command(about = "Attach existing browser tab")]
+    Attach {
+        /// URL, title, or target ID substring; omit when global --target is present.
+        pattern: Option<String>,
+    },
+
     /// Evaluate JavaScript expression
     #[command(about = "Evaluate JavaScript")]
     Evaluate {
@@ -1068,6 +1075,15 @@ async fn dispatch(cli: &Cli, client: &mut DaemonClient) -> Result<(), String> {
             print_response(&resp);
         }
 
+        Command::Attach { pattern } => {
+            let mut params = json!({});
+            if let Some(s) = &cli.session { params["session"] = json!(s); }
+            if let Some(t) = &cli.target { params["target"] = json!(t); }
+            if let Some(p) = pattern { params["pattern"] = json!(p); }
+            let resp = send_cmd(client, "attach", params).await?;
+            print_response(&resp);
+        }
+
         Command::Evaluate { expression, file } => {
             let js_expr = if let Some(path) = file {
                 let content = std::fs::read_to_string(path)
@@ -1844,6 +1860,18 @@ mod tests {
     fn cli_parses_tabs() {
         let cli = try_parse(&["bk", "tabs"]).unwrap();
         assert!(matches!(cli.command, Command::Tabs));
+    }
+
+    #[test]
+    fn cli_parses_attach_target_and_pattern() {
+        let target = try_parse(&["bk", "attach", "--target", "ABC123"]).unwrap();
+        assert!(matches!(target.command, Command::Attach { pattern: None }));
+
+        let pattern = try_parse(&["bk", "attach", "github.com"]).unwrap();
+        assert!(matches!(
+            pattern.command,
+            Command::Attach { pattern: Some(ref p) } if p == "github.com"
+        ));
     }
 
     #[test]

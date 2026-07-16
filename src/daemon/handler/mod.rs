@@ -1,6 +1,7 @@
 // Command dispatcher: routes requests to handler functions
 
 mod act;
+mod attach;
 mod browser;
 pub mod common;
 mod connect;
@@ -44,6 +45,7 @@ pub async fn handle_request(
         "snapshot" | "v2.snapshot" => snapshot::handle_snapshot(req, state).await,
         "navigate" | "v2.navigate" => navigate::handle_navigate(req, state).await,
         "act" | "v2.act" => act::handle_act(req, state).await,
+        "attach" | "v2.attach" => attach::handle_attach(req, state).await,
         "tabs" | "v2.tabs" => tabs::handle_tabs(req, state).await,
         "close" | "v2.close" => tabs::handle_close(req, state).await,
         "session.close" | "v2.session.close" => session::handle_session_close(req, state).await,

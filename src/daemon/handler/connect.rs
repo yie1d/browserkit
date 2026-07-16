@@ -13,6 +13,7 @@ use crate::browser::spawn_disconnect_monitor;
 use crate::daemon::protocol::{Request, Response};
 use crate::daemon::session::Session;
 use crate::daemon::state::{Browser, DaemonState};
+use crate::daemon::target_lifecycle::ensure_target_watcher;
 use crate::error::ErrorCode;
 
 use super::session::check_session_limit;
@@ -41,8 +42,9 @@ pub async fn handle_connect(req: &Request, state: &Arc<DaemonState>) -> Response
 /// return an `already_connected` response. Otherwise None.
 fn check_already_connected(state: &Arc<DaemonState>, session_name: &str) -> Option<Response> {
     if let Some(session) = state.sessions.get(session_name) {
-        if !session.disconnected && state.browsers.iter().any(|b| b.key() == &session.browser_host)
-        {
+        if !session.disconnected {
+            let browser = state.browsers.get(&session.browser_host)?;
+            ensure_target_watcher(state, &session.browser_host, Arc::clone(&browser.cdp));
             return Some(build_connect_response(
                 "already_connected",
                 &format!("Chrome (session '{}')", session_name),
@@ -193,6 +195,8 @@ async fn discover_and_connect(
         count
     };
     state.request_persist();
+
+    ensure_target_watcher(state, &host, Arc::clone(&cdp));
 
     // Spawn disconnect monitor
     spawn_disconnect_monitor(Arc::clone(state), host, Arc::clone(&cdp));
