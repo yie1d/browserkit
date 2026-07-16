@@ -48,12 +48,19 @@ pub fn find_target_owner(state: &DaemonState, target_id: &str) -> Option<String>
 
 pub fn session_for_created_target(
     state: &DaemonState,
+    browser_host: &str,
     opener_id: Option<&str>,
     browser_context_id: Option<&str>,
 ) -> Option<String> {
     if let Some(opener_id) = opener_id {
         if let Some(owner) = find_target_owner(state, opener_id) {
-            return Some(owner);
+            if state
+                .sessions
+                .get(&owner)
+                .is_some_and(|session| session.browser_host == browser_host)
+            {
+                return Some(owner);
+            }
         }
     }
 
@@ -64,6 +71,7 @@ pub fn session_for_created_target(
         .filter(|entry| {
             let session = entry.value();
             session.mode == SessionMode::Isolated
+                && session.browser_host == browser_host
                 && session.browser_context_id.as_deref() == Some(browser_context_id)
         })
         .map(|entry| entry.key().clone());
@@ -81,6 +89,8 @@ pub fn register_session_tab(
     session_name: &str,
     tab: SessionTab,
 ) -> Result<(), ErrorCode> {
+    let _registration_guard = state.target_registration_lock.lock();
+
     if find_target_owner(state, &tab.target_id).is_some() {
         return Err(ErrorCode::TargetAlreadyAttached);
     }
@@ -165,16 +175,11 @@ pub fn ensure_target_watcher(
     host: &str,
     cdp: Arc<cdpkit::CDP>,
 ) -> CancellationToken {
-    if let Some(existing) = state.target_watchers.get(host) {
-        if !existing.is_cancelled() {
-            return existing.value().clone();
-        }
+    let (cancel, should_spawn) =
+        ensure_target_watcher_token_with_status(state, host, CancellationToken::new);
+    if !should_spawn {
+        return cancel;
     }
-
-    let cancel = CancellationToken::new();
-    state
-        .target_watchers
-        .insert(host.to_string(), cancel.clone());
 
     let state_for_task = Arc::clone(state);
     let host_for_task = host.to_string();
@@ -184,6 +189,40 @@ pub fn ensure_target_watcher(
     });
 
     cancel
+}
+
+#[cfg(test)]
+fn ensure_target_watcher_token(
+    state: &DaemonState,
+    host: &str,
+    make_token: impl FnOnce() -> CancellationToken,
+) -> CancellationToken {
+    ensure_target_watcher_token_with_status(state, host, make_token).0
+}
+
+fn ensure_target_watcher_token_with_status(
+    state: &DaemonState,
+    host: &str,
+    make_token: impl FnOnce() -> CancellationToken,
+) -> (CancellationToken, bool) {
+    use dashmap::mapref::entry::Entry;
+
+    match state.target_watchers.entry(host.to_string()) {
+        Entry::Occupied(mut entry) => {
+            if !entry.get().is_cancelled() {
+                (entry.get().clone(), false)
+            } else {
+                let token = make_token();
+                entry.insert(token.clone());
+                (token, true)
+            }
+        }
+        Entry::Vacant(entry) => {
+            let token = make_token();
+            entry.insert(token.clone());
+            (token, true)
+        }
+    }
 }
 
 async fn run_target_watcher(
@@ -202,7 +241,7 @@ async fn run_target_watcher(
         .await
     {
         warn!(host = %host, error = %error, "target watcher: failed to enable target discovery");
-        state.target_watchers.remove(&host);
+        cancel.cancel();
         return;
     }
 
@@ -244,7 +283,7 @@ async fn run_target_watcher(
         }
     }
 
-    state.target_watchers.remove(&host);
+    cancel.cancel();
     info!(host = %host, "target watcher: ended");
 }
 
@@ -260,6 +299,7 @@ async fn handle_target_created_event(
 
     let session_name = match session_for_created_target(
         state,
+        host,
         target_info.opener_id.as_deref(),
         target_info.browser_context_id.as_deref(),
     ) {
@@ -365,9 +405,13 @@ mod tests {
     use crate::error::ErrorCode;
 
     use super::{
-        find_target_owner, register_session_tab, remove_session_tab, session_for_created_target,
-        subscribe_target_events, update_session_tab_info, TargetLifecycleEvent,
+        ensure_target_watcher_token, find_target_owner, register_session_tab, remove_session_tab,
+        session_for_created_target, subscribe_target_events, update_session_tab_info,
+        TargetLifecycleEvent,
     };
+    use std::sync::{Arc, Barrier};
+    use std::thread;
+    use tokio_util::sync::CancellationToken;
 
     #[test]
     fn target_owner_is_unique_across_sessions() {
@@ -394,6 +438,59 @@ mod tests {
             .unwrap_err(),
             ErrorCode::TargetAlreadyAttached
         );
+    }
+
+    #[test]
+    fn concurrent_registration_allows_only_one_session_to_win() {
+        let state = Arc::new(DaemonState::new());
+        let session_count = 32;
+        for index in 0..session_count {
+            let name = format!("session-{index}");
+            let mut session = Session::new_default("localhost:9222".into());
+            session.name = name.clone();
+            state.sessions.insert(name, session);
+        }
+
+        let barrier = Arc::new(Barrier::new(session_count + 1));
+        let mut handles = Vec::new();
+        for index in 0..session_count {
+            let state = Arc::clone(&state);
+            let barrier = Arc::clone(&barrier);
+            handles.push(thread::spawn(move || {
+                let session_name = format!("session-{index}");
+                barrier.wait();
+                register_session_tab(
+                    &state,
+                    &session_name,
+                    SessionTab::new_attached(
+                        "T-CONCURRENT".into(),
+                        "https://race.test".into(),
+                        "Race".into(),
+                        format!("CDP-{index}"),
+                    ),
+                )
+            }));
+        }
+
+        barrier.wait();
+        let results: Vec<_> = handles
+            .into_iter()
+            .map(|handle| handle.join().unwrap())
+            .collect();
+        let success_count = results.iter().filter(|result| result.is_ok()).count();
+        let already_attached_count = results
+            .iter()
+            .filter(|result| matches!(result, Err(ErrorCode::TargetAlreadyAttached)))
+            .count();
+        let owner_count = state
+            .sessions
+            .iter()
+            .filter(|entry| entry.value().tabs.contains_key("T-CONCURRENT"))
+            .count();
+
+        assert_eq!(success_count, 1);
+        assert_eq!(already_attached_count, session_count - 1);
+        assert_eq!(owner_count, 1);
     }
 
     #[test]
@@ -436,7 +533,7 @@ mod tests {
         state.sessions.insert("agent".into(), session);
 
         assert_eq!(
-            session_for_created_target(&state, Some("OPENER"), Some("CTX1")),
+            session_for_created_target(&state, "localhost:9222", Some("OPENER"), Some("CTX1")),
             Some("agent".into())
         );
     }
@@ -449,7 +546,7 @@ mod tests {
         state.sessions.insert("agent".into(), session);
 
         assert_eq!(
-            session_for_created_target(&state, None, Some("CTX1")),
+            session_for_created_target(&state, "localhost:9222", None, Some("CTX1")),
             Some("agent".into())
         );
     }
@@ -466,7 +563,80 @@ mod tests {
             Session::new_isolated("agent-b".into(), "localhost:9222".into(), "CTX1".into()),
         );
 
-        assert_eq!(session_for_created_target(&state, None, Some("CTX1")), None);
+        assert_eq!(
+            session_for_created_target(&state, "localhost:9222", None, Some("CTX1")),
+            None
+        );
+    }
+
+    #[test]
+    fn opener_target_on_another_host_is_ignored() {
+        let state = DaemonState::new();
+        let mut session = Session::new_default("localhost:9333".into());
+        session.add_tab("OPENER".into(), "https://a.test".into(), "A".into());
+        state.sessions.insert("default".into(), session);
+
+        assert_eq!(
+            session_for_created_target(&state, "localhost:9222", Some("OPENER"), None),
+            None
+        );
+    }
+
+    #[test]
+    fn browser_context_on_another_host_is_ignored() {
+        let state = DaemonState::new();
+        let session =
+            Session::new_isolated("agent".into(), "localhost:9333".into(), "CTX1".into());
+        state.sessions.insert("agent".into(), session);
+
+        assert_eq!(
+            session_for_created_target(&state, "localhost:9222", None, Some("CTX1")),
+            None
+        );
+    }
+
+    #[test]
+    fn target_watcher_token_is_idempotent_for_concurrent_same_host_calls() {
+        let state = Arc::new(DaemonState::new());
+        let caller_count = 16;
+        let barrier = Arc::new(Barrier::new(caller_count + 1));
+        let mut handles = Vec::new();
+        for _ in 0..caller_count {
+            let state = Arc::clone(&state);
+            let barrier = Arc::clone(&barrier);
+            handles.push(thread::spawn(move || {
+                barrier.wait();
+                ensure_target_watcher_token(&state, "localhost:9222", CancellationToken::new)
+            }));
+        }
+
+        barrier.wait();
+        let tokens: Vec<_> = handles
+            .into_iter()
+            .map(|handle| handle.join().unwrap())
+            .collect();
+
+        tokens[0].cancel();
+        assert!(tokens.iter().all(CancellationToken::is_cancelled));
+    }
+
+    #[test]
+    fn target_watcher_token_replaces_cancelled_entry() {
+        let state = DaemonState::new();
+        let first =
+            ensure_target_watcher_token(&state, "localhost:9222", CancellationToken::new);
+        first.cancel();
+
+        let second =
+            ensure_target_watcher_token(&state, "localhost:9222", CancellationToken::new);
+
+        assert!(!second.is_cancelled());
+        second.cancel();
+        assert!(state
+            .target_watchers
+            .get("localhost:9222")
+            .unwrap()
+            .is_cancelled());
     }
 
     #[test]

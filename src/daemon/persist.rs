@@ -23,7 +23,7 @@ use tokio::sync::mpsc;
 use tracing::warn;
 
 use crate::daemon::bk_home;
-use crate::daemon::dialog::spawn_dialog_subscription;
+use crate::daemon::dialog::spawn_legacy_dialog_subscription;
 use crate::daemon::session::{Session, SessionMode, SessionTab, TabOwnership};
 use crate::daemon::state::{Browser, DaemonState};
 use crate::page::Tab;
@@ -750,7 +750,7 @@ pub async fn restore_into_state(state: &Arc<DaemonState>) {
             {
                 Ok(resp) => {
                     tab.cdp_session_id = resp.session_id.clone();
-                    attached_tabs.push((tab.target_id.clone(), resp.session_id));
+                    attached_tabs.push((tab.tid.clone(), resp.session_id));
                     tracing::debug!(
                         wid = %wid,
                         tid = %tab.tid,
@@ -774,13 +774,13 @@ pub async fn restore_into_state(state: &Arc<DaemonState>) {
         state.workspaces.insert(wid.clone(), ws);
 
         // Rebuild dialog subscriptions for successfully re-attached tabs
-        for (target_id, session_id) in attached_tabs {
-            spawn_dialog_subscription(
+        for (tid, session_id) in attached_tabs {
+            spawn_legacy_dialog_subscription(
                 Arc::clone(state),
-                wid.clone(),
-                target_id,
                 Arc::clone(&cdp),
                 session_id,
+                wid.clone(),
+                tid,
             );
         }
 

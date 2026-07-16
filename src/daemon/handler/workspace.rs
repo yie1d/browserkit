@@ -7,8 +7,8 @@ use serde_json::json;
 use tracing::{debug, info};
 
 use crate::daemon::auto_attach;
-use crate::daemon::console::spawn_console_subscription;
-use crate::daemon::dialog::spawn_dialog_subscription;
+use crate::daemon::console::spawn_legacy_console_subscription;
+use crate::daemon::dialog::spawn_legacy_dialog_subscription;
 use crate::daemon::protocol::{Request, Response};
 use crate::daemon::state::{generate_hex_id, resolve_wid, DaemonState};
 use crate::error::BkError;
@@ -138,8 +138,8 @@ async fn do_ws_new(
                 console_log: Tab::new_console_log(),
             };
             tabs.insert(tid.clone(), tab);
-            // Collect (target_id, session_id) for subscriptions after workspace creation.
-            tab_sessions.push((target.target_id.clone(), cdp_session_id));
+            // Collect (tid, session_id) for subscriptions after workspace creation.
+            tab_sessions.push((tid, cdp_session_id));
         }
 
         if tabs.is_empty() {
@@ -172,20 +172,20 @@ async fn do_ws_new(
         ensure_auto_attach_task(state, &host, &cdp);
 
         // Start dialog + console subscriptions for all tabs we just attached
-        for (target_id, session_id) in &tab_sessions {
-            spawn_dialog_subscription(
+        for (tid, session_id) in &tab_sessions {
+            spawn_legacy_dialog_subscription(
                 Arc::clone(state),
-                wid.clone(),
-                target_id.clone(),
                 Arc::clone(&cdp),
                 session_id.clone(),
+                wid.clone(),
+                tid.clone(),
             );
-            spawn_console_subscription(
+            spawn_legacy_console_subscription(
                 Arc::clone(state),
-                wid.clone(),
-                target_id.clone(),
                 Arc::clone(&cdp),
                 session_id.clone(),
+                wid.clone(),
+                tid.clone(),
             );
         }
 
@@ -239,7 +239,7 @@ async fn do_ws_new(
         let tid = generate_hex_id();
         let ts = now_ts();
 
-        let tab = Tab { tid: tid.clone(), target_id: target_id.clone(), cdp_session_id: cdp_session_id.clone(), url: "about:blank".to_string(), title: String::new(), managed: true, alias: "t1".to_string(), console_log: Tab::new_console_log() };
+        let tab = Tab { tid: tid.clone(), target_id, cdp_session_id: cdp_session_id.clone(), url: "about:blank".to_string(), title: String::new(), managed: true, alias: "t1".to_string(), console_log: Tab::new_console_log() };
 
         let mut tabs = HashMap::new();
         tabs.insert(tid.clone(), tab);
@@ -264,19 +264,19 @@ async fn do_ws_new(
         state.request_persist();
 
         // Start dialog + console subscription for the initial tab
-        spawn_dialog_subscription(
+        spawn_legacy_dialog_subscription(
             Arc::clone(state),
-            wid.clone(),
-            target_id.clone(),
             Arc::clone(&cdp),
             cdp_session_id.clone(),
-        );
-        spawn_console_subscription(
-            Arc::clone(state),
             wid.clone(),
-            target_id,
+            tid.clone(),
+        );
+        spawn_legacy_console_subscription(
+            Arc::clone(state),
             Arc::clone(&cdp),
             cdp_session_id,
+            wid.clone(),
+            tid.clone(),
         );
 
         info!(wid = %wid, host = %host, mode = "isolated", "workspace created");
@@ -497,19 +497,19 @@ async fn merge_into_existing_attached_ws(
         }
 
         // Start dialog + console subscription for this newly merged tab
-        spawn_dialog_subscription(
+        spawn_legacy_dialog_subscription(
             Arc::clone(state),
-            existing_wid.to_string(),
-            target.target_id.clone(),
             Arc::clone(cdp),
             cdp_session_id.clone(),
-        );
-        spawn_console_subscription(
-            Arc::clone(state),
             existing_wid.to_string(),
-            target.target_id.clone(),
+            tid.clone(),
+        );
+        spawn_legacy_console_subscription(
+            Arc::clone(state),
             Arc::clone(cdp),
             cdp_session_id,
+            existing_wid.to_string(),
+            tid.clone(),
         );
 
         newly_attached.push(json!({
@@ -923,7 +923,7 @@ async fn do_ws_attach(
             console_log: Tab::new_console_log(),
         };
         tabs.insert(tid.clone(), tab);
-        tab_sessions_attach.push((target.target_id.clone(), cdp_session_id));
+        tab_sessions_attach.push((tid, cdp_session_id));
     }
 
     if tabs.is_empty() {
@@ -956,20 +956,20 @@ async fn do_ws_attach(
     ensure_auto_attach_task(state, &host, &cdp);
 
     // Start dialog + console subscriptions for all tabs we just attached
-    for (target_id, session_id) in &tab_sessions_attach {
-        spawn_dialog_subscription(
+    for (tid, session_id) in &tab_sessions_attach {
+        spawn_legacy_dialog_subscription(
             Arc::clone(state),
-            wid.clone(),
-            target_id.clone(),
             Arc::clone(&cdp),
             session_id.clone(),
+            wid.clone(),
+            tid.clone(),
         );
-        spawn_console_subscription(
+        spawn_legacy_console_subscription(
             Arc::clone(state),
-            wid.clone(),
-            target_id.clone(),
             Arc::clone(&cdp),
             session_id.clone(),
+            wid.clone(),
+            tid.clone(),
         );
     }
 

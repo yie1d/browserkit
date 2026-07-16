@@ -5,7 +5,7 @@ use std::sync::Arc;
 use serde_json::json;
 use tracing::info;
 
-use crate::daemon::dialog::spawn_dialog_subscription;
+use crate::daemon::dialog::spawn_legacy_dialog_subscription;
 use crate::daemon::protocol::{Request, Response};
 use crate::daemon::state::{generate_hex_id, resolve_wid, DaemonState};
 use crate::error::BkError;
@@ -91,7 +91,7 @@ async fn do_tab_new(
         ws.next_alias()
     };
 
-    let tab = Tab { tid: tid.clone(), target_id: target_id.clone(), cdp_session_id: cdp_session_id.clone(), url: url.to_string(), title: String::new(), managed: true, alias: alias.clone(), console_log: Tab::new_console_log() };
+    let tab = Tab { tid: tid.clone(), target_id, cdp_session_id: cdp_session_id.clone(), url: url.to_string(), title: String::new(), managed: true, alias: alias.clone(), console_log: Tab::new_console_log() };
 
     if let Some(mut ws) = state.workspaces.get_mut(&wid) {
         ws.tabs.insert(tid.clone(), tab);
@@ -100,21 +100,21 @@ async fn do_tab_new(
     }
 
     // Start dialog subscription for this tab's session
-    spawn_dialog_subscription(
+    spawn_legacy_dialog_subscription(
         Arc::clone(state),
-        wid.clone(),
-        target_id.clone(),
         Arc::clone(&cdp),
         cdp_session_id.clone(),
+        wid.clone(),
+        tid.clone(),
     );
 
     // Start console log subscription
-    crate::daemon::console::spawn_console_subscription(
+    crate::daemon::console::spawn_legacy_console_subscription(
         Arc::clone(state),
-        wid.clone(),
-        target_id,
         Arc::clone(&cdp),
         cdp_session_id,
+        wid.clone(),
+        tid.clone(),
     );
 
     state.request_persist();
@@ -250,7 +250,7 @@ async fn do_tab_close(
     }
 
     // Cancel dialog subscription for this tab
-    state.dialog_state.cancel_subscription(&wid, &target_id);
+    state.dialog_state.cancel_subscription(&wid, &tid);
 
     state.request_persist();
     info!(wid = %wid, tid = %tid, "tab closed");
@@ -421,21 +421,21 @@ async fn do_tab_attach(
     }
 
     // Start dialog subscription for this tab's session
-    spawn_dialog_subscription(
+    spawn_legacy_dialog_subscription(
         Arc::clone(state),
-        wid.clone(),
-        target_id.clone(),
         Arc::clone(&cdp),
         cdp_session_id.clone(),
+        wid.clone(),
+        tid.clone(),
     );
 
     // Start console log subscription
-    crate::daemon::console::spawn_console_subscription(
+    crate::daemon::console::spawn_legacy_console_subscription(
         Arc::clone(state),
-        wid.clone(),
-        target_id.clone(),
         Arc::clone(&cdp),
         cdp_session_id,
+        wid.clone(),
+        tid.clone(),
     );
 
     state.request_persist();

@@ -63,6 +63,8 @@ pub struct DaemonState {
     pub auto_attach_tasks: DashMap<String, CancellationToken>,
     /// Cancellation tokens for session-native target watcher tasks, keyed by browser host.
     pub target_watchers: DashMap<String, CancellationToken>,
+    /// Serializes session target ownership registration across sessions.
+    pub target_registration_lock: Mutex<()>,
     /// Broadcast stream for session-native target lifecycle changes.
     pub target_events: tokio::sync::broadcast::Sender<TargetLifecycleEvent>,
     /// Console subscription task tokens, keyed by (session_name, target_id).
@@ -104,6 +106,7 @@ impl DaemonState {
             _persist_rx_guard: Some(persist_rx),
             auto_attach_tasks: DashMap::new(),
             target_watchers: DashMap::new(),
+            target_registration_lock: Mutex::new(()),
             target_events,
             console_subscription_tokens: DashMap::new(),
             dialog_state: DialogState::new(),

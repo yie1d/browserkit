@@ -66,16 +66,27 @@ impl DialogPolicy {
     }
 }
 
-/// Composite key for pending dialogs: (session_name, target_id).
+/// Composite key for pending dialogs/subscriptions.
+///
+/// Session-native code uses (session_name, target_id). Legacy workspace code
+/// still uses (wid, tid) until those handlers migrate.
 pub type DialogKey = (String, String);
+
+pub fn session_dialog_key(session_name: &str, target_id: &str) -> DialogKey {
+    (session_name.to_string(), target_id.to_string())
+}
+
+pub fn legacy_dialog_key(wid: &str, tid: &str) -> DialogKey {
+    (wid.to_string(), tid.to_string())
+}
 
 /// State container for dialog management, stored in DaemonState.
 pub struct DialogState {
-    /// Pending dialogs keyed by (session_name, target_id). At most one per tab.
+    /// Pending dialogs keyed by DialogKey. At most one per tab.
     pub pending: DashMap<DialogKey, PendingDialog>,
     /// Dialog policy per session. Missing entry = Manual (default).
     pub policies: DashMap<String, DialogPolicy>,
-    /// Cancellation tokens for dialog subscription tasks, keyed by (session_name, target_id).
+    /// Cancellation tokens for dialog subscription tasks, keyed by DialogKey.
     /// Used to stop subscriptions when tabs/sessions are removed.
     pub subscription_tokens: DashMap<DialogKey, CancellationToken>,
 }
@@ -197,24 +208,47 @@ pub fn spawn_dialog_subscription(
     cdp: Arc<cdpkit::CDP>,
     cdp_session_id: String,
 ) -> CancellationToken {
+    spawn_dialog_subscription_for_key(
+        state,
+        session_dialog_key(&session_name, &target_id),
+        cdp,
+        cdp_session_id,
+    )
+}
+
+pub fn spawn_legacy_dialog_subscription(
+    state: Arc<DaemonState>,
+    cdp: Arc<cdpkit::CDP>,
+    cdp_session_id: String,
+    wid: String,
+    tid: String,
+) -> CancellationToken {
+    spawn_dialog_subscription_for_key(state, legacy_dialog_key(&wid, &tid), cdp, cdp_session_id)
+}
+
+fn spawn_dialog_subscription_for_key(
+    state: Arc<DaemonState>,
+    key: DialogKey,
+    cdp: Arc<cdpkit::CDP>,
+    cdp_session_id: String,
+) -> CancellationToken {
     let cancel = CancellationToken::new();
     let cancel_clone = cancel.clone();
 
-    // Cancel any existing subscription for this (session, target) to avoid task leaks
+    // Cancel any existing subscription for this key to avoid task leaks
     // (e.g. if spawn_dialog_subscription is called twice for the same tab).
-    let key = (session_name.clone(), target_id.clone());
     if let Some((_, old_token)) = state.dialog_state.subscription_tokens.remove(&key) {
         old_token.cancel();
         debug!(
-            session = %session_name,
-            target_id = %target_id,
+            owner = %key.0,
+            target = %key.1,
             "dialog: cancelled previous subscription before respawning"
         );
     }
 
     // Store the new token
     state.dialog_state.subscription_tokens.insert(
-        key,
+        key.clone(),
         cancel.clone(),
     );
 
@@ -230,8 +264,8 @@ pub fn spawn_dialog_subscription(
             cdpkit::page::events::JavascriptDialogClosed::subscribe(&owned_session);
 
         debug!(
-            session = %session_name,
-            target_id = %target_id,
+            owner = %key.0,
+            target = %key.1,
             cdp_session_id = %cdp_session_id,
             "dialog: subscription started"
         );
@@ -239,19 +273,19 @@ pub fn spawn_dialog_subscription(
         loop {
             tokio::select! {
                 _ = cancel_clone.cancelled() => {
-                    debug!(session = %session_name, target_id = %target_id, "dialog: subscription cancelled");
+                    debug!(owner = %key.0, target = %key.1, "dialog: subscription cancelled");
                     break;
                 }
                 event = dialog_stream.next() => {
                     let Some(ev) = event else {
-                        debug!(session = %session_name, target_id = %target_id, "dialog: opening stream ended");
+                        debug!(owner = %key.0, target = %key.1, "dialog: opening stream ended");
                         break;
                     };
 
                     let dialog_type = ev.type_.as_ref().to_string();
                     info!(
-                        session = %session_name,
-                        target_id = %target_id,
+                        owner = %key.0,
+                        target = %key.1,
                         dialog_type = %dialog_type,
                         message = %ev.message,
                         url = %ev.url,
@@ -268,15 +302,15 @@ pub fn spawn_dialog_subscription(
                     };
 
                     // Check workspace policy
-                    let policy = state.dialog_state.get_policy(&session_name);
+                    let policy = state.dialog_state.get_policy(&key.0);
 
                     match policy {
                         DialogPolicy::Manual => {
                             // Record and wait for user action
-                            state.dialog_state.set_pending(&session_name, &target_id, pending);
+                            state.dialog_state.set_pending(&key.0, &key.1, pending);
                             info!(
-                                session = %session_name,
-                                target_id = %target_id,
+                                owner = %key.0,
+                                target = %key.1,
                                 dialog_type = %dialog_type,
                                 "dialog: recorded pending (policy=manual, page stalled)"
                             );
@@ -290,21 +324,21 @@ pub fn spawn_dialog_subscription(
                             match cmd.send(&owned_session).await {
                                 Ok(()) => {
                                     info!(
-                                        session = %session_name,
-                                        target_id = %target_id,
+                                        owner = %key.0,
+                                        target = %key.1,
                                         dialog_type = %dialog_type,
                                         "dialog: auto-accepted (policy=accept)"
                                     );
                                 }
                                 Err(e) => {
                                     warn!(
-                                        session = %session_name,
-                                        target_id = %target_id,
+                                        owner = %key.0,
+                                        target = %key.1,
                                         error = %e,
                                         "dialog: failed to auto-accept"
                                     );
                                     // Still record it so user can retry
-                                    state.dialog_state.set_pending(&session_name, &target_id, pending);
+                                    state.dialog_state.set_pending(&key.0, &key.1, pending);
                                 }
                             }
                         }
@@ -314,20 +348,20 @@ pub fn spawn_dialog_subscription(
                             match cmd.send(&owned_session).await {
                                 Ok(()) => {
                                     info!(
-                                        session = %session_name,
-                                        target_id = %target_id,
+                                        owner = %key.0,
+                                        target = %key.1,
                                         dialog_type = %dialog_type,
                                         "dialog: auto-dismissed (policy=dismiss)"
                                     );
                                 }
                                 Err(e) => {
                                     warn!(
-                                        session = %session_name,
-                                        target_id = %target_id,
+                                        owner = %key.0,
+                                        target = %key.1,
                                         error = %e,
                                         "dialog: failed to auto-dismiss"
                                     );
-                                    state.dialog_state.set_pending(&session_name, &target_id, pending);
+                                    state.dialog_state.set_pending(&key.0, &key.1, pending);
                                 }
                             }
                         }
@@ -335,15 +369,15 @@ pub fn spawn_dialog_subscription(
                 }
                 event = closed_stream.next() => {
                     let Some(ev) = event else {
-                        debug!(session = %session_name, target_id = %target_id, "dialog: closed stream ended");
+                        debug!(owner = %key.0, target = %key.1, "dialog: closed stream ended");
                         break;
                     };
                     // Dialog was closed (either by us or externally) — clear pending state
-                    let was_pending = state.dialog_state.take_pending(&session_name, &target_id);
+                    let was_pending = state.dialog_state.take_pending(&key.0, &key.1);
                     if was_pending.is_some() {
                         info!(
-                            session = %session_name,
-                            target_id = %target_id,
+                            owner = %key.0,
+                            target = %key.1,
                             result = ev.result,
                             "dialog: JavascriptDialogClosed, cleared pending state"
                         );
@@ -352,7 +386,7 @@ pub fn spawn_dialog_subscription(
             }
         }
 
-        debug!(session = %session_name, target_id = %target_id, "dialog: subscription task ended");
+        debug!(owner = %key.0, target = %key.1, "dialog: subscription task ended");
     });
 
     cancel
@@ -372,6 +406,7 @@ pub fn build_handle_params(accept: bool, prompt_text: Option<&str>) -> cdpkit::p
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
 
     // ─── DialogPolicy ──────────────────────────────────────────────────
 
@@ -566,6 +601,63 @@ mod tests {
         // ws2 untouched
         assert!(!t3.is_cancelled());
         assert_eq!(ds.get_policy("ws2"), DialogPolicy::Dismiss);
+    }
+
+    #[test]
+    fn dialog_key_helpers_keep_session_and_legacy_keys_explicit() {
+        assert_eq!(
+            session_dialog_key("agent", "TARGET1"),
+            ("agent".to_string(), "TARGET1".to_string())
+        );
+        assert_eq!(
+            legacy_dialog_key("ws1", "tid1"),
+            ("ws1".to_string(), "tid1".to_string())
+        );
+        assert_ne!(
+            session_dialog_key("agent", "TARGET1"),
+            legacy_dialog_key("agent", "tid1")
+        );
+    }
+
+    #[test]
+    fn cancelling_session_key_does_not_remove_legacy_pending_dialog() {
+        let ds = DialogState::new();
+        let legacy = PendingDialog {
+            dialog_type: "alert".to_string(),
+            message: "legacy".to_string(),
+            default_prompt: None,
+            url: "https://legacy.test".to_string(),
+            opened_at: 1000,
+        };
+        let session = PendingDialog {
+            dialog_type: "confirm".to_string(),
+            message: "session".to_string(),
+            default_prompt: None,
+            url: "https://session.test".to_string(),
+            opened_at: 1001,
+        };
+        ds.pending.insert(legacy_dialog_key("ws1", "tid1"), legacy);
+        ds.pending
+            .insert(session_dialog_key("agent", "TARGET1"), session);
+
+        ds.cancel_subscription("agent", "TARGET1");
+
+        assert!(ds.get_pending("agent", "TARGET1").is_none());
+        assert_eq!(
+            ds.get_pending("ws1", "tid1").unwrap().message,
+            "legacy"
+        );
+    }
+
+    #[test]
+    fn legacy_dialog_subscription_wrapper_keeps_old_workspace_signature() {
+        let _legacy: fn(
+            Arc<DaemonState>,
+            Arc<cdpkit::CDP>,
+            String,
+            String,
+            String,
+        ) -> CancellationToken = spawn_legacy_dialog_subscription;
     }
 
     // ─── build_handle_params ───────────────────────────────────────────
