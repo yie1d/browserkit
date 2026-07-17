@@ -18,7 +18,7 @@ use crate::error::ErrorCode;
 
 use super::session::check_session_limit;
 
-/// Handle the `connect` / `v2.connect` command.
+/// Handle the canonical `connect` command.
 pub async fn handle_connect(req: &Request, state: &Arc<DaemonState>) -> Response {
     let session_name = req
         .params

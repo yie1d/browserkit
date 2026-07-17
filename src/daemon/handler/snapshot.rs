@@ -199,7 +199,7 @@ const DOM_STABLE_JS: &str = r#"new Promise(resolve => {
     timer = setTimeout(() => { observer.disconnect(); resolve(true); }, 200);
 })"#;
 
-/// Handle the `snapshot` / `v2.snapshot` command.
+/// Handle the canonical `snapshot` command.
 pub async fn handle_snapshot(req: &Request, state: &Arc<DaemonState>) -> Response {
     let params = validate_snapshot_params(&req.params);
 

@@ -20,7 +20,7 @@ const POLL_INTERVAL: Duration = Duration::from_millis(250);
 /// Quiet window for networkidle: in-flight count must remain 0 for this duration.
 const NETWORK_IDLE_QUIET_MS: u64 = 500;
 
-/// All conditions that `page.wait` can evaluate.
+/// All conditions that the canonical `wait` command can evaluate.
 #[derive(Debug, Clone)]
 pub struct WaitConditions {
     /// Fixed delay in milliseconds.

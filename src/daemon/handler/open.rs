@@ -112,7 +112,7 @@ fn validate_url_scheme(url: &str) -> Result<(), Response> {
     Ok(())
 }
 
-/// Handle the `open` / `v2.open` command.
+/// Handle the canonical `open` command.
 pub async fn handle_open(req: &Request, state: &Arc<DaemonState>) -> Response {
     let params = match validate_open_params(&req.params) {
         Ok(p) => p,

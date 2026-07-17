@@ -8,7 +8,7 @@ use cdpkit::CDP;
 use crate::error::BkError;
 use crate::page::exception_message;
 
-/// Default timeout for page load operations (goto, reload, back, forward, nav.wait).
+/// Default timeout for page load operations and idle waits.
 pub const PAGE_LOAD_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Navigate to a URL using CDP `Page.navigate`.

@@ -132,7 +132,7 @@ pub struct PageText {
     pub truncated: bool,
 }
 
-/// Full page state returned by `page.state` — elements + text + viewport info.
+/// Full page state returned by `snapshot`: elements, text, and viewport info.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FullPageState {
     pub elements: Vec<ElementInfo>,

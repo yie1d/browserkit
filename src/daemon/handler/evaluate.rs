@@ -58,7 +58,7 @@ fn validate_evaluate_params(params: &serde_json::Value) -> Result<EvaluateParams
     })
 }
 
-/// Handle the `evaluate` / `v2.evaluate` command.
+/// Handle the canonical `evaluate` command.
 pub async fn handle_evaluate(req: &Request, state: &Arc<DaemonState>) -> Response {
     let params = match validate_evaluate_params(&req.params) {
         Ok(p) => p,

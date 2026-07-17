@@ -34,7 +34,7 @@ pub struct DaemonState {
     pub request_count: AtomicU64,
     /// Timestamp when the daemon started (Unix seconds).
     pub started_at: u64,
-    /// Serializes Chrome launch to prevent concurrent `ws.new` requests
+    /// Serializes Chrome launch to prevent concurrent launch requests
     /// from starting multiple Chrome processes simultaneously.
     /// Wrapped in `Arc` so it can be cloned out of a read-locked state.
     pub browser_launch_lock: Arc<AsyncMutex<()>>,

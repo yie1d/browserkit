@@ -53,7 +53,7 @@ fn validate_screenshot_params(params: &serde_json::Value) -> ScreenshotParams {
     }
 }
 
-/// Handle the `screenshot` / `v2.screenshot` command.
+/// Handle the canonical `screenshot` command.
 pub async fn handle_screenshot(req: &Request, state: &Arc<DaemonState>) -> Response {
     let params = validate_screenshot_params(&req.params);
 

@@ -635,7 +635,7 @@ async fn wait_for_click_new_tab(
 
 // ── Main handler ─────────────────────────────────────────────────────────────
 
-/// Handle the `act` / `v2.act` command.
+/// Handle the canonical `act` command.
 pub async fn handle_act(req: &Request, state: &Arc<DaemonState>) -> Response {
     let params = match parse_act_params(&req.params) {
         Ok(p) => p,
