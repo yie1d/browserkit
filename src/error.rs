@@ -101,6 +101,7 @@ pub enum ErrorCode {
     InvalidArgument,
     DaemonError,
     FileNotFound,
+    FileWriteFailed,
     DownloadFailed,
     SelectorNotFound,
     SessionLimitExceeded,
@@ -144,6 +145,7 @@ impl ErrorCode {
             Self::InvalidArgument => "check command syntax",
             Self::DaemonError => "restart daemon: bk daemon stop && bk daemon start",
             Self::FileNotFound => "check file path exists and is absolute",
+            Self::FileWriteFailed => "check the destination path and write permissions",
             Self::DownloadFailed => "retry the download or choose a different output directory",
             Self::SelectorNotFound => "selector matched no elements; check page state",
             Self::SessionLimitExceeded => {
@@ -230,5 +232,14 @@ mod error_code_tests {
         );
         assert!(ErrorCode::DownloadFailed.recoverable());
         assert!(ErrorCode::DownloadFailed.suggestion().contains("download"));
+    }
+
+    #[test]
+    fn file_write_failed_error_contract() {
+        assert_eq!(
+            serde_json::to_string(&ErrorCode::FileWriteFailed).unwrap(),
+            "\"FILE_WRITE_FAILED\""
+        );
+        assert!(ErrorCode::FileWriteFailed.recoverable());
     }
 }

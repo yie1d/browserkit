@@ -53,6 +53,7 @@ Run `bk <COMMAND> --help` for detailed usage and examples.";
 use browserkit::client::{build_request, DaemonClient};
 use browserkit::daemon;
 use browserkit::daemon::protocol::Response;
+use browserkit::error::ErrorCode;
 
 // ── Top-level CLI ──────────────────────────────────────────────
 
@@ -220,6 +221,9 @@ pub enum Command {
         /// Execute JS from file path
         #[arg(long, value_name = "PATH")]
         file: Option<String>,
+        /// Append a string result to a local file without printing the result
+        #[arg(long, value_name = "FILE")]
+        append_to: Option<String>,
     },
 
     /// Take screenshot
@@ -824,6 +828,15 @@ fn build_download_params(
     Ok(params)
 }
 
+fn build_evaluate_params(expression: &str, cli: &Cli) -> serde_json::Value {
+    let mut params = json!({"expression": expression});
+    add_session_target_params(&mut params, cli);
+    if let Some(timeout) = cli.timeout {
+        params["timeout"] = json!(timeout);
+    }
+    params
+}
+
 fn build_screenshot_params(
     output: Option<&str>,
     full_page: bool,
@@ -1071,7 +1084,11 @@ async fn dispatch(cli: &Cli, client: &mut DaemonClient) -> Result<(), String> {
             print_response(&resp);
         }
 
-        Command::Evaluate { expression, file } => {
+        Command::Evaluate {
+            expression,
+            file,
+            append_to,
+        } => {
             let js_expr = if let Some(path) = file {
                 let content = std::fs::read_to_string(path)
                     .map_err(|e| format!("failed to read JS file: {}", e))?;
@@ -1081,18 +1098,13 @@ async fn dispatch(cli: &Cli, client: &mut DaemonClient) -> Result<(), String> {
             } else {
                 return Err("evaluate requires either an expression or --file".into());
             };
-            let mut params = json!({"expression": js_expr});
-            if let Some(s) = &cli.session {
-                params["session"] = json!(s);
-            }
-            if let Some(t) = &cli.target {
-                params["target"] = json!(t);
-            }
-            if let Some(to) = cli.timeout {
-                params["timeout"] = json!(to);
-            }
+            let params = build_evaluate_params(&js_expr, cli);
             let resp = send_cmd(client, "evaluate", params).await?;
-            print_response(&resp);
+            if let Some(path) = append_to {
+                print_response(&append_evaluate_result(&resp, path));
+            } else {
+                print_response(&resp);
+            }
         }
 
         Command::Network { action } => match action {
@@ -1470,6 +1482,125 @@ fn canonical_directory(path: &str) -> Result<std::path::PathBuf, String> {
         return Err(format!("output directory is not a directory: {path}"));
     }
     Ok(canonical)
+}
+
+fn append_evaluate_result(resp: &Response, path: &str) -> Response {
+    use std::io::Write;
+
+    if !resp.ok {
+        return resp.clone();
+    }
+    let Some(result) = resp
+        .data
+        .as_ref()
+        .and_then(|data| data.get("result"))
+        .and_then(serde_json::Value::as_str)
+    else {
+        return Response::error_detail(
+            ErrorCode::InvalidArgument,
+            "evaluate --append-to requires the expression to return a string".into(),
+            Some("return a string, or use JSON.stringify(value) before appending".into()),
+        );
+    };
+
+    let requested = std::path::PathBuf::from(path);
+    let absolute = if requested.is_absolute() {
+        requested
+    } else {
+        match std::env::current_dir() {
+            Ok(current_dir) => current_dir.join(requested),
+            Err(error) => {
+                return Response::error_detail(
+                    ErrorCode::FileWriteFailed,
+                    format!("failed to resolve current directory: {error}"),
+                    None,
+                )
+            }
+        }
+    };
+    if absolute.is_dir() {
+        return Response::error_detail(
+            ErrorCode::InvalidArgument,
+            format!("append destination is a directory: {}", absolute.display()),
+            Some("choose a file path for --append-to".into()),
+        );
+    }
+    if absolute
+        .symlink_metadata()
+        .is_ok_and(|metadata| metadata.file_type().is_symlink())
+    {
+        return Response::error_detail(
+            ErrorCode::InvalidArgument,
+            format!(
+                "append destination must not be a symbolic link: {}",
+                absolute.display()
+            ),
+            Some("choose a regular file path for --append-to".into()),
+        );
+    }
+    let Some(filename) = absolute.file_name() else {
+        return Response::error_detail(
+            ErrorCode::InvalidArgument,
+            format!(
+                "append destination is not a file path: {}",
+                absolute.display()
+            ),
+            None,
+        );
+    };
+    let Some(parent) = absolute.parent() else {
+        return Response::error_detail(
+            ErrorCode::InvalidArgument,
+            format!(
+                "append destination has no parent directory: {}",
+                absolute.display()
+            ),
+            None,
+        );
+    };
+    let parent = match std::fs::canonicalize(parent) {
+        Ok(parent) if parent.is_dir() => parent,
+        Ok(parent) => {
+            return Response::error_detail(
+                ErrorCode::FileWriteFailed,
+                format!("append parent is not a directory: {}", parent.display()),
+                None,
+            )
+        }
+        Err(error) => {
+            return Response::error_detail(
+                ErrorCode::FileWriteFailed,
+                format!(
+                    "failed to resolve append parent '{}': {error}",
+                    parent.display()
+                ),
+                None,
+            )
+        }
+    };
+    let destination = parent.join(filename);
+    let write_result = (|| -> std::io::Result<()> {
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&destination)?;
+        file.write_all(result.as_bytes())?;
+        file.flush()
+    })();
+    if let Err(error) = write_result {
+        return Response::error_detail(
+            ErrorCode::FileWriteFailed,
+            format!("failed to append to '{}': {error}", destination.display()),
+            None,
+        );
+    }
+
+    let file = std::fs::canonicalize(&destination).unwrap_or(destination);
+    Response::ok(json!({
+        "file": file,
+        "bytes_appended": result.len(),
+        "result_type": "string",
+    }))
 }
 
 /// Handle binary (base64) responses: save to file or print info.
@@ -1854,6 +1985,98 @@ mod tests {
         } else {
             panic!("wrong variant");
         }
+    }
+
+    #[test]
+    fn cli_parses_evaluate_append_to() {
+        let expression = try_parse(&[
+            "bk",
+            "evaluate",
+            "JSON.stringify({ok: true})",
+            "--append-to",
+            "results.jsonl",
+        ]);
+        let file = try_parse(&[
+            "bk",
+            "evaluate",
+            "--file",
+            "extract.js",
+            "--append-to",
+            "results.jsonl",
+        ]);
+
+        assert!(expression.is_ok());
+        assert!(file.is_ok());
+    }
+
+    #[test]
+    fn evaluate_append_writes_exact_string_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("results.txt");
+        let path_arg = path.to_string_lossy();
+
+        let first = append_evaluate_result(&Response::ok(json!({"result": "first"})), &path_arg);
+        let second = append_evaluate_result(&Response::ok(json!({"result": "second"})), &path_arg);
+
+        assert!(first.ok);
+        assert!(second.ok);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "firstsecond");
+        assert_eq!(second.data.unwrap()["bytes_appended"], 6);
+    }
+
+    #[test]
+    fn evaluate_append_rejects_non_string_and_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("not-created.txt");
+        let non_string = append_evaluate_result(
+            &Response::ok(json!({"result": [1, 2, 3]})),
+            &file.to_string_lossy(),
+        );
+        let directory = append_evaluate_result(
+            &Response::ok(json!({"result": "text"})),
+            &dir.path().to_string_lossy(),
+        );
+
+        assert_eq!(non_string.error.unwrap()["code"], "INVALID_ARGUMENT");
+        assert!(!file.exists());
+        assert_eq!(directory.error.unwrap()["code"], "INVALID_ARGUMENT");
+    }
+
+    #[test]
+    fn evaluate_append_reports_write_failure_as_json() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("missing").join("results.txt");
+        let response = append_evaluate_result(
+            &Response::ok(json!({"result": "text"})),
+            &path.to_string_lossy(),
+        );
+
+        assert_eq!(response.error.unwrap()["code"], "FILE_WRITE_FAILED");
+    }
+
+    #[test]
+    fn evaluate_append_path_is_not_sent_to_daemon() {
+        let cli = try_parse(&[
+            "bk",
+            "--session",
+            "agent-a",
+            "--target",
+            "TAB1",
+            "--timeout",
+            "5000",
+            "evaluate",
+            "extract()",
+            "--append-to",
+            "results.txt",
+        ])
+        .unwrap();
+
+        let params = build_evaluate_params("extract()", &cli);
+        assert_eq!(params["expression"], "extract()");
+        assert_eq!(params["session"], "agent-a");
+        assert_eq!(params["target"], "TAB1");
+        assert_eq!(params["timeout"], 5000);
+        assert!(params.get("append_to").is_none());
     }
 
     #[test]
