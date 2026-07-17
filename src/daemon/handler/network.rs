@@ -107,11 +107,13 @@ impl TerminalBuffer {
     }
 
     fn insert(&mut self, request_id: String, event: TerminalEvent) -> bool {
-        let is_full = self.events.len() >= self.capacity;
+        let current_len = self.events.len();
+        let is_full = current_len >= self.capacity;
+        let reaches_capacity = current_len.saturating_add(1) >= self.capacity;
         match self.events.entry(request_id) {
             std::collections::hash_map::Entry::Occupied(mut entry) => {
                 entry.insert(event);
-                true
+                !is_full
             }
             std::collections::hash_map::Entry::Vacant(_) if is_full => {
                 self.dropped += 1;
@@ -119,7 +121,7 @@ impl TerminalBuffer {
             }
             std::collections::hash_map::Entry::Vacant(entry) => {
                 entry.insert(event);
-                true
+                !reaches_capacity
             }
         }
     }
@@ -132,21 +134,16 @@ impl TerminalBuffer {
         self.events.len()
     }
 
+    fn capacity(&self) -> usize {
+        self.capacity
+    }
+
     fn dropped(&self) -> usize {
         self.dropped
     }
 
     fn overflowed(&self) -> bool {
-        self.dropped > 0
-    }
-
-    fn metadata(&self) -> serde_json::Value {
-        json!({
-            "capacity": self.capacity,
-            "pending": self.len(),
-            "dropped_events": self.dropped(),
-            "overflowed": self.overflowed(),
-        })
+        self.len() >= self.capacity || self.dropped > 0
     }
 }
 
@@ -326,17 +323,53 @@ fn record_response(
     None
 }
 
+enum TerminalRecord {
+    Completed(serde_json::Value),
+    Buffered,
+    CapacityReached { request_id: String },
+}
+
+impl TerminalRecord {
+    fn stop_reason(&self) -> Option<&'static str> {
+        matches!(self, Self::CapacityReached { .. }).then_some("terminal_buffer_overflow")
+    }
+}
+
 fn record_terminal(
     pending: &mut HashMap<String, PendingResponse>,
     terminals: &mut TerminalBuffer,
     request_id: String,
     event: TerminalEvent,
-) -> Option<serde_json::Value> {
+) -> TerminalRecord {
     if let Some(response) = pending.remove(&request_id) {
-        return Some(response.terminal(event));
+        return TerminalRecord::Completed(response.terminal(event));
     }
-    terminals.insert(request_id, event);
-    None
+    if terminals.insert(request_id.clone(), event) {
+        TerminalRecord::Buffered
+    } else {
+        TerminalRecord::CapacityReached { request_id }
+    }
+}
+
+fn apply_terminal_record(
+    outcome: TerminalRecord,
+    responses: &mut Vec<serde_json::Value>,
+    terminal_buffer_stop: &mut Option<serde_json::Value>,
+    terminal_capacity: usize,
+) -> Option<&'static str> {
+    let stop_reason = outcome.stop_reason();
+    match outcome {
+        TerminalRecord::Completed(response) => responses.push(response),
+        TerminalRecord::Buffered => {}
+        TerminalRecord::CapacityReached { request_id } => {
+            *terminal_buffer_stop = Some(json!({
+                "reason": "capacity_reached",
+                "request_id": request_id,
+                "capacity": terminal_capacity,
+            }));
+        }
+    }
+    stop_reason
 }
 
 pub async fn handle_network_watch(req: &Request, state: &Arc<DaemonState>) -> Response {
@@ -386,6 +419,7 @@ pub async fn handle_network_watch(req: &Request, state: &Arc<DaemonState>) -> Re
     let mut responses = Vec::with_capacity(params.count);
     let mut dropped_matching_responses = 0usize;
     let mut event_stream_stop = None;
+    let mut terminal_buffer_stop = None;
     let stop_reason = loop {
         if responses.len() >= params.count {
             break "count";
@@ -443,19 +477,25 @@ pub async fn handle_network_watch(req: &Request, state: &Arc<DaemonState>) -> Re
                 }
             }
             SelectedNetworkEvent::Finished(Ok(event)) => {
-                if let Some(response) = record_terminal(
+                let outcome = record_terminal(
                     &mut pending,
                     &mut terminals,
                     event.request_id,
                     TerminalEvent::Finished {
                         encoded_data_length: event.encoded_data_length,
                     },
+                );
+                if let Some(reason) = apply_terminal_record(
+                    outcome,
+                    &mut responses,
+                    &mut terminal_buffer_stop,
+                    terminals.capacity(),
                 ) {
-                    responses.push(response);
+                    break reason;
                 }
             }
             SelectedNetworkEvent::Failed(Ok(event)) => {
-                if let Some(response) = record_terminal(
+                let outcome = record_terminal(
                     &mut pending,
                     &mut terminals,
                     event.request_id,
@@ -463,8 +503,14 @@ pub async fn handle_network_watch(req: &Request, state: &Arc<DaemonState>) -> Re
                         error_text: event.error_text,
                         canceled: event.canceled.unwrap_or(false),
                     },
+                );
+                if let Some(reason) = apply_terminal_record(
+                    outcome,
+                    &mut responses,
+                    &mut terminal_buffer_stop,
+                    terminals.capacity(),
                 ) {
-                    responses.push(response);
+                    break reason;
                 }
             }
         }
@@ -512,7 +558,13 @@ pub async fn handle_network_watch(req: &Request, state: &Arc<DaemonState>) -> Re
             "dropped_events": dropped_events,
             "stop": event_stream_stop.as_ref().map(EventStreamStop::metadata),
         },
-        "terminal_buffer": terminals.metadata(),
+        "terminal_buffer": {
+            "capacity": TERMINAL_EVENT_CAPACITY,
+            "pending": terminals.len(),
+            "dropped_events": terminals.dropped(),
+            "overflowed": terminals.overflowed(),
+            "stop": terminal_buffer_stop,
+        },
         "stop_reason": stop_reason,
         "timed_out": stop_reason == "timeout",
     }))
@@ -773,25 +825,42 @@ mod tests {
 
     #[test]
     fn network_watch_terminal_buffer_is_bounded_and_reports_overflow() {
-        let mut terminals = TerminalBuffer::new(1);
+        let mut terminals = TerminalBuffer::new(TERMINAL_EVENT_CAPACITY);
+        let mut pending = HashMap::new();
 
-        assert!(terminals.insert(
-            "REQ1".into(),
+        for index in 0..TERMINAL_EVENT_CAPACITY - 1 {
+            let outcome = record_terminal(
+                &mut pending,
+                &mut terminals,
+                format!("REQ{index}"),
+                TerminalEvent::Finished {
+                    encoded_data_length: index as f64,
+                },
+            );
+            assert!(matches!(outcome, TerminalRecord::Buffered));
+        }
+        let outcome = record_terminal(
+            &mut pending,
+            &mut terminals,
+            "LIMIT".into(),
             TerminalEvent::Finished {
                 encoded_data_length: 1.0,
             },
-        ));
-        assert!(!terminals.insert(
-            "REQ2".into(),
-            TerminalEvent::Finished {
-                encoded_data_length: 2.0,
-            },
-        ));
+        );
 
-        assert_eq!(terminals.len(), 1);
-        assert_eq!(terminals.dropped(), 1);
+        let mut responses = Vec::new();
+        let mut stop = None;
+        assert_eq!(
+            apply_terminal_record(outcome, &mut responses, &mut stop, terminals.capacity(),),
+            Some("terminal_buffer_overflow")
+        );
+        assert!(responses.is_empty());
+        assert_eq!(stop.as_ref().unwrap()["reason"], "capacity_reached");
+        assert_eq!(stop.as_ref().unwrap()["request_id"], "LIMIT");
+        assert_eq!(stop.as_ref().unwrap()["capacity"], 256);
+        assert_eq!(terminals.len(), TERMINAL_EVENT_CAPACITY);
+        assert_eq!(terminals.dropped(), 0);
         assert!(terminals.overflowed());
-        assert!(terminals.take("REQ1").is_some());
-        assert!(terminals.take("REQ2").is_none());
+        assert!(terminals.take("LIMIT").is_some());
     }
 }

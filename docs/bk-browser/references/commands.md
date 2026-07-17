@@ -84,7 +84,9 @@ exact UTF-8 bytes with no implicit newline. `network watch` stops at count or
 timeout and reports `stop_reason`; it is not a stream. Network bodies are never
 read: `body` is `null` with omission metadata. Its three event streams and
 out-of-order terminal buffer each have capacity 256; inspect `event_streams`
-and `terminal_buffer` for overflow, close, and dropped-event metadata.
+and `terminal_buffer` for overflow, close, and dropped-event metadata. Reaching
+the terminal-buffer capacity stops immediately with
+`stop_reason="terminal_buffer_overflow"`.
 `download` requires an existing output directory, validates the final path,
 and restores Browser download behavior after the lifecycle.
 
