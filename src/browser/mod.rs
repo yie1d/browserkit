@@ -46,6 +46,10 @@ pub fn normalize_browser_key(target: &str) -> String {
     target.to_string()
 }
 
+fn is_direct_websocket_target(target: &str) -> bool {
+    target.starts_with("ws://") || target.starts_with("wss://")
+}
+
 /// Connect to a Chrome instance at the given target.
 ///
 /// `target` can be:
@@ -59,19 +63,25 @@ pub fn normalize_browser_key(target: &str) -> String {
 pub async fn connect_to_browser(target: &str) -> Result<Arc<CDP>, BkError> {
     let duration = Duration::from_secs(CONNECT_TIMEOUT_SECS);
 
-    let cdp = timeout(duration, CDP::connect(target))
-        .await
-        .map_err(|_| {
-            BkError::BrowserConnectionTimeout(
-                CONNECT_TIMEOUT_SECS,
-                format!(
-                    "{}. Check that Chrome is running and the debug endpoint is reachable. \
+    let cdp = timeout(duration, async {
+        if is_direct_websocket_target(target) {
+            CDP::connect_ws_with_timeout(target, duration).await
+        } else {
+            CDP::connect_with_timeout(target, duration).await
+        }
+    })
+    .await
+    .map_err(|_| {
+        BkError::BrowserConnectionTimeout(
+            CONNECT_TIMEOUT_SECS,
+            format!(
+                "{}. Check that Chrome is running and the debug endpoint is reachable. \
                      If connecting via DevToolsActivePort, the file may be stale.",
-                    target
-                ),
-            )
-        })?
-        .map_err(|e| BkError::BrowserConnectionFailed(format!("{}: {}", target, e)))?;
+                target
+            ),
+        )
+    })?
+    .map_err(|e| BkError::BrowserConnectionFailed(format!("{}: {}", target, e)))?;
 
     tracing::info!(target = target, "Connected to browser");
     Ok(Arc::new(cdp))
@@ -281,6 +291,18 @@ mod tests {
         // No scheme — returned as-is
         let key = normalize_browser_key("localhost:9222");
         assert_eq!(key, "localhost:9222");
+    }
+
+    #[test]
+    fn direct_websocket_targets_are_detected_for_cdpkit_0_5() {
+        assert!(is_direct_websocket_target(
+            "ws://localhost:9222/devtools/browser/id"
+        ));
+        assert!(is_direct_websocket_target(
+            "wss://remote.example/devtools/browser/id"
+        ));
+        assert!(!is_direct_websocket_target("localhost:9222"));
+        assert!(!is_direct_websocket_target("http://localhost:9222"));
     }
 
     #[test]

@@ -136,6 +136,20 @@ fn timeout_response(message: impl Into<String>) -> Response {
     Response::error_detail(ErrorCode::Timeout, message.into(), None)
 }
 
+fn chrome_download_path(path: &Path) -> String {
+    let path = path.to_string_lossy();
+    #[cfg(windows)]
+    {
+        if let Some(rest) = path.strip_prefix(r"\\?\UNC\") {
+            return format!(r"\\{rest}");
+        }
+        if let Some(rest) = path.strip_prefix(r"\\?\") {
+            return rest.to_string();
+        }
+    }
+    path.into_owned()
+}
+
 fn download_behavior(
     behavior: &str,
     output_dir: Option<&Path>,
@@ -145,7 +159,7 @@ fn download_behavior(
     let mut command = cdpkit::browser::methods::SetDownloadBehavior::new(behavior)
         .with_events_enabled(events_enabled);
     if let Some(output_dir) = output_dir {
-        command = command.with_download_path(output_dir.to_string_lossy());
+        command = command.with_download_path(chrome_download_path(output_dir));
     }
     if let Some(browser_context_id) = browser_context_id {
         command = command.with_browser_context_id(browser_context_id.to_string());
@@ -464,6 +478,19 @@ mod tests {
         let error = resolve_download_path(output.path(), Some(outside.as_path()))
             .expect_err("outside file must be rejected");
         assert_eq!(error_code(error), "DOWNLOAD_FAILED");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn chrome_download_path_removes_windows_verbatim_prefix() {
+        assert_eq!(
+            chrome_download_path(Path::new(r"\\?\C:\downloads")),
+            r"C:\downloads"
+        );
+        assert_eq!(
+            chrome_download_path(Path::new(r"\\?\UNC\server\share\downloads")),
+            r"\\server\share\downloads"
+        );
     }
 
     #[test]
