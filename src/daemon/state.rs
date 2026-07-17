@@ -42,6 +42,9 @@ pub struct DaemonState {
     /// from starting multiple Chrome processes simultaneously.
     /// Wrapped in `Arc` so it can be cloned out of a read-locked state.
     pub browser_launch_lock: Arc<AsyncMutex<()>>,
+    /// Serializes session creation and reconnect so concurrent clients cannot
+    /// create duplicate BrowserContexts for the same session name.
+    pub session_bind_lock: Arc<AsyncMutex<()>>,
     /// Sender for the debounced persistence task.
     /// Call `request_persist(&self.persist_tx)` after any state mutation.
     pub persist_tx: PersistTx,
@@ -91,6 +94,7 @@ impl DaemonState {
                 .unwrap_or_default()
                 .as_secs(),
             browser_launch_lock: Arc::new(AsyncMutex::new(())),
+            session_bind_lock: Arc::new(AsyncMutex::new(())),
             persist_tx,
             _persist_rx_guard: Some(persist_rx),
             target_watchers: DashMap::new(),

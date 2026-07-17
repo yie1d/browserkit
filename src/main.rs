@@ -19,7 +19,7 @@ Primary:
   act         Execute interaction (click/type/fill/press/scroll/hover/focus/select/options/upload/drag)
   navigate    Navigate to URL or back/forward/reload
   open        Open URL in new tab
-  attach      Attach existing browser tab to session
+  attach      Attach existing browser tab to default session
   close       Close tab
   tabs        List tabs in session
   wait        Wait for page condition
@@ -200,8 +200,11 @@ pub enum Command {
     #[command(about = "List tabs")]
     Tabs,
 
-    /// Attach an existing browser tab to the current session
-    #[command(about = "Attach existing browser tab")]
+    /// Attach an existing browser tab to the default session
+    #[command(
+        about = "Attach existing browser tab to default session",
+        long_about = "Attach an existing user browser tab to the default session. Named isolated sessions must use 'bk open' instead."
+    )]
     Attach {
         /// URL, title, or target ID substring; omit when global --target is present.
         pattern: Option<String>,
@@ -1514,6 +1517,18 @@ mod tests {
         add_session_param(&mut params, &cli);
 
         assert_eq!(params["session"], "agent-a");
+    }
+
+    #[test]
+    fn attach_help_names_default_session_constraint() {
+        assert!(HELP_TEXT.contains("Attach existing browser tab to default session"));
+        let command = Cli::command();
+        let attach = command.find_subcommand("attach").expect("attach command");
+        assert!(attach
+            .get_long_about()
+            .expect("attach long help")
+            .to_string()
+            .contains("default session"));
     }
 
     #[test]

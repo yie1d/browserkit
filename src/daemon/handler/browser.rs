@@ -399,12 +399,16 @@ async fn do_browser_disconnect(
         .ok_or_else(|| BkError::InvalidRequest("browser.disconnect requires 'host' param".into()))?
         .to_string();
 
-    if !state.browsers.contains_key(&host) {
+    let Some(cdp) = state
+        .browsers
+        .get(&host)
+        .map(|browser| Arc::clone(&browser.cdp))
+    else {
         return Err(BkError::BrowserConnectionFailed(format!(
             "no connection for host: {}",
             host
         )));
-    }
+    };
 
     let report = cleanup_browser_sessions_for_host(state, &host).await;
 
@@ -413,6 +417,7 @@ async fn do_browser_disconnect(
     // Browser.managed=true (bk-launched) means child=Some and drop will kill —
     // which is correct since we're explicitly disconnecting.
     state.browsers.remove(&host);
+    cdp.close().await;
     state.request_persist();
     info!(host = %host, "browser disconnected");
 

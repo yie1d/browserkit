@@ -13,6 +13,8 @@ use tokio::net::TcpStream;
 use crate::daemon::protocol::{Request, Response};
 use crate::error::BkError;
 
+const DAEMON_START_TIMEOUT: Duration = Duration::from_secs(30);
+
 /// A connected client to the daemon.
 pub struct DaemonClient {
     reader: BufReader<tokio::net::tcp::OwnedReadHalf>,
@@ -24,7 +26,7 @@ impl DaemonClient {
     ///
     /// 1. Read `~/.bk/daemon.port` and try to connect + ping
     /// 2. If that fails, spawn the daemon as a background process
-    /// 3. Poll for readiness (up to 5 seconds)
+    /// 3. Poll for readiness while persisted browser/session state is restored
     /// 4. Connect again
     pub async fn connect_or_start() -> Result<Self, BkError> {
         // Try connecting to existing daemon
@@ -35,8 +37,9 @@ impl DaemonClient {
         // Start daemon in background
         Self::start_daemon_background()?;
 
-        // Wait for daemon to become ready (poll ping for up to 5 seconds)
-        Self::wait_for_daemon_ready(Duration::from_secs(5)).await?;
+        // Restore now completes before the daemon advertises its port. Allow
+        // enough time for a full CDP connection timeout plus tab reattachment.
+        Self::wait_for_daemon_ready(DAEMON_START_TIMEOUT).await?;
 
         // Connect again
         Self::try_connect().await
@@ -206,6 +209,11 @@ pub fn build_request(cmd: &str, params: serde_json::Value) -> Request {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn daemon_start_timeout_covers_restore_connection_window() {
+        assert!(DAEMON_START_TIMEOUT >= Duration::from_secs(20));
+    }
 
     #[test]
     fn build_request_creates_correct_request() {

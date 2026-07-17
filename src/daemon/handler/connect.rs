@@ -230,6 +230,7 @@ async fn bind_session_state<B: SessionReconnectBackend>(
     browser_host: &str,
     backend: &B,
 ) -> Result<SessionBindResult, Response> {
+    let _bind_guard = state.session_bind_lock.lock().await;
     check_new_session_limit_for_connect(state, session_name)?;
 
     if let Some(existing) = state.sessions.get(session_name) {
@@ -462,6 +463,7 @@ mod tests {
     use super::*;
     use crate::daemon::session::SessionTab;
     use std::collections::HashMap;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
 
     struct FakeReconnectBackend {
@@ -518,6 +520,26 @@ mod tests {
             });
             subscriptions.sort();
             subscriptions
+        }
+    }
+
+    struct CountingBindBackend {
+        context_creations: AtomicUsize,
+    }
+
+    impl SessionReconnectBackend for CountingBindBackend {
+        async fn browser_context_available(&self, _session: &Session) -> bool {
+            false
+        }
+
+        async fn create_browser_context(&self, _session_name: &str) -> Result<String, Response> {
+            let number = self.context_creations.fetch_add(1, Ordering::SeqCst) + 1;
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+            Ok(format!("CTX-{number}"))
+        }
+
+        async fn reattach_tabs(&self, _session: &mut Session) -> Vec<(String, String)> {
+            Vec::new()
         }
     }
 
@@ -802,5 +824,24 @@ mod tests {
             state.sessions.get("default").unwrap().browser_host,
             "first.example:9222"
         );
+    }
+
+    #[tokio::test]
+    async fn concurrent_named_session_bind_creates_one_browser_context() {
+        let state = Arc::new(DaemonState::new());
+        let backend = CountingBindBackend {
+            context_creations: AtomicUsize::new(0),
+        };
+
+        let (first, second) = tokio::join!(
+            bind_session_state(&state, "agent", "remote.example:9222", &backend),
+            bind_session_state(&state, "agent", "remote.example:9222", &backend),
+        );
+
+        let statuses = [first.unwrap().status, second.unwrap().status];
+        assert!(statuses.contains(&SessionBindStatus::Connected));
+        assert!(statuses.contains(&SessionBindStatus::AlreadyConnected));
+        assert_eq!(backend.context_creations.load(Ordering::SeqCst), 1);
+        assert_eq!(state.sessions.len(), 1);
     }
 }
