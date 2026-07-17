@@ -5,9 +5,9 @@ use std::sync::Arc;
 use cdpkit::CDP;
 
 use crate::error::BkError;
-use crate::page::ElementInfo;
+use crate::page::element_ref::{resolve_element, ElementTarget};
 use crate::page::exception_message;
-use crate::page::element_ref::{ElementTarget, resolve_element};
+use crate::page::ElementInfo;
 
 /// Validate that `index` is within the element list and return a reference.
 fn get_element(elements: &[ElementInfo], index: usize) -> Result<&ElementInfo, BkError> {
@@ -91,7 +91,10 @@ pub async fn click_element(
         .await?;
 
     if let Some(details) = &resp.exception_details {
-        return Err(BkError::JsError(format!("click: {}", exception_message(details))));
+        return Err(BkError::JsError(format!(
+            "click: {}",
+            exception_message(details)
+        )));
     }
 
     // Parse the updated bounding rect after scroll
@@ -208,7 +211,10 @@ pub async fn clear_element_content(
         .await?;
 
     if let Some(details) = &resp.exception_details {
-        return Err(BkError::JsError(format!("clear: {}", exception_message(details))));
+        return Err(BkError::JsError(format!(
+            "clear: {}",
+            exception_message(details)
+        )));
     }
 
     let result = resp
@@ -247,7 +253,10 @@ pub async fn scroll_page(
                 .send(&session)
                 .await?;
             if let Some(details) = &resp.exception_details {
-                return Err(BkError::JsError(format!("scroll top: {}", exception_message(details))));
+                return Err(BkError::JsError(format!(
+                    "scroll top: {}",
+                    exception_message(details)
+                )));
             }
         }
         "bottom" => {
@@ -257,7 +266,10 @@ pub async fn scroll_page(
                 .send(&session)
                 .await?;
             if let Some(details) = &resp.exception_details {
-                return Err(BkError::JsError(format!("scroll bottom: {}", exception_message(details))));
+                return Err(BkError::JsError(format!(
+                    "scroll bottom: {}",
+                    exception_message(details)
+                )));
             }
         }
         "up" | "down" | "left" | "right" => {
@@ -319,7 +331,10 @@ pub async fn scroll_to_element_by_index(
         .await?;
 
     if let Some(details) = &resp.exception_details {
-        return Err(BkError::JsError(format!("scroll to element: {}", exception_message(details))));
+        return Err(BkError::JsError(format!(
+            "scroll to element: {}",
+            exception_message(details)
+        )));
     }
 
     let result = resp
@@ -365,7 +380,10 @@ pub async fn scroll_to_element_by_selector(
         .await?;
 
     if let Some(details) = &resp.exception_details {
-        return Err(BkError::JsError(format!("scroll to selector: {}", exception_message(details))));
+        return Err(BkError::JsError(format!(
+            "scroll to selector: {}",
+            exception_message(details)
+        )));
     }
 
     let result = resp
@@ -432,7 +450,10 @@ pub async fn select_option(
         .await?;
 
     if let Some(details) = &resp.exception_details {
-        return Err(BkError::JsError(format!("act.select: {}", exception_message(details))));
+        return Err(BkError::JsError(format!(
+            "act.select: {}",
+            exception_message(details)
+        )));
     }
 
     let json_str = resp
@@ -493,7 +514,10 @@ pub async fn dropdown_options(
         .await?;
 
     if let Some(details) = &resp.exception_details {
-        return Err(BkError::JsError(format!("act.dropdown_options: {}", exception_message(details))));
+        return Err(BkError::JsError(format!(
+            "act.dropdown_options: {}",
+            exception_message(details)
+        )));
     }
 
     let json_str = resp
@@ -565,7 +589,10 @@ pub async fn focus_element(
         .await?;
 
     if let Some(details) = &resp.exception_details {
-        return Err(BkError::JsError(format!("act.focus: {}", exception_message(details))));
+        return Err(BkError::JsError(format!(
+            "act.focus: {}",
+            exception_message(details)
+        )));
     }
 
     let result = resp
@@ -623,13 +650,17 @@ pub async fn upload_files_by_index(
         .await?;
 
     if let Some(details) = &resp.exception_details {
-        return Err(BkError::Other(format!("upload: {}", exception_message(details))));
+        return Err(BkError::Other(format!(
+            "upload: {}",
+            exception_message(details)
+        )));
     }
 
     // The evaluate without returnByValue gives us an objectId for the DOM element
-    let object_id = resp.result.object_id.ok_or_else(|| {
-        BkError::Other("upload: no objectId returned for element".into())
-    })?;
+    let object_id = resp
+        .result
+        .object_id
+        .ok_or_else(|| BkError::Other("upload: no objectId returned for element".into()))?;
 
     // Call DOM.setFileInputFiles
     cdpkit::dom::methods::SetFileInputFiles::new(files.to_vec())
@@ -676,12 +707,16 @@ pub async fn upload_files_by_selector(
         .await?;
 
     if let Some(details) = &resp.exception_details {
-        return Err(BkError::Other(format!("upload: {}", exception_message(details))));
+        return Err(BkError::Other(format!(
+            "upload: {}",
+            exception_message(details)
+        )));
     }
 
-    let object_id = resp.result.object_id.ok_or_else(|| {
-        BkError::Other("upload: no objectId returned for element".into())
-    })?;
+    let object_id = resp
+        .result
+        .object_id
+        .ok_or_else(|| BkError::Other("upload: no objectId returned for element".into()))?;
 
     // Call DOM.setFileInputFiles
     cdpkit::dom::methods::SetFileInputFiles::new(files.to_vec())
@@ -815,7 +850,10 @@ pub async fn fill_fields(
         .await?;
 
     if let Some(details) = &resp.exception_details {
-        return Err(BkError::JsError(format!("fill: {}", exception_message(details))));
+        return Err(BkError::JsError(format!(
+            "fill: {}",
+            exception_message(details)
+        )));
     }
 
     let json_str = resp
@@ -852,9 +890,9 @@ pub fn build_fill_fields_json(fields: &[FillField]) -> String {
 /// The index must be a valid usize. The value is everything after the first `=`,
 /// which allows values to contain `=` and spaces.
 pub fn parse_fill_set(s: &str) -> Result<FillField, String> {
-    let eq_pos = s.find('=').ok_or_else(|| {
-        format!("invalid --set format '{}': expected <index>=<value>", s)
-    })?;
+    let eq_pos = s
+        .find('=')
+        .ok_or_else(|| format!("invalid --set format '{}': expected <index>=<value>", s))?;
     let index_str = &s[..eq_pos];
     let value = &s[eq_pos + 1..];
     let index: usize = index_str.parse().map_err(|_| {
@@ -954,9 +992,13 @@ pub async fn hover_by_target(
     let resolved = resolve_element(cdp, session_id, target).await?;
     let session = cdp.session(session_id);
 
-    cdpkit::input::methods::DispatchMouseEvent::new("mouseMoved", resolved.center.0, resolved.center.1)
-        .send(&session)
-        .await?;
+    cdpkit::input::methods::DispatchMouseEvent::new(
+        "mouseMoved",
+        resolved.center.0,
+        resolved.center.1,
+    )
+    .send(&session)
+    .await?;
 
     Ok(())
 }
@@ -1015,7 +1057,10 @@ pub async fn select_by_target(
         .await?;
 
     if let Some(details) = &resp.exception_details {
-        return Err(BkError::JsError(format!("act.select: {}", exception_message(details))));
+        return Err(BkError::JsError(format!(
+            "act.select: {}",
+            exception_message(details)
+        )));
     }
 
     let json_str = resp
@@ -1120,7 +1165,10 @@ pub async fn dropdown_options_by_target(
         .await?;
 
     if let Some(details) = &resp.exception_details {
-        return Err(BkError::JsError(format!("act.dropdown_options: {}", exception_message(details))));
+        return Err(BkError::JsError(format!(
+            "act.dropdown_options: {}",
+            exception_message(details)
+        )));
     }
 
     let json_str = resp
@@ -1166,7 +1214,10 @@ pub async fn upload_files_by_target(
         .await?;
 
     if let Some(details) = &check_resp.exception_details {
-        return Err(BkError::Other(format!("upload: {}", exception_message(details))));
+        return Err(BkError::Other(format!(
+            "upload: {}",
+            exception_message(details)
+        )));
     }
 
     // Set files
@@ -1201,7 +1252,8 @@ pub async fn fill_fields_by_target(
     let mut results = Vec::with_capacity(fields.len());
 
     for field in fields {
-        let field_result = fill_single_by_target(cdp, session_id, &field.target, &field.value).await;
+        let field_result =
+            fill_single_by_target(cdp, session_id, &field.target, &field.value).await;
         let (status, error) = match field_result {
             Ok(()) => ("ok".to_string(), None),
             Err(e) => ("error".to_string(), Some(e.to_string())),
@@ -1211,7 +1263,12 @@ pub async fn fill_fields_by_target(
             ElementTarget::Index(i) => (Some(*i), None),
             ElementTarget::Selector(_) => (None, None),
         };
-        results.push(FillFieldResult { index, element_ref, status, error });
+        results.push(FillFieldResult {
+            index,
+            element_ref,
+            status,
+            error,
+        });
     }
 
     Ok(results)
@@ -1289,7 +1346,10 @@ async fn fill_single_by_target(
         .await?;
 
     if let Some(details) = &resp.exception_details {
-        return Err(BkError::JsError(format!("fill: {}", exception_message(details))));
+        return Err(BkError::JsError(format!(
+            "fill: {}",
+            exception_message(details)
+        )));
     }
 
     Ok(())
@@ -1337,7 +1397,10 @@ async fn clear_by_object_id(
         .await?;
 
     if let Some(details) = &resp.exception_details {
-        return Err(BkError::JsError(format!("clear: {}", exception_message(details))));
+        return Err(BkError::JsError(format!(
+            "clear: {}",
+            exception_message(details)
+        )));
     }
 
     let result = resp
@@ -1361,9 +1424,9 @@ async fn clear_by_object_id(
 /// - `ref:<backendNodeId>=<value>` — ref-based (e.g. `ref:42=hello`)
 pub fn parse_fill_set_target(s: &str) -> Result<FillFieldTarget, String> {
     if let Some(rest) = s.strip_prefix("ref:") {
-        let eq_pos = rest.find('=').ok_or_else(|| {
-            format!("invalid --set format '{}': expected ref:<id>=<value>", s)
-        })?;
+        let eq_pos = rest
+            .find('=')
+            .ok_or_else(|| format!("invalid --set format '{}': expected ref:<id>=<value>", s))?;
         let id_str = &rest[..eq_pos];
         let value = &rest[eq_pos + 1..];
         let id: i64 = id_str.parse().map_err(|_| {
@@ -1555,15 +1618,27 @@ mod tests {
         let js = build_select_js(0, "shanghai");
         // Must NOT contain JSON.parse for the target value assignment
         // The only JSON.stringify calls should be for return values
-        assert!(!js.contains("JSON.parse("), "should not use JSON.parse: {}", js);
+        assert!(
+            !js.contains("JSON.parse("),
+            "should not use JSON.parse: {}",
+            js
+        );
         // The target should be assigned directly as a string literal
-        assert!(js.contains(r#"const target = "shanghai""#), "should assign directly: {}", js);
+        assert!(
+            js.contains(r#"const target = "shanghai""#),
+            "should assign directly: {}",
+            js
+        );
     }
 
     #[test]
     fn select_js_non_ascii_value() {
         let js = build_select_js(2, "\u{4e0a}\u{6d77}");
-        assert!(!js.contains("JSON.parse("), "should not use JSON.parse: {}", js);
+        assert!(
+            !js.contains("JSON.parse("),
+            "should not use JSON.parse: {}",
+            js
+        );
         // serde_json may escape non-ASCII as \uXXXX or embed literal — both valid JS
         assert!(js.contains("const target = "));
     }
@@ -1571,23 +1646,47 @@ mod tests {
     #[test]
     fn select_js_value_with_quotes_and_backslashes() {
         let js = build_select_js(0, r#"say "hello\world""#);
-        assert!(!js.contains("JSON.parse("), "should not use JSON.parse: {}", js);
+        assert!(
+            !js.contains("JSON.parse("),
+            "should not use JSON.parse: {}",
+            js
+        );
         // serde_json should properly escape the quotes and backslash
-        assert!(js.contains(r#"say \"hello\\world\""#), "should escape properly: {}", js);
+        assert!(
+            js.contains(r#"say \"hello\\world\""#),
+            "should escape properly: {}",
+            js
+        );
     }
 
     #[test]
     fn select_js_value_with_newlines() {
         let js = build_select_js(0, "line1\nline2");
-        assert!(!js.contains("JSON.parse("), "should not use JSON.parse: {}", js);
-        assert!(js.contains(r"line1\nline2"), "should escape newlines: {}", js);
+        assert!(
+            !js.contains("JSON.parse("),
+            "should not use JSON.parse: {}",
+            js
+        );
+        assert!(
+            js.contains(r"line1\nline2"),
+            "should escape newlines: {}",
+            js
+        );
     }
 
     #[test]
     fn select_js_dispatches_both_events() {
         let js = build_select_js(0, "test");
-        assert!(js.contains("dispatchEvent(new Event('change'"), "should dispatch change: {}", js);
-        assert!(js.contains("dispatchEvent(new Event('input'"), "should dispatch input: {}", js);
+        assert!(
+            js.contains("dispatchEvent(new Event('change'"),
+            "should dispatch change: {}",
+            js
+        );
+        assert!(
+            js.contains("dispatchEvent(new Event('input'"),
+            "should dispatch input: {}",
+            js
+        );
     }
 
     #[test]
@@ -1596,13 +1695,20 @@ mod tests {
         // Verify value match comes before text match
         let value_match_pos = js.find("o.value === target").unwrap();
         let text_match_pos = js.find("o.textContent.trim() === target").unwrap();
-        assert!(value_match_pos < text_match_pos, "value match should come before text match");
+        assert!(
+            value_match_pos < text_match_pos,
+            "value match should come before text match"
+        );
     }
 
     #[test]
     fn select_js_returns_available_options_on_no_match() {
         let js = build_select_js(0, "nonexistent");
-        assert!(js.contains("available_options"), "should report available_options on failure: {}", js);
+        assert!(
+            js.contains("available_options"),
+            "should report available_options on failure: {}",
+            js
+        );
     }
 
     // ── Scroll tests ──────────────────────────────────────────────────
@@ -1640,8 +1746,16 @@ mod tests {
     #[test]
     fn scroll_to_selector_js_no_json_parse() {
         let js = build_scroll_to_selector_js(".my-class");
-        assert!(!js.contains("JSON.parse("), "should not use JSON.parse: {}", js);
-        assert!(js.contains(r#"document.querySelector(".my-class")"#), "should embed selector: {}", js);
+        assert!(
+            !js.contains("JSON.parse("),
+            "should not use JSON.parse: {}",
+            js
+        );
+        assert!(
+            js.contains(r#"document.querySelector(".my-class")"#),
+            "should embed selector: {}",
+            js
+        );
     }
 
     #[test]
@@ -1649,26 +1763,46 @@ mod tests {
         let js = build_scroll_to_selector_js(r#"div[data-id="foo"]"#);
         assert!(!js.contains("JSON.parse("), "should not use JSON.parse");
         // serde_json escapes internal quotes
-        assert!(js.contains(r#"div[data-id=\"foo\"]"#), "should escape quotes in selector: {}", js);
+        assert!(
+            js.contains(r#"div[data-id=\"foo\"]"#),
+            "should escape quotes in selector: {}",
+            js
+        );
     }
 
     #[test]
     fn scroll_to_selector_js_uses_scroll_into_view_center() {
         let js = build_scroll_to_selector_js("input");
-        assert!(js.contains("scrollIntoView({block: 'center'})"), "should use block:center: {}", js);
+        assert!(
+            js.contains("scrollIntoView({block: 'center'})"),
+            "should use block:center: {}",
+            js
+        );
     }
 
     #[test]
     fn scroll_to_index_js_uses_scroll_into_view_center() {
         let js = build_scroll_to_index_js(3);
-        assert!(js.contains("scrollIntoView({block: 'center'})"), "should use block:center: {}", js);
-        assert!(js.contains("all[3]"), "should reference correct index: {}", js);
+        assert!(
+            js.contains("scrollIntoView({block: 'center'})"),
+            "should use block:center: {}",
+            js
+        );
+        assert!(
+            js.contains("all[3]"),
+            "should reference correct index: {}",
+            js
+        );
     }
 
     #[test]
     fn scroll_to_index_js_validates_element_existence() {
         let js = build_scroll_to_index_js(0);
-        assert!(js.contains("if (!el) return 'element not found'"), "should check element exists: {}", js);
+        assert!(
+            js.contains("if (!el) return 'element not found'"),
+            "should check element exists: {}",
+            js
+        );
     }
 
     #[test]
@@ -1682,7 +1816,10 @@ mod tests {
     fn scroll_direction_bottom_uses_scroll_height() {
         // Verify the JS used for 'bottom' direction
         let js = "window.scrollTo(0, document.documentElement.scrollHeight)";
-        assert!(js.contains("scrollHeight"), "bottom should use scrollHeight");
+        assert!(
+            js.contains("scrollHeight"),
+            "bottom should use scrollHeight"
+        );
         assert!(js.contains("scrollTo(0,"), "bottom should scrollTo y");
     }
 
@@ -1729,36 +1866,72 @@ mod tests {
     #[test]
     fn clear_js_dispatches_input_and_change_events() {
         let js = build_clear_js(0);
-        assert!(js.contains("dispatchEvent(new Event('input'"), "should dispatch input event: {}", js);
-        assert!(js.contains("dispatchEvent(new Event('change'"), "should dispatch change event: {}", js);
+        assert!(
+            js.contains("dispatchEvent(new Event('input'"),
+            "should dispatch input event: {}",
+            js
+        );
+        assert!(
+            js.contains("dispatchEvent(new Event('change'"),
+            "should dispatch change event: {}",
+            js
+        );
     }
 
     #[test]
     fn clear_js_uses_native_value_setter_for_react_compat() {
         let js = build_clear_js(0);
-        assert!(js.contains("nativeInputValueSetter"), "should use native setter for React compat: {}", js);
-        assert!(js.contains("Object.getOwnPropertyDescriptor"), "should get native descriptor: {}", js);
+        assert!(
+            js.contains("nativeInputValueSetter"),
+            "should use native setter for React compat: {}",
+            js
+        );
+        assert!(
+            js.contains("Object.getOwnPropertyDescriptor"),
+            "should get native descriptor: {}",
+            js
+        );
     }
 
     #[test]
     fn clear_js_handles_contenteditable() {
         let js = build_clear_js(0);
-        assert!(js.contains("isContentEditable"), "should check contentEditable: {}", js);
-        assert!(js.contains("execCommand('selectAll'"), "should selectAll for contenteditable: {}", js);
-        assert!(js.contains("execCommand('delete'"), "should delete for contenteditable: {}", js);
+        assert!(
+            js.contains("isContentEditable"),
+            "should check contentEditable: {}",
+            js
+        );
+        assert!(
+            js.contains("execCommand('selectAll'"),
+            "should selectAll for contenteditable: {}",
+            js
+        );
+        assert!(
+            js.contains("execCommand('delete'"),
+            "should delete for contenteditable: {}",
+            js
+        );
     }
 
     #[test]
     fn clear_js_handles_input_and_textarea() {
         let js = build_clear_js(2);
-        assert!(js.contains("tag === 'input' || tag === 'textarea'"), "should check input/textarea: {}", js);
+        assert!(
+            js.contains("tag === 'input' || tag === 'textarea'"),
+            "should check input/textarea: {}",
+            js
+        );
         assert!(js.contains("all[2]"), "should use correct index: {}", js);
     }
 
     #[test]
     fn clear_js_returns_error_for_non_clearable() {
         let js = build_clear_js(0);
-        assert!(js.contains("'element is not clearable'"), "should return error for non-clearable: {}", js);
+        assert!(
+            js.contains("'element is not clearable'"),
+            "should return error for non-clearable: {}",
+            js
+        );
     }
 
     #[test]
@@ -1807,33 +1980,77 @@ mod tests {
     #[test]
     fn upload_by_index_js_validates_file_input() {
         let js = build_upload_by_index_js(3);
-        assert!(js.contains("all[3]"), "should reference correct index: {}", js);
-        assert!(js.contains("tagName.toLowerCase() !== 'input'"), "should check tagName: {}", js);
-        assert!(js.contains("type.toLowerCase() !== 'file'"), "should check type=file: {}", js);
+        assert!(
+            js.contains("all[3]"),
+            "should reference correct index: {}",
+            js
+        );
+        assert!(
+            js.contains("tagName.toLowerCase() !== 'input'"),
+            "should check tagName: {}",
+            js
+        );
+        assert!(
+            js.contains("type.toLowerCase() !== 'file'"),
+            "should check type=file: {}",
+            js
+        );
     }
 
     #[test]
     fn upload_by_index_js_throws_on_wrong_element() {
         let js = build_upload_by_index_js(0);
-        assert!(js.contains("throw new Error"), "should throw on wrong element type: {}", js);
-        assert!(js.contains("is not an input[type=file]"), "error message should describe the issue: {}", js);
+        assert!(
+            js.contains("throw new Error"),
+            "should throw on wrong element type: {}",
+            js
+        );
+        assert!(
+            js.contains("is not an input[type=file]"),
+            "error message should describe the issue: {}",
+            js
+        );
     }
 
     #[test]
     fn upload_by_index_js_returns_element_reference() {
         let js = build_upload_by_index_js(0);
         // Must return `el` (not a serialized value) so we get an objectId
-        assert!(js.contains("return el;"), "should return element reference: {}", js);
-        assert!(!js.contains("JSON.stringify"), "should not stringify the result: {}", js);
-        assert!(!js.contains("JSON.parse"), "should not use JSON.parse: {}", js);
+        assert!(
+            js.contains("return el;"),
+            "should return element reference: {}",
+            js
+        );
+        assert!(
+            !js.contains("JSON.stringify"),
+            "should not stringify the result: {}",
+            js
+        );
+        assert!(
+            !js.contains("JSON.parse"),
+            "should not use JSON.parse: {}",
+            js
+        );
     }
 
     #[test]
     fn upload_by_selector_js_validates_file_input() {
         let js = build_upload_by_selector_js("input[type=file]");
-        assert!(js.contains(r#"document.querySelector("input[type=file]")"#), "should embed selector: {}", js);
-        assert!(js.contains("tagName.toLowerCase() !== 'input'"), "should check tagName: {}", js);
-        assert!(js.contains("type.toLowerCase() !== 'file'"), "should check type=file: {}", js);
+        assert!(
+            js.contains(r#"document.querySelector("input[type=file]")"#),
+            "should embed selector: {}",
+            js
+        );
+        assert!(
+            js.contains("tagName.toLowerCase() !== 'input'"),
+            "should check tagName: {}",
+            js
+        );
+        assert!(
+            js.contains("type.toLowerCase() !== 'file'"),
+            "should check type=file: {}",
+            js
+        );
     }
 
     #[test]
@@ -1841,14 +2058,26 @@ mod tests {
         let js = build_upload_by_selector_js(r#"input[name="avatar"]"#);
         assert!(!js.contains("JSON.parse("), "should not use JSON.parse");
         // serde_json should escape internal quotes
-        assert!(js.contains(r#"input[name=\"avatar\"]"#), "should escape quotes: {}", js);
+        assert!(
+            js.contains(r#"input[name=\"avatar\"]"#),
+            "should escape quotes: {}",
+            js
+        );
     }
 
     #[test]
     fn upload_by_selector_js_returns_element_reference() {
         let js = build_upload_by_selector_js("#file-input");
-        assert!(js.contains("return el;"), "should return element reference: {}", js);
-        assert!(!js.contains("JSON.stringify"), "should not stringify: {}", js);
+        assert!(
+            js.contains("return el;"),
+            "should return element reference: {}",
+            js
+        );
+        assert!(
+            !js.contains("JSON.stringify"),
+            "should not stringify: {}",
+            js
+        );
     }
 
     #[test]
@@ -1856,8 +2085,16 @@ mod tests {
         let files = vec!["relative/path.txt".to_string()];
         let err = validate_file_paths(&files).unwrap_err();
         let msg = err.to_string();
-        assert!(msg.contains("must be absolute"), "should require absolute path: {}", msg);
-        assert!(msg.contains("relative/path.txt"), "should mention the path: {}", msg);
+        assert!(
+            msg.contains("must be absolute"),
+            "should require absolute path: {}",
+            msg
+        );
+        assert!(
+            msg.contains("relative/path.txt"),
+            "should mention the path: {}",
+            msg
+        );
     }
 
     #[test]
@@ -1869,7 +2106,11 @@ mod tests {
         }];
         let err = validate_file_paths(&files).unwrap_err();
         let msg = err.to_string();
-        assert!(msg.contains("file not found"), "should report not found: {}", msg);
+        assert!(
+            msg.contains("file not found"),
+            "should report not found: {}",
+            msg
+        );
     }
 
     #[test]
@@ -1878,7 +2119,10 @@ mod tests {
         let manifest = std::env::var("CARGO_MANIFEST_DIR").unwrap();
         let cargo_toml = std::path::PathBuf::from(manifest).join("Cargo.toml");
         let files = vec![cargo_toml.to_string_lossy().to_string()];
-        assert!(validate_file_paths(&files).is_ok(), "should accept existing file");
+        assert!(
+            validate_file_paths(&files).is_ok(),
+            "should accept existing file"
+        );
     }
 
     #[test]
@@ -1887,7 +2131,11 @@ mod tests {
         let files = vec![manifest];
         let err = validate_file_paths(&files).unwrap_err();
         let msg = err.to_string();
-        assert!(msg.contains("not a file"), "should reject directory: {}", msg);
+        assert!(
+            msg.contains("not a file"),
+            "should reject directory: {}",
+            msg
+        );
     }
 
     #[test]
@@ -1903,7 +2151,11 @@ mod tests {
         let files = vec![cargo_toml.to_string_lossy().to_string(), bad_file];
         let err = validate_file_paths(&files).unwrap_err();
         let msg = err.to_string();
-        assert!(msg.contains("file not found"), "should catch second bad file: {}", msg);
+        assert!(
+            msg.contains("file not found"),
+            "should catch second bad file: {}",
+            msg
+        );
     }
 
     // ── Fill (batch) tests ───────────────────────────────────────────────
@@ -1956,7 +2208,10 @@ mod tests {
 
     #[test]
     fn build_fill_fields_json_single() {
-        let fields = vec![FillField { index: 0, value: "hello".to_string() }];
+        let fields = vec![FillField {
+            index: 0,
+            value: "hello".to_string(),
+        }];
         let json = build_fill_fields_json(&fields);
         assert_eq!(json, r#"[{index:0,value:"hello"}]"#);
     }
@@ -1964,8 +2219,14 @@ mod tests {
     #[test]
     fn build_fill_fields_json_multiple() {
         let fields = vec![
-            FillField { index: 1, value: "one".to_string() },
-            FillField { index: 5, value: "five".to_string() },
+            FillField {
+                index: 1,
+                value: "one".to_string(),
+            },
+            FillField {
+                index: 5,
+                value: "five".to_string(),
+            },
         ];
         let json = build_fill_fields_json(&fields);
         assert_eq!(json, r#"[{index:1,value:"one"},{index:5,value:"five"}]"#);
@@ -1973,26 +2234,43 @@ mod tests {
 
     #[test]
     fn build_fill_fields_json_escapes_special_chars() {
-        let fields = vec![FillField { index: 0, value: "say \"hi\"\nnewline\\back".to_string() }];
+        let fields = vec![FillField {
+            index: 0,
+            value: "say \"hi\"\nnewline\\back".to_string(),
+        }];
         let json = build_fill_fields_json(&fields);
         // serde_json escapes quotes, newlines, backslashes
         assert!(json.contains(r#"\"hi\""#), "should escape quotes: {}", json);
         assert!(json.contains(r#"\n"#), "should escape newline: {}", json);
         assert!(json.contains(r#"\\"#), "should escape backslash: {}", json);
-        assert!(!json.contains("JSON.parse"), "should not use JSON.parse: {}", json);
+        assert!(
+            !json.contains("JSON.parse"),
+            "should not use JSON.parse: {}",
+            json
+        );
     }
 
     #[test]
     fn build_fill_fields_json_no_json_parse() {
-        let fields = vec![FillField { index: 2, value: "test".to_string() }];
+        let fields = vec![FillField {
+            index: 2,
+            value: "test".to_string(),
+        }];
         let json = build_fill_fields_json(&fields);
-        assert!(!json.contains("JSON.parse"), "should not use JSON.parse: {}", json);
+        assert!(
+            !json.contains("JSON.parse"),
+            "should not use JSON.parse: {}",
+            json
+        );
     }
 
     #[test]
     fn fill_js_handles_checkbox_true_values() {
         // Verify the JS contains the truthy value check
-        let fields = vec![FillField { index: 0, value: "true".to_string() }];
+        let fields = vec![FillField {
+            index: 0,
+            value: "true".to_string(),
+        }];
         let fields_json = build_fill_fields_json(&fields);
         let js = format!(
             r#"const fields = {};
@@ -2000,23 +2278,36 @@ mod tests {
             fields_json
         );
         // The fill JS should check for truthy values
-        assert!(js.contains("'true','1','on','yes'"), "should have truthy checks");
+        assert!(
+            js.contains("'true','1','on','yes'"),
+            "should have truthy checks"
+        );
     }
 
     #[test]
     fn fill_js_handles_select_match_by_value_then_text() {
         // This test verifies the JS logic structure (not execution)
-        let fields = vec![FillField { index: 3, value: "option_val".to_string() }];
+        let fields = vec![FillField {
+            index: 3,
+            value: "option_val".to_string(),
+        }];
         let fields_json = build_fill_fields_json(&fields);
         // Verify the embedded value is correct
-        assert!(fields_json.contains(r#""option_val""#), "should contain value literal: {}", fields_json);
+        assert!(
+            fields_json.contains(r#""option_val""#),
+            "should contain value literal: {}",
+            fields_json
+        );
     }
 
     #[test]
     fn fill_js_text_input_uses_native_setter() {
         // The fill JS for text inputs should use native value setter (React compat)
         // We test this by inspecting what fill_fields would generate
-        let fields = vec![FillField { index: 0, value: "test".to_string() }];
+        let fields = vec![FillField {
+            index: 0,
+            value: "test".to_string(),
+        }];
         let fields_json = build_fill_fields_json(&fields);
         // The actual JS template includes native setter logic
         let js = format!(
@@ -2027,7 +2318,11 @@ mod tests {
     const setter = Object.getOwnPropertyDescriptor(proto, 'value');
 }})()"#
         );
-        assert!(js.contains("getOwnPropertyDescriptor"), "should use native setter: {}", js);
+        assert!(
+            js.contains("getOwnPropertyDescriptor"),
+            "should use native setter: {}",
+            js
+        );
     }
 
     #[test]
@@ -2052,7 +2347,11 @@ mod tests {
         };
         let json = serde_json::to_string(&result_ref).unwrap();
         assert!(json.contains("\"ref\":42"), "got: {}", json);
-        assert!(!json.contains("\"index\""), "should skip None index: {}", json);
+        assert!(
+            !json.contains("\"index\""),
+            "should skip None index: {}",
+            json
+        );
 
         let result_err = FillFieldResult {
             index: Some(5),

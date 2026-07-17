@@ -152,9 +152,10 @@ async fn resolve_by_index_js(
         )));
     }
 
-    let object_id = resp.result.object_id.ok_or_else(|| {
-        BkError::Other(format!("element at index {} not found in page", index))
-    })?;
+    let object_id = resp
+        .result
+        .object_id
+        .ok_or_else(|| BkError::Other(format!("element at index {} not found in page", index)))?;
 
     // Get bounding rect via callFunctionOn
     let rect_resp = cdpkit::runtime::methods::CallFunctionOn::new(
@@ -166,8 +167,8 @@ async fn resolve_by_index_js(
     .await?;
 
     let center = if let Some(val) = rect_resp.result.value.as_ref().and_then(|v| v.as_str()) {
-        let rect: serde_json::Value = serde_json::from_str(val)
-            .map_err(|e| BkError::Other(format!("parse rect: {}", e)))?;
+        let rect: serde_json::Value =
+            serde_json::from_str(val).map_err(|e| BkError::Other(format!("parse rect: {}", e)))?;
         let x = rect["x"].as_f64().unwrap_or(0.0);
         let y = rect["y"].as_f64().unwrap_or(0.0);
         let w = rect["width"].as_f64().unwrap_or(0.0);
@@ -229,9 +230,10 @@ async fn resolve_by_selector(
         )));
     }
 
-    let object_id = resp.result.object_id.ok_or_else(|| {
-        BkError::Other(format!("no element found for selector: {}", selector))
-    })?;
+    let object_id = resp
+        .result
+        .object_id
+        .ok_or_else(|| BkError::Other(format!("no element found for selector: {}", selector)))?;
 
     // Get bounding rect via callFunctionOn
     let rect_resp = cdpkit::runtime::methods::CallFunctionOn::new(
@@ -243,15 +245,17 @@ async fn resolve_by_selector(
     .await?;
 
     let center = if let Some(val) = rect_resp.result.value.as_ref().and_then(|v| v.as_str()) {
-        let rect: serde_json::Value = serde_json::from_str(val)
-            .map_err(|e| BkError::Other(format!("parse rect: {}", e)))?;
+        let rect: serde_json::Value =
+            serde_json::from_str(val).map_err(|e| BkError::Other(format!("parse rect: {}", e)))?;
         let x = rect["x"].as_f64().unwrap_or(0.0);
         let y = rect["y"].as_f64().unwrap_or(0.0);
         let w = rect["width"].as_f64().unwrap_or(0.0);
         let h = rect["height"].as_f64().unwrap_or(0.0);
         (x + w / 2.0, y + h / 2.0)
     } else {
-        return Err(BkError::Other("could not get element bounds for selector".to_string()));
+        return Err(BkError::Other(
+            "could not get element bounds for selector".to_string(),
+        ));
     };
 
     // Get backendNodeId via describeNode
@@ -327,8 +331,8 @@ pub async fn get_center_by_backend_node_id(
     .await?;
 
     if let Some(val) = rect_resp.result.value.as_ref().and_then(|v| v.as_str()) {
-        let rect: serde_json::Value = serde_json::from_str(val)
-            .map_err(|e| BkError::Other(format!("parse rect: {}", e)))?;
+        let rect: serde_json::Value =
+            serde_json::from_str(val).map_err(|e| BkError::Other(format!("parse rect: {}", e)))?;
         let x = rect["x"].as_f64().unwrap_or(0.0);
         let y = rect["y"].as_f64().unwrap_or(0.0);
         let w = rect["width"].as_f64().unwrap_or(0.0);
@@ -361,9 +365,9 @@ pub async fn resolve_object_id(
             }
         })?;
 
-    resp.object.object_id.ok_or_else(|| {
-        BkError::Other("DOM.resolveNode returned no objectId".to_string())
-    })
+    resp.object
+        .object_id
+        .ok_or_else(|| BkError::Other("DOM.resolveNode returned no objectId".to_string()))
 }
 
 /// Compute the center of a CDP quad (array of 8 floats: x1,y1,x2,y2,x3,y3,x4,y4).

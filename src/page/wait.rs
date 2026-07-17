@@ -56,13 +56,34 @@ impl WaitConditions {
     /// Parse wait conditions from daemon request params.
     pub fn from_params(params: &Value) -> Result<Self, BkError> {
         let time = params.get("time").and_then(|v| v.as_u64());
-        let selector = params.get("selector").and_then(|v| v.as_str()).map(|s| s.to_string());
-        let text = params.get("text").and_then(|v| v.as_str()).map(|s| s.to_string());
-        let text_gone = params.get("text_gone").and_then(|v| v.as_str()).map(|s| s.to_string());
-        let url = params.get("url").and_then(|v| v.as_str()).map(|s| s.to_string());
-        let load_state = params.get("load_state").and_then(|v| v.as_str()).map(|s| s.to_string());
-        let js_fn = params.get("fn").and_then(|v| v.as_str()).map(|s| s.to_string());
-        let timeout = params.get("timeout").and_then(|v| v.as_u64()).unwrap_or(DEFAULT_TIMEOUT_MS);
+        let selector = params
+            .get("selector")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        let text = params
+            .get("text")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        let text_gone = params
+            .get("text_gone")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        let url = params
+            .get("url")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        let load_state = params
+            .get("load_state")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        let js_fn = params
+            .get("fn")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        let timeout = params
+            .get("timeout")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(DEFAULT_TIMEOUT_MS);
 
         // Validate load_state if provided; "networkidle" is parsed into its own flag
         let mut networkidle = false;
@@ -115,13 +136,27 @@ impl WaitConditions {
     /// Describe which conditions are configured (for error messages).
     fn pending_descriptions(&self) -> Vec<&'static str> {
         let mut descs = Vec::new();
-        if self.selector.is_some() { descs.push("selector"); }
-        if self.text.is_some() { descs.push("text"); }
-        if self.text_gone.is_some() { descs.push("text_gone"); }
-        if self.url.is_some() { descs.push("url"); }
-        if self.load_state.is_some() { descs.push("load_state"); }
-        if self.networkidle { descs.push("networkidle"); }
-        if self.js_fn.is_some() { descs.push("fn"); }
+        if self.selector.is_some() {
+            descs.push("selector");
+        }
+        if self.text.is_some() {
+            descs.push("text");
+        }
+        if self.text_gone.is_some() {
+            descs.push("text_gone");
+        }
+        if self.url.is_some() {
+            descs.push("url");
+        }
+        if self.load_state.is_some() {
+            descs.push("load_state");
+        }
+        if self.networkidle {
+            descs.push("networkidle");
+        }
+        if self.js_fn.is_some() {
+            descs.push("fn");
+        }
         descs
     }
 }
@@ -175,12 +210,16 @@ pub async fn wait_for_conditions(
     // Set up networkidle tracking if requested.
     // Subscribe BEFORE any polling begins so we don't miss events.
     let mut req_stream = if conditions.networkidle {
-        Some(cdpkit::network::events::RequestWillBeSent::subscribe(&session))
+        Some(cdpkit::network::events::RequestWillBeSent::subscribe(
+            &session,
+        ))
     } else {
         None
     };
     let mut fin_stream = if conditions.networkidle {
-        Some(cdpkit::network::events::LoadingFinished::subscribe(&session))
+        Some(cdpkit::network::events::LoadingFinished::subscribe(
+            &session,
+        ))
     } else {
         None
     };
@@ -291,10 +330,7 @@ async fn check_poll_conditions(
     match resp {
         Ok(r) => {
             if let Some(details) = &r.exception_details {
-                tracing::debug!(
-                    "wait poll JS error: {}",
-                    exception_message(details)
-                );
+                tracing::debug!("wait poll JS error: {}", exception_message(details));
                 None
             } else if let Some(val) = r.result.value.as_ref() {
                 if let Some(result) = val.as_object() {
@@ -434,7 +470,9 @@ fn build_condition_check_js(conditions: &WaitConditions) -> String {
 
     if let Some(ref load_state) = conditions.load_state {
         let target_state = match load_state.as_str() {
-            "domcontentloaded" => r#"(document.readyState === 'interactive' || document.readyState === 'complete')"#,
+            "domcontentloaded" => {
+                r#"(document.readyState === 'interactive' || document.readyState === 'complete')"#
+            }
             // "load" or default
             _ => r#"(document.readyState === 'complete')"#,
         };
@@ -448,15 +486,31 @@ fn build_condition_check_js(conditions: &WaitConditions) -> String {
 
     // Build condition names matching the checks
     let mut names = Vec::new();
-    if conditions.selector.is_some() { names.push("selector"); }
-    if conditions.text.is_some() { names.push("text"); }
-    if conditions.text_gone.is_some() { names.push("text_gone"); }
-    if conditions.url.is_some() { names.push("url"); }
-    if conditions.load_state.is_some() { names.push("load_state"); }
-    if conditions.js_fn.is_some() { names.push("fn"); }
+    if conditions.selector.is_some() {
+        names.push("selector");
+    }
+    if conditions.text.is_some() {
+        names.push("text");
+    }
+    if conditions.text_gone.is_some() {
+        names.push("text_gone");
+    }
+    if conditions.url.is_some() {
+        names.push("url");
+    }
+    if conditions.load_state.is_some() {
+        names.push("load_state");
+    }
+    if conditions.js_fn.is_some() {
+        names.push("fn");
+    }
 
     // If time was also a condition, it was already satisfied before polling
-    let time_met = if conditions.time.is_some() { r#""time","# } else { "" };
+    let time_met = if conditions.time.is_some() {
+        r#""time","#
+    } else {
+        ""
+    };
 
     let checks_js: String = checks
         .iter()
@@ -768,7 +822,11 @@ mod tests {
             timeout: 30000,
         };
         let js = build_condition_check_js(&conds);
-        assert!(js.contains("document.querySelectorAll('.item').length > 3"), "js: {}", js);
+        assert!(
+            js.contains("document.querySelectorAll('.item').length > 3"),
+            "js: {}",
+            js
+        );
         assert!(js.contains("!!("), "js: {}", js);
     }
 

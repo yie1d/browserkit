@@ -225,7 +225,11 @@ mod tests {
     #[test]
     fn session_tracks_tabs() {
         let mut s = Session::new_default("localhost:9222".into());
-        s.add_tab("TAB1".into(), "https://example.com".into(), "Example".into());
+        s.add_tab(
+            "TAB1".into(),
+            "https://example.com".into(),
+            "Example".into(),
+        );
         assert_eq!(s.tab_count(), 1);
         assert_eq!(s.active_target, Some("TAB1".into()));
 
@@ -243,7 +247,11 @@ mod tests {
     fn session_tab_limit_check() {
         let mut s = Session::new_default("localhost:9222".into());
         for i in 0..5 {
-            s.add_tab(format!("T{i}"), format!("https://t{i}.com"), format!("T{i}"));
+            s.add_tab(
+                format!("T{i}"),
+                format!("https://t{i}.com"),
+                format!("T{i}"),
+            );
         }
         assert!(!s.can_add_tab(5)); // at limit
         assert!(s.can_add_tab(6)); // higher limit OK
@@ -329,6 +337,9 @@ mod tests {
         let json = serde_json::to_value(&err).unwrap();
         assert_eq!(json["ok"], false);
         assert_eq!(json["error"]["code"], "CHROME_DISCONNECTED");
-        assert!(json["error"]["message"].as_str().unwrap().contains("default"));
+        assert!(json["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("default"));
     }
 }

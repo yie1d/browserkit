@@ -96,9 +96,10 @@ where
     // BufReader makes this efficient — it reads from its internal buffer, not
     // from the underlying reader on each call.
     loop {
-        let buf = reader.fill_buf().await.map_err(|e| {
-            Response::err(format!("IO error: {e}"))
-        })?;
+        let buf = reader
+            .fill_buf()
+            .await
+            .map_err(|e| Response::err(format!("IO error: {e}")))?;
 
         if buf.is_empty() {
             if total == 0 {
@@ -154,8 +155,7 @@ pub async fn write_response<W>(writer: &mut BufWriter<W>, resp: &Response) -> st
 where
     W: tokio::io::AsyncWrite + Unpin,
 {
-    let json = serde_json::to_string(resp)
-        .map_err(std::io::Error::other)?;
+    let json = serde_json::to_string(resp).map_err(std::io::Error::other)?;
     writer.write_all(json.as_bytes()).await?;
     writer.write_all(b"\n").await?;
     writer.flush().await?;
@@ -196,10 +196,8 @@ mod tests {
 
     #[test]
     fn request_with_token_deserializes() {
-        let req: Request = serde_json::from_str(
-            r#"{"cmd":"ping","params":{},"token":"abc123"}"#,
-        )
-        .unwrap();
+        let req: Request =
+            serde_json::from_str(r#"{"cmd":"ping","params":{},"token":"abc123"}"#).unwrap();
         assert_eq!(req.cmd, "ping");
         assert_eq!(req.token, Some("abc123".into()));
     }
@@ -312,7 +310,10 @@ mod tests {
         assert!(!err.ok);
         let error = err.error.unwrap();
         assert_eq!(error["code"], "INVALID_ARGUMENT");
-        assert!(error["message"].as_str().unwrap().contains("invalid request"));
+        assert!(error["message"]
+            .as_str()
+            .unwrap()
+            .contains("invalid request"));
     }
 
     #[tokio::test]
@@ -322,7 +323,12 @@ mod tests {
         let mut reader = BufReader::new(&oversized[..]);
         let err = read_request(&mut reader).await.unwrap_err();
         assert!(!err.ok);
-        assert!(err.error.unwrap().as_str().unwrap().contains("request too large"));
+        assert!(err
+            .error
+            .unwrap()
+            .as_str()
+            .unwrap()
+            .contains("request too large"));
     }
 
     #[tokio::test]
@@ -343,8 +349,11 @@ mod tests {
 
     #[test]
     fn response_error_detail_has_correct_structure() {
-        let resp =
-            Response::error_detail(ErrorCode::RefNotFound, "element ref 42 not found".into(), None);
+        let resp = Response::error_detail(
+            ErrorCode::RefNotFound,
+            "element ref 42 not found".into(),
+            None,
+        );
         assert!(!resp.ok);
         let err = resp.error.unwrap();
         assert_eq!(err["code"], "REF_NOT_FOUND");

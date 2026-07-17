@@ -5,17 +5,19 @@ use std::sync::Arc;
 use serde_json::json;
 use tracing::info;
 
+use super::common::resolve_session_target;
 use crate::daemon::protocol::{Request, Response};
 use crate::daemon::state::DaemonState;
 use crate::error::BkError;
-use super::common::resolve_session_target;
 
 pub async fn handle_debug_block(req: &Request, state: &Arc<DaemonState>) -> Response {
     do_debug_block(req, state).await.unwrap_or_else(|resp| resp)
 }
 
 pub async fn handle_debug_unblock(req: &Request, state: &Arc<DaemonState>) -> Response {
-    do_debug_unblock(req, state).await.unwrap_or_else(|resp| resp)
+    do_debug_unblock(req, state)
+        .await
+        .unwrap_or_else(|resp| resp)
 }
 
 /// Explicit legacy wrapper retained until the legacy route family is removed.
@@ -30,10 +32,15 @@ pub async fn handle_network_unblock(req: &Request, state: &Arc<DaemonState>) -> 
 
 async fn do_debug_block(req: &Request, state: &Arc<DaemonState>) -> Result<Response, Response> {
     let ctx = resolve_session_target(state, &req.params)?;
-    let pattern = req.params.get("pattern").and_then(|v| v.as_str())
-        .ok_or_else(|| Response::from(BkError::InvalidRequest(
-            "debug.block requires 'pattern' param".into()
-        )))?;
+    let pattern = req
+        .params
+        .get("pattern")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| {
+            Response::from(BkError::InvalidRequest(
+                "debug.block requires 'pattern' param".into(),
+            ))
+        })?;
     #[allow(deprecated)]
     let cmd = cdpkit::network::methods::SetBlockedUrLs::new().with_urls(vec![pattern.to_string()]);
     let session = ctx.cdp.session(&ctx.cdp_session_id);

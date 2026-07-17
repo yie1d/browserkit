@@ -130,7 +130,10 @@ pub async fn handle_close(req: &Request, state: &Arc<DaemonState>) -> Response {
         None => {
             return Response::error_detail(
                 ErrorCode::TargetNotFound,
-                format!("target '{}' not found in session '{}'", target_id, session_name),
+                format!(
+                    "target '{}' not found in session '{}'",
+                    target_id, session_name
+                ),
                 Some("run 'bk tabs' to see available tabs".into()),
             )
         }
@@ -140,7 +143,10 @@ pub async fn handle_close(req: &Request, state: &Arc<DaemonState>) -> Response {
     let browser_host = session.browser_host.clone();
     drop(session); // Release DashMap ref before async operations
 
-    let cdp = state.browsers.get(&browser_host).map(|b| Arc::clone(&b.cdp));
+    let cdp = state
+        .browsers
+        .get(&browser_host)
+        .map(|b| Arc::clone(&b.cdp));
     if let Err(error) = close_session_target(cdp.as_deref(), &close_request).await {
         return Response::error_detail(ErrorCode::DaemonError, error.to_string(), None);
     }

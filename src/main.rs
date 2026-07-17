@@ -55,7 +55,12 @@ use browserkit::daemon::protocol::Response;
 // ── Top-level CLI ──────────────────────────────────────────────
 
 #[derive(Parser)]
-#[command(name = "bk", about = "Persistent browser runtime CLI for AI agents", long_about = "Persistent browser runtime CLI for AI agents.\n\nAll output is JSON. Commands communicate with the local browserkit daemon over TCP.", version)]
+#[command(
+    name = "bk",
+    about = "Persistent browser runtime CLI for AI agents",
+    long_about = "Persistent browser runtime CLI for AI agents.\n\nAll output is JSON. Commands communicate with the local browserkit daemon over TCP.",
+    version
+)]
 pub struct Cli {
     /// Target session name (or set BK_SESSION env var)
     #[arg(long = "session", global = true, env = "BK_SESSION")]
@@ -88,7 +93,6 @@ pub enum Command {
     // ══════════════════════════════════════════════════════════════
     // V2 PRIMARY COMMANDS
     // ══════════════════════════════════════════════════════════════
-
     /// Set up Chrome remote debugging (interactive, one-time, no daemon needed)
     #[command(about = "Set up Chrome remote debugging (interactive, one-time)")]
     Setup,
@@ -330,9 +334,7 @@ pub enum Command {
 
     /// Generate shell completions
     #[command(hide = true)]
-    Completions {
-        shell: clap_complete::Shell,
-    },
+    Completions { shell: clap_complete::Shell },
 }
 
 // ── V2 Session subcommands ────────────────────────────────────────
@@ -530,7 +532,10 @@ async fn async_main() {
     let cli = Cli::parse();
 
     // daemon start is special — runs the server in foreground
-    if let Command::Daemon { action: DaemonAction::Start } = &cli.command {
+    if let Command::Daemon {
+        action: DaemonAction::Start,
+    } = &cli.command
+    {
         run_daemon_start().await;
         return;
     }
@@ -549,7 +554,10 @@ async fn async_main() {
     }
 
     // daemon stop / daemon status: connect-only, never auto-start a daemon
-    if let Command::Daemon { action: _action @ (DaemonAction::Stop | DaemonAction::Status) } = &cli.command {
+    if let Command::Daemon {
+        action: _action @ (DaemonAction::Stop | DaemonAction::Status),
+    } = &cli.command
+    {
         match DaemonClient::connect_only().await {
             Ok(mut client) => {
                 let result = dispatch(&cli, &mut client).await;
@@ -559,14 +567,20 @@ async fn async_main() {
                 }
                 // After daemon.stop, wait for the daemon process to actually exit
                 // by polling until the port is no longer reachable.
-                if let Command::Daemon { action: DaemonAction::Stop } = &cli.command {
+                if let Command::Daemon {
+                    action: DaemonAction::Stop,
+                } = &cli.command
+                {
                     drop(client); // close our connection first
                     wait_for_daemon_exit().await;
                 }
             }
             Err(_) => {
                 // No daemon running — report cleanly and exit 0
-                println!("{}", serde_json::json!({"ok": true, "data": {"status": "daemon not running"}}));
+                println!(
+                    "{}",
+                    serde_json::json!({"ok": true, "data": {"status": "daemon not running"}})
+                );
             }
         }
         return;
@@ -728,13 +742,27 @@ fn build_navigate_params(
     cli: &Cli,
 ) -> serde_json::Value {
     let mut params = json!({});
-    if let Some(u) = url { params["url"] = json!(u); }
-    if back { params["back"] = json!(true); }
-    if forward { params["forward"] = json!(true); }
-    if reload { params["reload"] = json!(true); }
-    if let Some(s) = &cli.session { params["session"] = json!(s); }
-    if let Some(t) = &cli.target { params["target"] = json!(t); }
-    if let Some(to) = cli.timeout { params["timeout"] = json!(to); }
+    if let Some(u) = url {
+        params["url"] = json!(u);
+    }
+    if back {
+        params["back"] = json!(true);
+    }
+    if forward {
+        params["forward"] = json!(true);
+    }
+    if reload {
+        params["reload"] = json!(true);
+    }
+    if let Some(s) = &cli.session {
+        params["session"] = json!(s);
+    }
+    if let Some(t) = &cli.target {
+        params["target"] = json!(t);
+    }
+    if let Some(to) = cli.timeout {
+        params["timeout"] = json!(to);
+    }
     params
 }
 
@@ -749,16 +777,28 @@ fn build_screenshot_params(
         "full_page": full_page,
         "labels": labels,
     });
-    if let Some(o) = output { params["output"] = json!(o); }
-    if let Some(s) = selector { params["selector"] = json!(s); }
-    if let Some(s) = &cli.session { params["session"] = json!(s); }
-    if let Some(t) = &cli.target { params["target"] = json!(t); }
+    if let Some(o) = output {
+        params["output"] = json!(o);
+    }
+    if let Some(s) = selector {
+        params["selector"] = json!(s);
+    }
+    if let Some(s) = &cli.session {
+        params["session"] = json!(s);
+    }
+    if let Some(t) = &cli.target {
+        params["target"] = json!(t);
+    }
     params
 }
 
 fn add_session_target_params(params: &mut serde_json::Value, cli: &Cli) {
-    if let Some(s) = &cli.session { params["session"] = json!(s); }
-    if let Some(t) = &cli.target { params["target"] = json!(t); }
+    if let Some(s) = &cli.session {
+        params["session"] = json!(s);
+    }
+    if let Some(t) = &cli.target {
+        params["target"] = json!(t);
+    }
 }
 
 async fn dispatch(cli: &Cli, client: &mut DaemonClient) -> Result<(), String> {
@@ -766,19 +806,30 @@ async fn dispatch(cli: &Cli, client: &mut DaemonClient) -> Result<(), String> {
         // ══════════════════════════════════════════════════════════
         // V2 PRIMARY COMMANDS
         // ══════════════════════════════════════════════════════════
-
         Command::Connect => {
             let mut params = json!({});
-            if let Some(s) = &cli.session { params["session"] = json!(s); }
+            if let Some(s) = &cli.session {
+                params["session"] = json!(s);
+            }
             let resp = send_cmd(client, "connect", params).await?;
             print_response(&resp);
         }
 
-        Command::Snapshot { full, no_page_text, wait } => {
+        Command::Snapshot {
+            full,
+            no_page_text,
+            wait,
+        } => {
             let mut params = json!({"full": full, "no_page_text": no_page_text, "wait": wait});
-            if let Some(s) = &cli.session { params["session"] = json!(s); }
-            if let Some(t) = &cli.target { params["target"] = json!(t); }
-            if let Some(to) = cli.timeout { params["timeout"] = json!(to); }
+            if let Some(s) = &cli.session {
+                params["session"] = json!(s);
+            }
+            if let Some(t) = &cli.target {
+                params["target"] = json!(t);
+            }
+            if let Some(to) = cli.timeout {
+                params["timeout"] = json!(to);
+            }
             let resp = send_cmd(client, "snapshot", params).await?;
             print_response(&resp);
         }
@@ -807,8 +858,12 @@ async fn dispatch(cli: &Cli, client: &mut DaemonClient) -> Result<(), String> {
             }
 
             let mut params = json!({});
-            if let Some(k) = kind { params["kind"] = json!(k); }
-            if let Some(r) = element_ref { params["ref"] = json!(r); }
+            if let Some(k) = kind {
+                params["kind"] = json!(k);
+            }
+            if let Some(r) = element_ref {
+                params["ref"] = json!(r);
+            }
             if !set.is_empty() {
                 use browserkit::page::interaction::parse_fill_set_target;
 
@@ -817,15 +872,13 @@ async fn dispatch(cli: &Cli, client: &mut DaemonClient) -> Result<(), String> {
                     let field = parse_fill_set_target(item)?;
                     let ref_id = match field.target {
                         browserkit::page::element_ref::ElementTarget::Ref(ref_id) => ref_id,
-                        browserkit::page::element_ref::ElementTarget::Index(_) => {
-                            return Err(
-                                "bk act fill only accepts ref targets in --set (use ref:<id>=<value>)"
-                                    .into(),
-                            )
-                        }
+                        browserkit::page::element_ref::ElementTarget::Index(_) => return Err(
+                            "bk act fill only accepts ref targets in --set (use ref:<id>=<value>)"
+                                .into(),
+                        ),
                         browserkit::page::element_ref::ElementTarget::Selector(_) => {
                             return Err(
-                                "bk act fill does not accept selector targets in --set".into(),
+                                "bk act fill does not accept selector targets in --set".into()
                             )
                         }
                     };
@@ -833,29 +886,70 @@ async fn dispatch(cli: &Cli, client: &mut DaemonClient) -> Result<(), String> {
                 }
                 params["fields"] = json!(fields);
             }
-            if let Some(t) = text { params["text"] = json!(t); }
-            if let Some(v) = value { params["value"] = json!(v); }
-            if *append { params["append"] = json!(true); }
-            if !keys.is_empty() { params["keys"] = json!(keys); }
-            if let Some(cx) = x { params["x"] = json!(cx); }
-            if let Some(cy) = y { params["y"] = json!(cy); }
-            if let Some(dir) = direction { params["direction"] = json!(dir); }
-            if let Some(a) = amount { params["amount"] = json!(a); }
-            if let Some(sel) = selector { params["selector"] = json!(sel); }
-            if !files.is_empty() { params["files"] = json!(files); }
-            if let Some(from_ref) = from_ref { params["from_ref"] = json!(from_ref); }
-            if let Some(from_selector) = from_selector { params["from_selector"] = json!(from_selector); }
-            if let Some(to_ref) = to_ref { params["to_ref"] = json!(to_ref); }
-            if let Some(to_selector) = to_selector { params["to_selector"] = json!(to_selector); }
-            if let Some(s) = &cli.session { params["session"] = json!(s); }
-            if let Some(t) = &cli.target { params["target"] = json!(t); }
-            if let Some(to) = cli.timeout { params["timeout"] = json!(to); }
-            if cli.no_state_diff { params["no_state_diff"] = json!(true); }
+            if let Some(t) = text {
+                params["text"] = json!(t);
+            }
+            if let Some(v) = value {
+                params["value"] = json!(v);
+            }
+            if *append {
+                params["append"] = json!(true);
+            }
+            if !keys.is_empty() {
+                params["keys"] = json!(keys);
+            }
+            if let Some(cx) = x {
+                params["x"] = json!(cx);
+            }
+            if let Some(cy) = y {
+                params["y"] = json!(cy);
+            }
+            if let Some(dir) = direction {
+                params["direction"] = json!(dir);
+            }
+            if let Some(a) = amount {
+                params["amount"] = json!(a);
+            }
+            if let Some(sel) = selector {
+                params["selector"] = json!(sel);
+            }
+            if !files.is_empty() {
+                params["files"] = json!(files);
+            }
+            if let Some(from_ref) = from_ref {
+                params["from_ref"] = json!(from_ref);
+            }
+            if let Some(from_selector) = from_selector {
+                params["from_selector"] = json!(from_selector);
+            }
+            if let Some(to_ref) = to_ref {
+                params["to_ref"] = json!(to_ref);
+            }
+            if let Some(to_selector) = to_selector {
+                params["to_selector"] = json!(to_selector);
+            }
+            if let Some(s) = &cli.session {
+                params["session"] = json!(s);
+            }
+            if let Some(t) = &cli.target {
+                params["target"] = json!(t);
+            }
+            if let Some(to) = cli.timeout {
+                params["timeout"] = json!(to);
+            }
+            if cli.no_state_diff {
+                params["no_state_diff"] = json!(true);
+            }
             let resp = send_cmd(client, "act", params).await?;
             print_response(&resp);
         }
 
-        Command::Navigate { url, back, forward, reload } => {
+        Command::Navigate {
+            url,
+            back,
+            forward,
+            reload,
+        } => {
             let resp = send_cmd(
                 client,
                 "navigate",
@@ -867,32 +961,48 @@ async fn dispatch(cli: &Cli, client: &mut DaemonClient) -> Result<(), String> {
 
         Command::OpenV2 { url } => {
             let mut params = json!({"url": url});
-            if let Some(s) = &cli.session { params["session"] = json!(s); }
-            if let Some(to) = cli.timeout { params["timeout"] = json!(to); }
+            if let Some(s) = &cli.session {
+                params["session"] = json!(s);
+            }
+            if let Some(to) = cli.timeout {
+                params["timeout"] = json!(to);
+            }
             let resp = send_cmd(client, "open", params).await?;
             print_response(&resp);
         }
 
         Command::CloseV2 => {
             let mut params = json!({});
-            if let Some(s) = &cli.session { params["session"] = json!(s); }
-            if let Some(t) = &cli.target { params["target"] = json!(t); }
+            if let Some(s) = &cli.session {
+                params["session"] = json!(s);
+            }
+            if let Some(t) = &cli.target {
+                params["target"] = json!(t);
+            }
             let resp = send_cmd(client, "close", params).await?;
             print_response(&resp);
         }
 
         Command::Tabs => {
             let mut params = json!({});
-            if let Some(s) = &cli.session { params["session"] = json!(s); }
+            if let Some(s) = &cli.session {
+                params["session"] = json!(s);
+            }
             let resp = send_cmd(client, "tabs", params).await?;
             print_response(&resp);
         }
 
         Command::Attach { pattern } => {
             let mut params = json!({});
-            if let Some(s) = &cli.session { params["session"] = json!(s); }
-            if let Some(t) = &cli.target { params["target"] = json!(t); }
-            if let Some(p) = pattern { params["pattern"] = json!(p); }
+            if let Some(s) = &cli.session {
+                params["session"] = json!(s);
+            }
+            if let Some(t) = &cli.target {
+                params["target"] = json!(t);
+            }
+            if let Some(p) = pattern {
+                params["pattern"] = json!(p);
+            }
             let resp = send_cmd(client, "attach", params).await?;
             print_response(&resp);
         }
@@ -908,14 +1018,25 @@ async fn dispatch(cli: &Cli, client: &mut DaemonClient) -> Result<(), String> {
                 return Err("evaluate requires either an expression or --file".into());
             };
             let mut params = json!({"expression": js_expr});
-            if let Some(s) = &cli.session { params["session"] = json!(s); }
-            if let Some(t) = &cli.target { params["target"] = json!(t); }
-            if let Some(to) = cli.timeout { params["timeout"] = json!(to); }
+            if let Some(s) = &cli.session {
+                params["session"] = json!(s);
+            }
+            if let Some(t) = &cli.target {
+                params["target"] = json!(t);
+            }
+            if let Some(to) = cli.timeout {
+                params["timeout"] = json!(to);
+            }
             let resp = send_cmd(client, "evaluate", params).await?;
             print_response(&resp);
         }
 
-        Command::ScreenshotV2 { output, full_page, selector, labels } => {
+        Command::ScreenshotV2 {
+            output,
+            full_page,
+            selector,
+            labels,
+        } => {
             let resp = send_cmd(
                 client,
                 "screenshot",
@@ -931,19 +1052,49 @@ async fn dispatch(cli: &Cli, client: &mut DaemonClient) -> Result<(), String> {
             handle_binary_response(&resp, output.as_deref(), "screenshot.png");
         }
 
-        Command::WaitV2 { selector, text, text_gone, url, idle, r#fn, time } => {
+        Command::WaitV2 {
+            selector,
+            text,
+            text_gone,
+            url,
+            idle,
+            r#fn,
+            time,
+        } => {
             let mut params = json!({});
-            if let Some(s) = selector { params["selector"] = json!(s); }
-            if let Some(t) = text { params["text"] = json!(t); }
-            if let Some(tg) = text_gone { params["text_gone"] = json!(tg); }
-            if let Some(u) = url { params["url"] = json!(u); }
-            if *idle { params["load_state"] = json!("networkidle"); }
-            if let Some(f) = r#fn { params["fn"] = json!(f); }
-            if let Some(t) = time { params["time"] = json!(t); }
-            if let Some(s) = &cli.session { params["session"] = json!(s); }
-            if let Some(t) = &cli.target { params["target"] = json!(t); }
-            if let Some(to) = cli.timeout { params["timeout"] = json!(to); }
-            if params.get("timeout").is_none() { params["timeout"] = json!(30000u64); }
+            if let Some(s) = selector {
+                params["selector"] = json!(s);
+            }
+            if let Some(t) = text {
+                params["text"] = json!(t);
+            }
+            if let Some(tg) = text_gone {
+                params["text_gone"] = json!(tg);
+            }
+            if let Some(u) = url {
+                params["url"] = json!(u);
+            }
+            if *idle {
+                params["load_state"] = json!("networkidle");
+            }
+            if let Some(f) = r#fn {
+                params["fn"] = json!(f);
+            }
+            if let Some(t) = time {
+                params["time"] = json!(t);
+            }
+            if let Some(s) = &cli.session {
+                params["session"] = json!(s);
+            }
+            if let Some(t) = &cli.target {
+                params["target"] = json!(t);
+            }
+            if let Some(to) = cli.timeout {
+                params["timeout"] = json!(to);
+            }
+            if params.get("timeout").is_none() {
+                params["timeout"] = json!(30000u64);
+            }
             let resp = send_cmd(client, "wait", params).await?;
             print_response(&resp);
         }
@@ -951,7 +1102,9 @@ async fn dispatch(cli: &Cli, client: &mut DaemonClient) -> Result<(), String> {
         Command::Session { action } => match action {
             SessionAction::Close => {
                 let mut params = json!({});
-                if let Some(s) = &cli.session { params["session"] = json!(s); }
+                if let Some(s) = &cli.session {
+                    params["session"] = json!(s);
+                }
                 let resp = send_cmd(client, "session.close", params).await?;
                 print_response(&resp);
             }
@@ -962,7 +1115,9 @@ async fn dispatch(cli: &Cli, client: &mut DaemonClient) -> Result<(), String> {
             SessionAction::Cookies { action: ca } => match ca {
                 CookiesAction::Get => {
                     let mut params = json!({});
-                    if let Some(s) = &cli.session { params["session"] = json!(s); }
+                    if let Some(s) = &cli.session {
+                        params["session"] = json!(s);
+                    }
                     let resp = send_cmd(client, "session.cookies.get", params).await?;
                     print_response(&resp);
                 }
@@ -972,13 +1127,17 @@ async fn dispatch(cli: &Cli, client: &mut DaemonClient) -> Result<(), String> {
                     let cookies: serde_json::Value = serde_json::from_str(&content)
                         .map_err(|e| format!("invalid cookie JSON: {}", e))?;
                     let mut params = json!({"cookies": cookies});
-                    if let Some(s) = &cli.session { params["session"] = json!(s); }
+                    if let Some(s) = &cli.session {
+                        params["session"] = json!(s);
+                    }
                     let resp = send_cmd(client, "session.cookies.set", params).await?;
                     print_response(&resp);
                 }
                 CookiesAction::Clear => {
                     let mut params = json!({});
-                    if let Some(s) = &cli.session { params["session"] = json!(s); }
+                    if let Some(s) = &cli.session {
+                        params["session"] = json!(s);
+                    }
                     let resp = send_cmd(client, "session.cookies.clear", params).await?;
                     print_response(&resp);
                 }
@@ -1043,7 +1202,9 @@ async fn dispatch(cli: &Cli, client: &mut DaemonClient) -> Result<(), String> {
             }
             BrowserAction::Discover { path } => {
                 let mut params = json!({});
-                if let Some(p) = path { params["path"] = json!(p); }
+                if let Some(p) = path {
+                    params["path"] = json!(p);
+                }
                 let resp = send_cmd(client, "browser.discover", params).await?;
                 print_response(&resp);
             }
@@ -1058,23 +1219,42 @@ async fn dispatch(cli: &Cli, client: &mut DaemonClient) -> Result<(), String> {
         },
 
         // ── Session-native page inspection ──────────────────────────
-        Command::Find { selector, attributes, max, include_text } => {
+        Command::Find {
+            selector,
+            attributes,
+            max,
+            include_text,
+        } => {
             let mut params = json!({"selector": selector, "include_text": include_text});
             if let Some(attrs) = attributes {
                 let attr_list: Vec<&str> = attrs.split(',').map(|s| s.trim()).collect();
                 params["attributes"] = json!(attr_list);
             }
-            if let Some(m) = max { params["max"] = json!(m); }
+            if let Some(m) = max {
+                params["max"] = json!(m);
+            }
             add_session_target_params(&mut params, cli);
             let resp = send_cmd(client, "find", params).await?;
             print_response(&resp);
         }
 
-        Command::Search { text, regex, scope, context, max } => {
+        Command::Search {
+            text,
+            regex,
+            scope,
+            context,
+            max,
+        } => {
             let mut params = json!({"text": text, "regex": regex});
-            if let Some(s) = scope { params["scope"] = json!(s); }
-            if let Some(c) = context { params["context"] = json!(c); }
-            if let Some(m) = max { params["max"] = json!(m); }
+            if let Some(s) = scope {
+                params["scope"] = json!(s);
+            }
+            if let Some(c) = context {
+                params["context"] = json!(c);
+            }
+            if let Some(m) = max {
+                params["max"] = json!(m);
+            }
             add_session_target_params(&mut params, cli);
             let resp = send_cmd(client, "search", params).await?;
             print_response(&resp);
@@ -1082,7 +1262,9 @@ async fn dispatch(cli: &Cli, client: &mut DaemonClient) -> Result<(), String> {
 
         Command::Html { selector } => {
             let mut params = json!({});
-            if let Some(s) = selector { params["selector"] = json!(s); }
+            if let Some(s) = selector {
+                params["selector"] = json!(s);
+            }
             add_session_target_params(&mut params, cli);
             let resp = send_cmd(client, "html", params).await?;
             print_response(&resp);
@@ -1090,7 +1272,9 @@ async fn dispatch(cli: &Cli, client: &mut DaemonClient) -> Result<(), String> {
 
         Command::Console { level, limit } => {
             let mut params = json!({"level": level});
-            if let Some(n) = limit { params["limit"] = json!(n); }
+            if let Some(n) = limit {
+                params["limit"] = json!(n);
+            }
             add_session_target_params(&mut params, cli);
             let resp = send_cmd(client, "console", params).await?;
             print_response(&resp);
@@ -1098,70 +1282,72 @@ async fn dispatch(cli: &Cli, client: &mut DaemonClient) -> Result<(), String> {
 
         Command::Pdf { output } => {
             let mut params = json!({});
-            if let Some(o) = output { params["output"] = json!(o); }
+            if let Some(o) = output {
+                params["output"] = json!(o);
+            }
             add_session_target_params(&mut params, cli);
             let resp = send_cmd(client, "pdf", params).await?;
             handle_binary_response(&resp, output.as_deref(), concat!("page", ".pdf"));
         }
 
         // ── Management (Dialog) ───────────────────────────
-        Command::Dialog { action } => {
-            match action {
-                DialogAction::List => {
-                    let mut params = json!({});
-                    add_session_target_params(&mut params, cli);
-                    let resp = send_cmd(client, "dialog.list", params).await?;
-                    print_response(&resp);
+        Command::Dialog { action } => match action {
+            DialogAction::List => {
+                let mut params = json!({});
+                add_session_target_params(&mut params, cli);
+                let resp = send_cmd(client, "dialog.list", params).await?;
+                print_response(&resp);
+            }
+            DialogAction::Accept { text } => {
+                let mut params = json!({});
+                add_session_target_params(&mut params, cli);
+                if let Some(txt) = text {
+                    params["text"] = json!(txt);
                 }
-                DialogAction::Accept { text } => {
-                    let mut params = json!({});
-                    add_session_target_params(&mut params, cli);
-                    if let Some(txt) = text { params["text"] = json!(txt); }
-                    let resp = send_cmd(client, "dialog.accept", params).await?;
-                    print_response(&resp);
+                let resp = send_cmd(client, "dialog.accept", params).await?;
+                print_response(&resp);
+            }
+            DialogAction::Dismiss => {
+                let mut params = json!({});
+                add_session_target_params(&mut params, cli);
+                let resp = send_cmd(client, "dialog.dismiss", params).await?;
+                print_response(&resp);
+            }
+            DialogAction::Policy { policy } => {
+                let mut params = json!({});
+                add_session_target_params(&mut params, cli);
+                if let Some(p) = policy {
+                    params["policy"] = json!(p);
                 }
-                DialogAction::Dismiss => {
-                    let mut params = json!({});
-                    add_session_target_params(&mut params, cli);
-                    let resp = send_cmd(client, "dialog.dismiss", params).await?;
-                    print_response(&resp);
-                }
-                DialogAction::Policy { policy } => {
-                    let mut params = json!({});
-                    add_session_target_params(&mut params, cli);
-                    if let Some(p) = policy { params["policy"] = json!(p); }
-                    let resp = send_cmd(client, "dialog.policy", params).await?;
-                    print_response(&resp);
-                }
+                let resp = send_cmd(client, "dialog.policy", params).await?;
+                print_response(&resp);
             }
         },
 
         // ── Management (Debug) ────────────────────────────
-        Command::Debug { action } => {
-            match action {
-                DebugAction::Block { pattern } => {
-                    let mut params = json!({"pattern": pattern});
-                    add_session_target_params(&mut params, cli);
-                    let resp = send_cmd(client, "debug.block", params).await?;
-                    print_response(&resp);
-                }
-                DebugAction::Unblock => {
-                    let mut params = json!({});
-                    add_session_target_params(&mut params, cli);
-                    let resp = send_cmd(client, "debug.unblock", params).await?;
-                    print_response(&resp);
-                }
-                DebugAction::Cdp { method, params } => {
-                    let cdp_params = match params {
-                        Some(p) => serde_json::from_str(p)
-                            .map_err(|e| format!("invalid CDP params JSON: {}", e))?,
-                        None => json!({}),
-                    };
-                    let mut req_params = json!({"method": method, "params": cdp_params});
-                    add_session_target_params(&mut req_params, cli);
-                    let resp = send_cmd(client, "debug.cdp", req_params).await?;
-                    print_response(&resp);
-                }
+        Command::Debug { action } => match action {
+            DebugAction::Block { pattern } => {
+                let mut params = json!({"pattern": pattern});
+                add_session_target_params(&mut params, cli);
+                let resp = send_cmd(client, "debug.block", params).await?;
+                print_response(&resp);
+            }
+            DebugAction::Unblock => {
+                let mut params = json!({});
+                add_session_target_params(&mut params, cli);
+                let resp = send_cmd(client, "debug.unblock", params).await?;
+                print_response(&resp);
+            }
+            DebugAction::Cdp { method, params } => {
+                let cdp_params = match params {
+                    Some(p) => serde_json::from_str(p)
+                        .map_err(|e| format!("invalid CDP params JSON: {}", e))?,
+                    None => json!({}),
+                };
+                let mut req_params = json!({"method": method, "params": cdp_params});
+                add_session_target_params(&mut req_params, cli);
+                let resp = send_cmd(client, "debug.cdp", req_params).await?;
+                print_response(&resp);
             }
         },
 
@@ -1194,11 +1380,7 @@ fn print_response(resp: &Response) {
 }
 
 /// Handle binary (base64) responses: save to file or print info.
-fn handle_binary_response(
-    resp: &Response,
-    output: Option<&str>,
-    _default_name: &str,
-) {
+fn handle_binary_response(resp: &Response, output: Option<&str>, _default_name: &str) {
     if !resp.ok {
         print_response(resp);
         return;
@@ -1213,10 +1395,22 @@ fn handle_binary_response(
     }
 
     // Save base64 data to file if output specified but wasn't in request
-    if let (Some(path), Some(data)) = (output, resp.data.as_ref().and_then(|d| d.get("data")).and_then(|v| v.as_str())) {
+    if let (Some(path), Some(data)) = (
+        output,
+        resp.data
+            .as_ref()
+            .and_then(|d| d.get("data"))
+            .and_then(|v| v.as_str()),
+    ) {
         match base64_decode_and_save(data, path) {
-            Ok(()) => println!("{}", serde_json::json!({"ok": true, "data": {"file": path}})),
-            Err(e) => println!("{}", serde_json::json!({"ok": false, "error": format!("save failed: {}", e)})),
+            Ok(()) => println!(
+                "{}",
+                serde_json::json!({"ok": true, "data": {"file": path}})
+            ),
+            Err(e) => println!(
+                "{}",
+                serde_json::json!({"ok": false, "error": format!("save failed: {}", e)})
+            ),
         }
     } else {
         print_response(resp);
@@ -1306,26 +1500,41 @@ mod tests {
         let cli = try_parse(&["bk", "snapshot", "--full"]).unwrap();
         if let Command::Snapshot { full, .. } = cli.command {
             assert!(full);
-        } else { panic!("wrong variant"); }
+        } else {
+            panic!("wrong variant");
+        }
     }
 
     #[test]
     fn cli_parses_act_click() {
         let cli = try_parse(&["bk", "act", "click", "--ref", "42"]).unwrap();
-        if let Command::Act { kind, element_ref, .. } = &cli.command {
+        if let Command::Act {
+            kind, element_ref, ..
+        } = &cli.command
+        {
             assert_eq!(kind.as_deref(), Some("click"));
             assert_eq!(*element_ref, Some(42));
-        } else { panic!("wrong variant"); }
+        } else {
+            panic!("wrong variant");
+        }
     }
 
     #[test]
     fn cli_parses_act_type() {
         let cli = try_parse(&["bk", "act", "type", "--ref", "55", "--text", "hello"]).unwrap();
-        if let Command::Act { kind, element_ref, text, .. } = &cli.command {
+        if let Command::Act {
+            kind,
+            element_ref,
+            text,
+            ..
+        } = &cli.command
+        {
             assert_eq!(kind.as_deref(), Some("type"));
             assert_eq!(*element_ref, Some(55));
             assert_eq!(text.as_deref(), Some("hello"));
-        } else { panic!("wrong variant"); }
+        } else {
+            panic!("wrong variant");
+        }
     }
 
     #[test]
@@ -1334,14 +1543,23 @@ mod tests {
         if let Command::Act { kind, keys, .. } = &cli.command {
             assert_eq!(kind.as_deref(), Some("press"));
             assert_eq!(keys, &vec!["Enter".to_string()]);
-        } else { panic!("wrong variant"); }
+        } else {
+            panic!("wrong variant");
+        }
     }
 
     #[test]
     fn cli_parses_act_scroll_hover_and_focus() {
         let scroll = try_parse(&[
-            "bk", "act", "scroll", "--direction", "down", "--amount", "250",
-        ]).unwrap();
+            "bk",
+            "act",
+            "scroll",
+            "--direction",
+            "down",
+            "--amount",
+            "250",
+        ])
+        .unwrap();
         assert!(matches!(
             scroll.command,
             Command::Act { ref kind, ref direction, amount: Some(250.0), .. }
@@ -1365,7 +1583,8 @@ mod tests {
 
     #[test]
     fn cli_parses_act_select_and_options() {
-        let select = try_parse(&["bk", "act", "select", "--ref", "42", "--value", "green"]).unwrap();
+        let select =
+            try_parse(&["bk", "act", "select", "--ref", "42", "--value", "green"]).unwrap();
         assert!(matches!(
             select.command,
             Command::Act { ref kind, ref value, .. }
@@ -1455,7 +1674,9 @@ mod tests {
         let cli = try_parse(&["bk", "navigate", "https://example.com"]).unwrap();
         if let Command::Navigate { url, .. } = &cli.command {
             assert_eq!(url.as_deref(), Some("https://example.com"));
-        } else { panic!("wrong variant"); }
+        } else {
+            panic!("wrong variant");
+        }
     }
 
     #[test]
@@ -1463,7 +1684,9 @@ mod tests {
         let cli = try_parse(&["bk", "navigate", "--back"]).unwrap();
         if let Command::Navigate { back, .. } = &cli.command {
             assert!(*back);
-        } else { panic!("wrong variant"); }
+        } else {
+            panic!("wrong variant");
+        }
     }
 
     #[test]
@@ -1471,7 +1694,9 @@ mod tests {
         let cli = try_parse(&["bk", "open", "https://x.com"]).unwrap();
         if let Command::OpenV2 { url } = &cli.command {
             assert_eq!(url, "https://x.com");
-        } else { panic!("wrong variant"); }
+        } else {
+            panic!("wrong variant");
+        }
     }
 
     #[test]
@@ -1503,7 +1728,9 @@ mod tests {
         let cli = try_parse(&["bk", "evaluate", "document.title"]).unwrap();
         if let Command::Evaluate { expression, .. } = &cli.command {
             assert_eq!(expression.as_deref(), Some("document.title"));
-        } else { panic!("wrong variant"); }
+        } else {
+            panic!("wrong variant");
+        }
     }
 
     #[test]
@@ -1511,16 +1738,23 @@ mod tests {
         let cli = try_parse(&["bk", "screenshot", "--full-page"]).unwrap();
         if let Command::ScreenshotV2 { full_page, .. } = &cli.command {
             assert!(*full_page);
-        } else { panic!("wrong variant"); }
+        } else {
+            panic!("wrong variant");
+        }
     }
 
     #[test]
     fn cli_parses_screenshot_selector_and_labels() {
         let cli = try_parse(&["bk", "screenshot", "--selector", "#app", "--labels"]).unwrap();
-        if let Command::ScreenshotV2 { selector, labels, .. } = &cli.command {
+        if let Command::ScreenshotV2 {
+            selector, labels, ..
+        } = &cli.command
+        {
             assert_eq!(selector.as_deref(), Some("#app"));
             assert!(*labels);
-        } else { panic!("wrong variant"); }
+        } else {
+            panic!("wrong variant");
+        }
     }
 
     #[test]
@@ -1534,7 +1768,9 @@ mod tests {
         let cli = try_parse(&["bk", "session", "list"]).unwrap();
         if let Command::Session { action } = &cli.command {
             assert!(matches!(action, SessionAction::List));
-        } else { panic!("wrong variant"); }
+        } else {
+            panic!("wrong variant");
+        }
     }
 
     #[test]

@@ -58,7 +58,9 @@ impl DaemonClient {
 
         let stream = TcpStream::connect(format!("127.0.0.1:{}", port))
             .await
-            .map_err(|e| BkError::Other(format!("cannot connect to daemon on port {}: {}", port, e)))?;
+            .map_err(|e| {
+                BkError::Other(format!("cannot connect to daemon on port {}: {}", port, e))
+            })?;
 
         let (read_half, write_half) = stream.into_split();
         let mut client = Self {
@@ -67,11 +69,13 @@ impl DaemonClient {
         };
 
         // Verify with a ping
-        let resp = client.send_request(&Request {
-            cmd: "ping".into(),
-            params: json!({}),
-            token: None,
-        }).await?;
+        let resp = client
+            .send_request(&Request {
+                cmd: "ping".into(),
+                params: json!({}),
+                token: None,
+            })
+            .await?;
 
         if !resp.ok {
             return Err(BkError::Other("daemon ping failed".into()));
@@ -126,9 +130,7 @@ impl DaemonClient {
 
         loop {
             if start.elapsed() > timeout {
-                return Err(BkError::Other(
-                    "timeout waiting for daemon to start".into(),
-                ));
+                return Err(BkError::Other("timeout waiting for daemon to start".into()));
             }
 
             // Lightweight probe: just check if the port is open yet
@@ -171,10 +173,7 @@ impl DaemonClient {
             .write_all(json.as_bytes())
             .await
             .map_err(BkError::Io)?;
-        self.writer
-            .write_all(b"\n")
-            .await
-            .map_err(BkError::Io)?;
+        self.writer.write_all(b"\n").await.map_err(BkError::Io)?;
         self.writer.flush().await.map_err(BkError::Io)?;
 
         let mut line = String::new();
@@ -193,7 +192,6 @@ impl DaemonClient {
 
         Ok(resp)
     }
-
 }
 
 /// Build a daemon [`Request`] from a command name and params.
@@ -321,7 +319,10 @@ mod tests {
         crate::daemon::write_port_file(port).unwrap();
 
         let result = DaemonClient::connect_only().await;
-        assert!(result.is_ok(), "connect_only should succeed when daemon is reachable");
+        assert!(
+            result.is_ok(),
+            "connect_only should succeed when daemon is reachable"
+        );
 
         // Cleanup
         crate::daemon::remove_port_file();

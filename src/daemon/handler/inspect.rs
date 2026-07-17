@@ -405,8 +405,7 @@ mod tests {
 
     #[test]
     fn canonical_inspect_payload_rejects_non_object_fields() {
-        let err = canonical_inspect_payload("agent-a", "TARGET-1", json!(["entries"]))
-            .unwrap_err();
+        let err = canonical_inspect_payload("agent-a", "TARGET-1", json!(["entries"])).unwrap_err();
         let value = serde_json::to_value(err).unwrap();
 
         assert_eq!(value["error"]["code"], "INVALID_ARGUMENT");

@@ -6,7 +6,9 @@ use std::sync::Arc;
 use cdpkit::CDP;
 
 use crate::error::BkError;
-use crate::page::{exception_message, ElementInfo, FullPageState, SearchMatch, INTERACTIVE_SELECTOR};
+use crate::page::{
+    exception_message, ElementInfo, FullPageState, SearchMatch, INTERACTIVE_SELECTOR,
+};
 
 /// Maximum characters to include in `page_text` before truncation.
 pub const PAGE_TEXT_MAX_CHARS: usize = 2000;
@@ -22,7 +24,9 @@ pub const PAGE_TEXT_MAX_CHARS: usize = 2000;
 /// Returns a JSON-encoded array of element info objects.
 const DISCOVER_ELEMENTS_JS: &str = const_format::concatcp!(
     r#"(() => {
-    const selectors = '"#, INTERACTIVE_SELECTOR, r#"';
+    const selectors = '"#,
+    INTERACTIVE_SELECTOR,
+    r#"';
     function collectElements(root, sel, results) {
         for (const el of root.querySelectorAll(sel)) {
             results.push(el);
@@ -80,7 +84,9 @@ const DISCOVER_ELEMENTS_JS: &str = const_format::concatcp!(
 /// Recursively penetrates open shadow roots for Shadow DOM support.
 const DISCOVER_ELEMENTS_REFS_JS: &str = const_format::concatcp!(
     r#"(() => {
-    const selectors = '"#, INTERACTIVE_SELECTOR, r#"';
+    const selectors = '"#,
+    INTERACTIVE_SELECTOR,
+    r#"';
     function collectElements(root, sel, results) {
         for (const el of root.querySelectorAll(sel)) {
             results.push(el);
@@ -117,10 +123,7 @@ const DISCOVER_ELEMENTS_REFS_JS: &str = const_format::concatcp!(
 /// 2. Evaluate JS with returnByValue=false to get the element array objectId
 /// 3. Use Runtime.getProperties to enumerate elements, then DOM.describeNode for each
 ///    to obtain the stable backendNodeId.
-pub async fn get_page_state(
-    cdp: &Arc<CDP>,
-    session_id: &str,
-) -> Result<Vec<ElementInfo>, BkError> {
+pub async fn get_page_state(cdp: &Arc<CDP>, session_id: &str) -> Result<Vec<ElementInfo>, BkError> {
     let session = cdp.session(session_id);
 
     // Phase 1: Get element metadata
@@ -143,8 +146,8 @@ pub async fn get_page_state(
         .and_then(|v| v.as_str())
         .ok_or_else(|| BkError::Other("state: no value returned from evaluate".into()))?;
 
-    let mut elements: Vec<ElementInfo> =
-        serde_json::from_str(json_str).map_err(|e| BkError::Other(format!("state: failed to parse element list: {}", e)))?;
+    let mut elements: Vec<ElementInfo> = serde_json::from_str(json_str)
+        .map_err(|e| BkError::Other(format!("state: failed to parse element list: {}", e)))?;
 
     // Phase 2: Get backendNodeIds
     let backend_ids = get_backend_node_ids(cdp, session_id, elements.len()).await;
@@ -190,8 +193,8 @@ pub async fn get_page_elements_only(
         .and_then(|v| v.as_str())
         .ok_or_else(|| BkError::Other("state: no value returned from evaluate".into()))?;
 
-    let elements: Vec<ElementInfo> =
-        serde_json::from_str(json_str).map_err(|e| BkError::Other(format!("state: failed to parse element list: {}", e)))?;
+    let elements: Vec<ElementInfo> = serde_json::from_str(json_str)
+        .map_err(|e| BkError::Other(format!("state: failed to parse element list: {}", e)))?;
 
     Ok(elements)
 }
@@ -204,7 +207,9 @@ pub async fn get_page_elements_only(
 /// Recursively penetrates open shadow roots for Shadow DOM support.
 const FULL_PAGE_STATE_JS: &str = const_format::concatcp!(
     r#"(() => {
-    const selectors = '"#, INTERACTIVE_SELECTOR, r#"';
+    const selectors = '"#,
+    INTERACTIVE_SELECTOR,
+    r#"';
     function collectElements(root, sel, results) {
         for (const el of root.querySelectorAll(sel)) {
             results.push(el);
@@ -288,7 +293,9 @@ const FULL_PAGE_STATE_JS: &str = const_format::concatcp!(
 /// up to 3 meaningful ancestor elements (tag + id/class) for each interactive element.
 const FULL_PAGE_STATE_TREE_JS: &str = const_format::concatcp!(
     r#"(() => {
-    const selectors = '"#, INTERACTIVE_SELECTOR, r#"';
+    const selectors = '"#,
+    INTERACTIVE_SELECTOR,
+    r#"';
     function collectElements(root, sel, results) {
         for (const el of root.querySelectorAll(sel)) {
             results.push(el);
@@ -396,7 +403,11 @@ pub async fn get_full_page_state(
     tree: bool,
 ) -> Result<FullPageState, BkError> {
     let session = cdp.session(session_id);
-    let js = if tree { FULL_PAGE_STATE_TREE_JS } else { FULL_PAGE_STATE_JS };
+    let js = if tree {
+        FULL_PAGE_STATE_TREE_JS
+    } else {
+        FULL_PAGE_STATE_JS
+    };
     let resp = cdpkit::runtime::methods::Evaluate::new(js)
         .with_return_by_value(true)
         .send(&session)
@@ -460,9 +471,10 @@ async fn get_backend_node_ids(
         return Err(BkError::Other("failed to get element refs".into()));
     }
 
-    let array_object_id = resp.result.object_id.ok_or_else(|| {
-        BkError::Other("state refs: no objectId for element array".into())
-    })?;
+    let array_object_id = resp
+        .result
+        .object_id
+        .ok_or_else(|| BkError::Other("state refs: no objectId for element array".into()))?;
 
     // Get indexed properties of the array
     let props_resp = cdpkit::runtime::methods::GetProperties::new(array_object_id)
@@ -702,17 +714,12 @@ fn build_advanced_search_js(
     }
 }
 
-
 /// Enrich elements with accessibility information from the full AX tree.
 ///
 /// Calls `Accessibility.getFullAXTree` once, builds a lookup by backendDOMNodeId,
 /// and attaches `ax_role` and `ax_name` to each element that has a matching backendNodeId.
 /// Best-effort: if the AX call fails, elements are returned unchanged.
-pub async fn enrich_with_ax_tree(
-    cdp: &Arc<CDP>,
-    session_id: &str,
-    elements: &mut [ElementInfo],
-) {
+pub async fn enrich_with_ax_tree(cdp: &Arc<CDP>, session_id: &str, elements: &mut [ElementInfo]) {
     let session = cdp.session(session_id);
 
     // Enable accessibility domain (required before getFullAXTree)
@@ -742,10 +749,14 @@ pub async fn enrich_with_ax_tree(
         }
         if let Some(backend_id) = node.backend_dom_node_id {
             let role = node.role.as_ref().and_then(|v| {
-                v.value.as_ref().and_then(|val| val.as_str().map(|s| s.to_string()))
+                v.value
+                    .as_ref()
+                    .and_then(|val| val.as_str().map(|s| s.to_string()))
             });
             let name = node.name.as_ref().and_then(|v| {
-                v.value.as_ref().and_then(|val| val.as_str().map(|s| s.to_string()))
+                v.value
+                    .as_ref()
+                    .and_then(|val| val.as_str().map(|s| s.to_string()))
             });
             // Only store if at least one is non-empty
             if role.is_some() || name.is_some() {
@@ -764,7 +775,6 @@ pub async fn enrich_with_ax_tree(
         }
     }
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -901,15 +911,27 @@ mod tests {
     fn build_search_js_no_json_parse() {
         // After the fix, build_search_js should NOT wrap in JSON.parse
         let js = build_search_js("test");
-        assert!(!js.contains("JSON.parse"), "should not use JSON.parse for query assignment: {}", js);
+        assert!(
+            !js.contains("JSON.parse"),
+            "should not use JSON.parse for query assignment: {}",
+            js
+        );
         // The query should be assigned directly as a JS string literal
-        assert!(js.contains(r#"const query = "test""#), "should assign literal directly: {}", js);
+        assert!(
+            js.contains(r#"const query = "test""#),
+            "should assign literal directly: {}",
+            js
+        );
     }
 
     #[test]
     fn build_search_js_non_ascii() {
         let js = build_search_js("上海");
-        assert!(!js.contains("JSON.parse"), "should not use JSON.parse: {}", js);
+        assert!(
+            !js.contains("JSON.parse"),
+            "should not use JSON.parse: {}",
+            js
+        );
         // Non-ASCII may be escaped or literal depending on serde_json, but must be valid JS
         // and must not contain JSON.parse
         assert!(js.contains("const query = "));
@@ -921,7 +943,11 @@ mod tests {
         let js = build_search_js("line1\nline2\ttab\"quote");
         assert!(!js.contains("JSON.parse"));
         // Check escaped form: \n, \t, \" inside the generated JS
-        assert!(js.contains(r#"line1\nline2\ttab\"quote"#), "should escape properly: {}", js);
+        assert!(
+            js.contains(r#"line1\nline2\ttab\"quote"#),
+            "should escape properly: {}",
+            js
+        );
     }
 
     #[test]
@@ -1085,7 +1111,11 @@ mod tests {
         };
 
         let json = serde_json::to_string(&el).unwrap();
-        assert!(json.contains(r#""ref":123"#), "should serialize ref: {}", json);
+        assert!(
+            json.contains(r#""ref":123"#),
+            "should serialize ref: {}",
+            json
+        );
     }
 
     #[test]
@@ -1110,7 +1140,11 @@ mod tests {
         };
 
         let json = serde_json::to_string(&el).unwrap();
-        assert!(!json.contains("ref"), "should not serialize ref when None: {}", json);
+        assert!(
+            !json.contains("ref"),
+            "should not serialize ref when None: {}",
+            json
+        );
     }
 
     // ── Count mismatch → all-None fallback tests ──────────────────────────
@@ -1120,8 +1154,42 @@ mod tests {
         // Simulates the merge behavior when phase-2 returns a different count
         // (the actual get_backend_node_ids returns Vec<Option<i64>>)
         let mut elements = vec![
-            ElementInfo { index: 0, tag: "a".into(), text: "".into(), x: 0.0, y: 0.0, width: 10.0, height: 10.0, href: None, placeholder: None, backend_node_id: None, element_type: None, id: None, aria_label: None, ancestors: None, ax_role: None, ax_name: None },
-            ElementInfo { index: 1, tag: "button".into(), text: "".into(), x: 0.0, y: 0.0, width: 10.0, height: 10.0, href: None, placeholder: None, backend_node_id: None, element_type: None, id: None, aria_label: None, ancestors: None, ax_role: None, ax_name: None },
+            ElementInfo {
+                index: 0,
+                tag: "a".into(),
+                text: "".into(),
+                x: 0.0,
+                y: 0.0,
+                width: 10.0,
+                height: 10.0,
+                href: None,
+                placeholder: None,
+                backend_node_id: None,
+                element_type: None,
+                id: None,
+                aria_label: None,
+                ancestors: None,
+                ax_role: None,
+                ax_name: None,
+            },
+            ElementInfo {
+                index: 1,
+                tag: "button".into(),
+                text: "".into(),
+                x: 0.0,
+                y: 0.0,
+                width: 10.0,
+                height: 10.0,
+                href: None,
+                placeholder: None,
+                backend_node_id: None,
+                element_type: None,
+                id: None,
+                aria_label: None,
+                ancestors: None,
+                ax_role: None,
+                ax_name: None,
+            },
         ];
 
         // Simulate count mismatch: 2 elements but 3 backend ids would be a mismatch.
@@ -1135,7 +1203,10 @@ mod tests {
 
         // All elements should have None backend_node_id
         for el in &elements {
-            assert!(el.backend_node_id.is_none(), "element should have None ref after count mismatch");
+            assert!(
+                el.backend_node_id.is_none(),
+                "element should have None ref after count mismatch"
+            );
         }
     }
 
@@ -1143,8 +1214,42 @@ mod tests {
     fn backend_ids_individual_failure_produces_none_not_zero() {
         // Simulates individual DescribeNode failures: should produce None, not Some(0)
         let mut elements = vec![
-            ElementInfo { index: 0, tag: "a".into(), text: "".into(), x: 0.0, y: 0.0, width: 10.0, height: 10.0, href: None, placeholder: None, backend_node_id: None, element_type: None, id: None, aria_label: None, ancestors: None, ax_role: None, ax_name: None },
-            ElementInfo { index: 1, tag: "button".into(), text: "".into(), x: 0.0, y: 0.0, width: 10.0, height: 10.0, href: None, placeholder: None, backend_node_id: None, element_type: None, id: None, aria_label: None, ancestors: None, ax_role: None, ax_name: None },
+            ElementInfo {
+                index: 0,
+                tag: "a".into(),
+                text: "".into(),
+                x: 0.0,
+                y: 0.0,
+                width: 10.0,
+                height: 10.0,
+                href: None,
+                placeholder: None,
+                backend_node_id: None,
+                element_type: None,
+                id: None,
+                aria_label: None,
+                ancestors: None,
+                ax_role: None,
+                ax_name: None,
+            },
+            ElementInfo {
+                index: 1,
+                tag: "button".into(),
+                text: "".into(),
+                x: 0.0,
+                y: 0.0,
+                width: 10.0,
+                height: 10.0,
+                href: None,
+                placeholder: None,
+                backend_node_id: None,
+                element_type: None,
+                id: None,
+                aria_label: None,
+                ancestors: None,
+                ax_role: None,
+                ax_name: None,
+            },
         ];
 
         // Simulate: first element resolved, second failed (None)
@@ -1267,9 +1372,21 @@ mod tests {
         };
 
         let json = serde_json::to_string(&el).unwrap();
-        assert!(json.contains(r#""type":"file""#), "should serialize type: {}", json);
-        assert!(json.contains(r#""id":"avatar-upload""#), "should serialize id: {}", json);
-        assert!(json.contains(r#""aria_label":"Upload avatar""#), "should serialize aria_label: {}", json);
+        assert!(
+            json.contains(r#""type":"file""#),
+            "should serialize type: {}",
+            json
+        );
+        assert!(
+            json.contains(r#""id":"avatar-upload""#),
+            "should serialize id: {}",
+            json
+        );
+        assert!(
+            json.contains(r#""aria_label":"Upload avatar""#),
+            "should serialize aria_label: {}",
+            json
+        );
     }
 
     #[test]
@@ -1294,56 +1411,122 @@ mod tests {
         };
 
         let json = serde_json::to_string(&el).unwrap();
-        assert!(!json.contains("\"type\""), "should not serialize type when None: {}", json);
-        assert!(!json.contains("\"id\""), "should not serialize id when None: {}", json);
-        assert!(!json.contains("aria_label"), "should not serialize aria_label when None: {}", json);
+        assert!(
+            !json.contains("\"type\""),
+            "should not serialize type when None: {}",
+            json
+        );
+        assert!(
+            !json.contains("\"id\""),
+            "should not serialize id when None: {}",
+            json
+        );
+        assert!(
+            !json.contains("aria_label"),
+            "should not serialize aria_label when None: {}",
+            json
+        );
     }
 
     #[test]
     fn discover_js_includes_type_for_inputs() {
         // Verify the JS snippet includes type extraction logic
-        assert!(DISCOVER_ELEMENTS_JS.contains("entry.type = t"), "should set type for input/select/textarea");
-        assert!(DISCOVER_ELEMENTS_JS.contains("el.type"), "should read el.type");
+        assert!(
+            DISCOVER_ELEMENTS_JS.contains("entry.type = t"),
+            "should set type for input/select/textarea"
+        );
+        assert!(
+            DISCOVER_ELEMENTS_JS.contains("el.type"),
+            "should read el.type"
+        );
     }
 
     #[test]
     fn discover_js_includes_contenteditable_type() {
-        assert!(DISCOVER_ELEMENTS_JS.contains("el.isContentEditable"), "should detect contenteditable");
-        assert!(DISCOVER_ELEMENTS_JS.contains("entry.type = 'contenteditable'"), "should set type to contenteditable");
+        assert!(
+            DISCOVER_ELEMENTS_JS.contains("el.isContentEditable"),
+            "should detect contenteditable"
+        );
+        assert!(
+            DISCOVER_ELEMENTS_JS.contains("entry.type = 'contenteditable'"),
+            "should set type to contenteditable"
+        );
     }
 
     #[test]
     fn discover_js_includes_id_extraction() {
-        assert!(DISCOVER_ELEMENTS_JS.contains("entry.id = el.id"), "should set id");
+        assert!(
+            DISCOVER_ELEMENTS_JS.contains("entry.id = el.id"),
+            "should set id"
+        );
     }
 
     #[test]
     fn discover_js_includes_aria_label_extraction() {
-        assert!(DISCOVER_ELEMENTS_JS.contains("getAttribute('aria-label')"), "should read aria-label attribute");
-        assert!(DISCOVER_ELEMENTS_JS.contains("entry.aria_label = ariaLabel"), "should set aria_label");
+        assert!(
+            DISCOVER_ELEMENTS_JS.contains("getAttribute('aria-label')"),
+            "should read aria-label attribute"
+        );
+        assert!(
+            DISCOVER_ELEMENTS_JS.contains("entry.aria_label = ariaLabel"),
+            "should set aria_label"
+        );
     }
 
     #[test]
     fn full_page_state_js_includes_type_id_aria_label() {
-        assert!(FULL_PAGE_STATE_JS.contains("entry.type = t"), "full state JS should set type");
-        assert!(FULL_PAGE_STATE_JS.contains("entry.id = el.id"), "full state JS should set id");
-        assert!(FULL_PAGE_STATE_JS.contains("entry.aria_label = ariaLabel"), "full state JS should set aria_label");
-        assert!(FULL_PAGE_STATE_JS.contains("el.isContentEditable"), "full state JS should detect contenteditable");
+        assert!(
+            FULL_PAGE_STATE_JS.contains("entry.type = t"),
+            "full state JS should set type"
+        );
+        assert!(
+            FULL_PAGE_STATE_JS.contains("entry.id = el.id"),
+            "full state JS should set id"
+        );
+        assert!(
+            FULL_PAGE_STATE_JS.contains("entry.aria_label = ariaLabel"),
+            "full state JS should set aria_label"
+        );
+        assert!(
+            FULL_PAGE_STATE_JS.contains("el.isContentEditable"),
+            "full state JS should detect contenteditable"
+        );
     }
 
     #[test]
     fn discover_js_uses_shared_interactive_selector() {
-        assert!(DISCOVER_ELEMENTS_JS.contains(super::INTERACTIVE_SELECTOR), "should use shared INTERACTIVE_SELECTOR");
-        assert!(FULL_PAGE_STATE_JS.contains(super::INTERACTIVE_SELECTOR), "full state JS should use shared INTERACTIVE_SELECTOR");
-        assert!(DISCOVER_ELEMENTS_REFS_JS.contains(super::INTERACTIVE_SELECTOR), "refs JS should use shared INTERACTIVE_SELECTOR");
+        assert!(
+            DISCOVER_ELEMENTS_JS.contains(super::INTERACTIVE_SELECTOR),
+            "should use shared INTERACTIVE_SELECTOR"
+        );
+        assert!(
+            FULL_PAGE_STATE_JS.contains(super::INTERACTIVE_SELECTOR),
+            "full state JS should use shared INTERACTIVE_SELECTOR"
+        );
+        assert!(
+            DISCOVER_ELEMENTS_REFS_JS.contains(super::INTERACTIVE_SELECTOR),
+            "refs JS should use shared INTERACTIVE_SELECTOR"
+        );
     }
 
     #[test]
     fn discover_js_enhanced_visibility_filter() {
-        assert!(DISCOVER_ELEMENTS_JS.contains("style.display === 'none'"), "should filter display:none");
-        assert!(DISCOVER_ELEMENTS_JS.contains("style.visibility === 'hidden'"), "should filter visibility:hidden");
-        assert!(DISCOVER_ELEMENTS_JS.contains("parseFloat(style.opacity) < 0.01"), "should filter near-zero opacity");
-        assert!(DISCOVER_ELEMENTS_JS.contains("window.getComputedStyle(el)"), "should compute style");
+        assert!(
+            DISCOVER_ELEMENTS_JS.contains("style.display === 'none'"),
+            "should filter display:none"
+        );
+        assert!(
+            DISCOVER_ELEMENTS_JS.contains("style.visibility === 'hidden'"),
+            "should filter visibility:hidden"
+        );
+        assert!(
+            DISCOVER_ELEMENTS_JS.contains("parseFloat(style.opacity) < 0.01"),
+            "should filter near-zero opacity"
+        );
+        assert!(
+            DISCOVER_ELEMENTS_JS.contains("window.getComputedStyle(el)"),
+            "should compute style"
+        );
     }
 
     // ── build_advanced_search_js tests ───────────────────────────────
@@ -1352,83 +1535,159 @@ mod tests {
     fn advanced_search_plain_text_basic() {
         let js = build_advanced_search_js("hello", false, None, None, None);
         // Should use indexOf (plain text), not RegExp
-        assert!(js.contains("indexOf"), "plain text search should use indexOf: {}", js);
-        assert!(!js.contains("RegExp"), "plain text search should not use RegExp: {}", js);
+        assert!(
+            js.contains("indexOf"),
+            "plain text search should use indexOf: {}",
+            js
+        );
+        assert!(
+            !js.contains("RegExp"),
+            "plain text search should not use RegExp: {}",
+            js
+        );
         // Should embed the query directly
-        assert!(js.contains("\"hello\""), "should contain query literal: {}", js);
+        assert!(
+            js.contains("\"hello\""),
+            "should contain query literal: {}",
+            js
+        );
         // Should default scope to document.body
-        assert!(js.contains("document.body"), "should default scope to document.body: {}", js);
+        assert!(
+            js.contains("document.body"),
+            "should default scope to document.body: {}",
+            js
+        );
     }
 
     #[test]
     fn advanced_search_regex_uses_regexp() {
         let js = build_advanced_search_js(r"\d{3}-\d{4}", true, None, None, None);
         // Should use RegExp for regex mode
-        assert!(js.contains("RegExp"), "regex search should use RegExp: {}", js);
-        assert!(!js.contains("indexOf"), "regex search should not use indexOf: {}", js);
+        assert!(
+            js.contains("RegExp"),
+            "regex search should use RegExp: {}",
+            js
+        );
+        assert!(
+            !js.contains("indexOf"),
+            "regex search should not use indexOf: {}",
+            js
+        );
         // serde_json double-escapes backslashes: \d becomes \\d in the JS string literal
-        assert!(js.contains(r"\\d{3}-\\d{4}"), "should contain regex pattern (escaped): {}", js);
+        assert!(
+            js.contains(r"\\d{3}-\\d{4}"),
+            "should contain regex pattern (escaped): {}",
+            js
+        );
     }
 
     #[test]
     fn advanced_search_custom_scope() {
         let js = build_advanced_search_js("test", false, Some("#content"), None, None);
         // Should use querySelector with the scope selector
-        assert!(js.contains("document.querySelector(\"#content\")"), "should embed scope selector: {}", js);
+        assert!(
+            js.contains("document.querySelector(\"#content\")"),
+            "should embed scope selector: {}",
+            js
+        );
         // Fallback to document.body should be present
-        assert!(js.contains("|| document.body"), "should fallback to document.body: {}", js);
+        assert!(
+            js.contains("|| document.body"),
+            "should fallback to document.body: {}",
+            js
+        );
     }
 
     #[test]
     fn advanced_search_scope_escapes_special_chars() {
         let js = build_advanced_search_js("test", false, Some(r#"div[data-x="y"]"#), None, None);
         // serde_json should escape the internal quotes
-        assert!(js.contains(r#"div[data-x=\"y\"]"#), "should escape quotes in scope: {}", js);
+        assert!(
+            js.contains(r#"div[data-x=\"y\"]"#),
+            "should escape quotes in scope: {}",
+            js
+        );
     }
 
     #[test]
     fn advanced_search_custom_context_chars() {
         let js = build_advanced_search_js("test", false, None, Some(100), None);
         // The context window should use the custom value
-        assert!(js.contains("100"), "should use custom context chars: {}", js);
+        assert!(
+            js.contains("100"),
+            "should use custom context chars: {}",
+            js
+        );
         // Default 40 should NOT appear in context calculation
         // (Note: 40 might appear elsewhere, so check the specific pattern)
-        assert!(js.contains("idx - 100"), "should use 100 as context prefix: {}", js);
+        assert!(
+            js.contains("idx - 100"),
+            "should use 100 as context prefix: {}",
+            js
+        );
     }
 
     #[test]
     fn advanced_search_custom_max_results() {
         let js = build_advanced_search_js("test", false, None, None, Some(10));
-        assert!(js.contains("matchIndex < 10"), "should use custom max results: {}", js);
+        assert!(
+            js.contains("matchIndex < 10"),
+            "should use custom max results: {}",
+            js
+        );
     }
 
     #[test]
     fn advanced_search_defaults_context_40_max_50() {
         let js = build_advanced_search_js("test", false, None, None, None);
-        assert!(js.contains("idx - 40"), "should default context to 40: {}", js);
-        assert!(js.contains("matchIndex < 50"), "should default max to 50: {}", js);
+        assert!(
+            js.contains("idx - 40"),
+            "should default context to 40: {}",
+            js
+        );
+        assert!(
+            js.contains("matchIndex < 50"),
+            "should default max to 50: {}",
+            js
+        );
     }
 
     #[test]
     fn advanced_search_regex_zero_length_match_guard() {
         let js = build_advanced_search_js(".*", true, None, None, None);
         // Regex mode must guard against zero-length matches causing infinite loops
-        assert!(js.contains("regex.lastIndex++"), "should guard against zero-length match infinite loop: {}", js);
+        assert!(
+            js.contains("regex.lastIndex++"),
+            "should guard against zero-length match infinite loop: {}",
+            js
+        );
     }
 
     #[test]
     fn advanced_search_plain_text_escapes_special_chars() {
         let js = build_advanced_search_js("hello\nworld\"test", false, None, None, None);
         // serde_json should escape newline and quotes
-        assert!(js.contains(r#"hello\nworld\"test"#), "should escape special chars: {}", js);
-        assert!(!js.contains("JSON.parse"), "should not use JSON.parse: {}", js);
+        assert!(
+            js.contains(r#"hello\nworld\"test"#),
+            "should escape special chars: {}",
+            js
+        );
+        assert!(
+            !js.contains("JSON.parse"),
+            "should not use JSON.parse: {}",
+            js
+        );
     }
 
     #[test]
     fn advanced_search_regex_with_all_options() {
-        let js = build_advanced_search_js(r"price:\s*\$\d+", true, Some(".main"), Some(80), Some(25));
+        let js =
+            build_advanced_search_js(r"price:\s*\$\d+", true, Some(".main"), Some(80), Some(25));
         assert!(js.contains("RegExp"), "should use RegExp");
-        assert!(js.contains("document.querySelector(\".main\")"), "should use custom scope");
+        assert!(
+            js.contains("document.querySelector(\".main\")"),
+            "should use custom scope"
+        );
         assert!(js.contains("idx - 80"), "should use context=80");
         assert!(js.contains("matchIndex < 25"), "should use max=25");
     }

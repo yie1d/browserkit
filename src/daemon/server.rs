@@ -93,7 +93,10 @@ impl DaemonServer {
 }
 
 /// Spawn a background task that periodically cleans up expired sessions.
-pub fn spawn_cleanup_task(state: Arc<DaemonState>, interval_seconds: u64) -> tokio::task::JoinHandle<()> {
+pub fn spawn_cleanup_task(
+    state: Arc<DaemonState>,
+    interval_seconds: u64,
+) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(interval_seconds));
         loop {
@@ -239,11 +242,7 @@ struct ExpiredSession {
     cdp: Option<Arc<cdpkit::CDP>>,
 }
 
-async fn handle_connection(
-    stream: TcpStream,
-    state: Arc<DaemonState>,
-    ctx: Arc<HandlerContext>,
-) {
+async fn handle_connection(stream: TcpStream, state: Arc<DaemonState>, ctx: Arc<HandlerContext>) {
     let (reader, writer) = stream.into_split();
     let mut reader = BufReader::new(reader);
     let mut writer = BufWriter::new(writer);
@@ -351,7 +350,10 @@ mod tests {
             Poll::Ready(Ok(buf.len()))
         }
 
-        fn poll_flush(mut self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        fn poll_flush(
+            mut self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+        ) -> Poll<std::io::Result<()>> {
             assert!(
                 !*self.shutdown_rx.borrow(),
                 "daemon.stop shutdown was signaled before the response flush completed"
@@ -462,12 +464,18 @@ mod tests {
     #[tokio::test]
     async fn server_responds_to_ping() {
         let port = start_server().await;
-        let mut stream = TcpStream::connect(format!("127.0.0.1:{port}")).await.unwrap();
+        let mut stream = TcpStream::connect(format!("127.0.0.1:{port}"))
+            .await
+            .unwrap();
         let req = serde_json::to_string(&json!({"cmd": "ping", "params": {}})).unwrap();
-        stream.write_all(format!("{req}\n").as_bytes()).await.unwrap();
+        stream
+            .write_all(format!("{req}\n").as_bytes())
+            .await
+            .unwrap();
         let mut buf = vec![0u8; 4096];
         let n = stream.read(&mut buf).await.unwrap();
-        let resp: Response = serde_json::from_str(std::str::from_utf8(&buf[..n]).unwrap().trim()).unwrap();
+        let resp: Response =
+            serde_json::from_str(std::str::from_utf8(&buf[..n]).unwrap().trim()).unwrap();
         assert!(resp.ok);
         assert_eq!(resp.data.unwrap(), json!({"status": "running"}));
     }
@@ -475,36 +483,57 @@ mod tests {
     #[tokio::test]
     async fn server_handles_invalid_json() {
         let port = start_server().await;
-        let mut stream = TcpStream::connect(format!("127.0.0.1:{port}")).await.unwrap();
+        let mut stream = TcpStream::connect(format!("127.0.0.1:{port}"))
+            .await
+            .unwrap();
         stream.write_all(b"not json\n").await.unwrap();
         let mut buf = vec![0u8; 4096];
         let n = stream.read(&mut buf).await.unwrap();
-        let resp: Response = serde_json::from_str(std::str::from_utf8(&buf[..n]).unwrap().trim()).unwrap();
+        let resp: Response =
+            serde_json::from_str(std::str::from_utf8(&buf[..n]).unwrap().trim()).unwrap();
         assert!(!resp.ok);
         let error = resp.error.unwrap();
         assert_eq!(error["code"], "INVALID_ARGUMENT");
-        assert!(error["message"].as_str().unwrap().contains("invalid request"));
+        assert!(error["message"]
+            .as_str()
+            .unwrap()
+            .contains("invalid request"));
     }
 
     #[tokio::test]
     async fn server_handles_multiple_requests() {
         let port = start_server().await;
-        let mut stream = TcpStream::connect(format!("127.0.0.1:{port}")).await.unwrap();
+        let mut stream = TcpStream::connect(format!("127.0.0.1:{port}"))
+            .await
+            .unwrap();
 
         let req = serde_json::to_string(&json!({"cmd": "ping", "params": {}})).unwrap();
-        stream.write_all(format!("{req}\n").as_bytes()).await.unwrap();
+        stream
+            .write_all(format!("{req}\n").as_bytes())
+            .await
+            .unwrap();
         let mut buf = vec![0u8; 4096];
         let n = stream.read(&mut buf).await.unwrap();
-        let resp: Response = serde_json::from_str(std::str::from_utf8(&buf[..n]).unwrap().trim()).unwrap();
+        let resp: Response =
+            serde_json::from_str(std::str::from_utf8(&buf[..n]).unwrap().trim()).unwrap();
         assert!(resp.ok);
 
         let req = serde_json::to_string(&json!({"cmd": "no.such", "params": {}})).unwrap();
-        stream.write_all(format!("{req}\n").as_bytes()).await.unwrap();
+        stream
+            .write_all(format!("{req}\n").as_bytes())
+            .await
+            .unwrap();
         let mut buf = vec![0u8; 4096];
         let n = stream.read(&mut buf).await.unwrap();
-        let resp: Response = serde_json::from_str(std::str::from_utf8(&buf[..n]).unwrap().trim()).unwrap();
+        let resp: Response =
+            serde_json::from_str(std::str::from_utf8(&buf[..n]).unwrap().trim()).unwrap();
         assert!(!resp.ok);
-        assert!(resp.error.unwrap().as_str().unwrap().contains("unknown command: no.such"));
+        assert!(resp
+            .error
+            .unwrap()
+            .as_str()
+            .unwrap()
+            .contains("unknown command: no.such"));
     }
 
     #[tokio::test]
@@ -513,38 +542,57 @@ mod tests {
         let mut handles = Vec::new();
         for _ in 0..3 {
             handles.push(tokio::spawn(async move {
-                let mut stream = TcpStream::connect(format!("127.0.0.1:{port}")).await.unwrap();
+                let mut stream = TcpStream::connect(format!("127.0.0.1:{port}"))
+                    .await
+                    .unwrap();
                 let req = serde_json::to_string(&json!({"cmd": "ping", "params": {}})).unwrap();
-                stream.write_all(format!("{req}\n").as_bytes()).await.unwrap();
+                stream
+                    .write_all(format!("{req}\n").as_bytes())
+                    .await
+                    .unwrap();
                 let mut buf = vec![0u8; 4096];
                 let n = stream.read(&mut buf).await.unwrap();
-                let resp: Response = serde_json::from_str(std::str::from_utf8(&buf[..n]).unwrap().trim()).unwrap();
+                let resp: Response =
+                    serde_json::from_str(std::str::from_utf8(&buf[..n]).unwrap().trim()).unwrap();
                 assert!(resp.ok);
             }));
         }
-        for h in handles { h.await.unwrap(); }
+        for h in handles {
+            h.await.unwrap();
+        }
     }
 
     #[tokio::test]
     async fn server_shutdown_via_daemon_stop() {
         let port = start_server().await;
-        let mut stream = TcpStream::connect(format!("127.0.0.1:{port}")).await.unwrap();
+        let mut stream = TcpStream::connect(format!("127.0.0.1:{port}"))
+            .await
+            .unwrap();
         let req = serde_json::to_string(&json!({"cmd": "daemon.stop", "params": {}})).unwrap();
-        stream.write_all(format!("{req}\n").as_bytes()).await.unwrap();
+        stream
+            .write_all(format!("{req}\n").as_bytes())
+            .await
+            .unwrap();
         let mut buf = vec![0u8; 4096];
         let n = stream.read(&mut buf).await.unwrap();
-        let resp: Response = serde_json::from_str(std::str::from_utf8(&buf[..n]).unwrap().trim()).unwrap();
+        let resp: Response =
+            serde_json::from_str(std::str::from_utf8(&buf[..n]).unwrap().trim()).unwrap();
         assert!(resp.ok);
         let data = resp.data.unwrap();
         assert_eq!(data["status"], "stopping");
         assert!(data.get("sessions_closed").is_some());
-        assert!(data.get(&[["work", "spaces"].concat(), "closed".into()].join("_")).is_none());
+        assert!(data
+            .get(&[["work", "spaces"].concat(), "closed".into()].join("_"))
+            .is_none());
         drop(stream);
 
         let mut failed = false;
         for _ in 0..10 {
             tokio::time::sleep(tokio::time::Duration::from_millis(20)).await;
-            if TcpStream::connect(format!("127.0.0.1:{port}")).await.is_err() {
+            if TcpStream::connect(format!("127.0.0.1:{port}"))
+                .await
+                .is_err()
+            {
                 failed = true;
                 break;
             }
@@ -555,12 +603,18 @@ mod tests {
     #[tokio::test]
     async fn daemon_status_returns_info() {
         let port = start_server().await;
-        let mut stream = TcpStream::connect(format!("127.0.0.1:{port}")).await.unwrap();
+        let mut stream = TcpStream::connect(format!("127.0.0.1:{port}"))
+            .await
+            .unwrap();
         let req = serde_json::to_string(&json!({"cmd": "daemon.status", "params": {}})).unwrap();
-        stream.write_all(format!("{req}\n").as_bytes()).await.unwrap();
+        stream
+            .write_all(format!("{req}\n").as_bytes())
+            .await
+            .unwrap();
         let mut buf = vec![0u8; 4096];
         let n = stream.read(&mut buf).await.unwrap();
-        let resp: Response = serde_json::from_str(std::str::from_utf8(&buf[..n]).unwrap().trim()).unwrap();
+        let resp: Response =
+            serde_json::from_str(std::str::from_utf8(&buf[..n]).unwrap().trim()).unwrap();
         assert!(resp.ok);
         let data = resp.data.unwrap();
         assert_eq!(data["port"], port);
@@ -573,13 +627,20 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn now_ts() -> u64 {
-        SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs()
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs()
     }
 
     fn make_default_session(host: &str, last_active: u64) -> crate::daemon::session::Session {
         let mut session = crate::daemon::session::Session::new_default(host.to_string());
         session.last_active = last_active;
-        session.add_tab("target-default".into(), "https://example.com".into(), "Example".into());
+        session.add_tab(
+            "target-default".into(),
+            "https://example.com".into(),
+            "Example".into(),
+        );
         session.last_active = last_active;
         session
     }
@@ -595,7 +656,11 @@ mod tests {
             format!("ctx-{name}"),
         );
         session.last_active = last_active;
-        session.add_tab(format!("target-{name}"), "https://example.com".into(), "Example".into());
+        session.add_tab(
+            format!("target-{name}"),
+            "https://example.com".into(),
+            "Example".into(),
+        );
         session.last_active = last_active;
         session
     }
@@ -669,12 +734,16 @@ mod tests {
         actions.sort_by(|left, right| format!("{left:?}").cmp(&format!("{right:?}")));
 
         assert_eq!(actions.len(), 2);
-        assert!(actions.contains(&crate::daemon::target_close::SessionTargetCloseAction::CloseTarget {
-            target_id: "OWNED".into(),
-        }));
-        assert!(actions.contains(&crate::daemon::target_close::SessionTargetCloseAction::DetachFromTarget {
-            cdp_session_id: "CDP-ATTACHED".into(),
-        }));
+        assert!(actions.contains(
+            &crate::daemon::target_close::SessionTargetCloseAction::CloseTarget {
+                target_id: "OWNED".into(),
+            }
+        ));
+        assert!(actions.contains(
+            &crate::daemon::target_close::SessionTargetCloseAction::DetachFromTarget {
+                cdp_session_id: "CDP-ATTACHED".into(),
+            }
+        ));
     }
 
     #[tokio::test]
@@ -702,9 +771,14 @@ mod tests {
     #[tokio::test]
     async fn server_rejects_request_without_token() {
         let port = start_server_with_token("test-secret").await;
-        let mut stream = TcpStream::connect(format!("127.0.0.1:{port}")).await.unwrap();
+        let mut stream = TcpStream::connect(format!("127.0.0.1:{port}"))
+            .await
+            .unwrap();
         let req = r#"{"cmd":"ping","params":{}}"#;
-        stream.write_all(format!("{req}\n").as_bytes()).await.unwrap();
+        stream
+            .write_all(format!("{req}\n").as_bytes())
+            .await
+            .unwrap();
         let mut buf = vec![0u8; 4096];
         let n = stream.read(&mut buf).await.unwrap();
         let resp: Response =
@@ -716,9 +790,14 @@ mod tests {
     #[tokio::test]
     async fn server_accepts_request_with_valid_token() {
         let port = start_server_with_token("test-secret").await;
-        let mut stream = TcpStream::connect(format!("127.0.0.1:{port}")).await.unwrap();
+        let mut stream = TcpStream::connect(format!("127.0.0.1:{port}"))
+            .await
+            .unwrap();
         let req = r#"{"cmd":"ping","params":{},"token":"test-secret"}"#;
-        stream.write_all(format!("{req}\n").as_bytes()).await.unwrap();
+        stream
+            .write_all(format!("{req}\n").as_bytes())
+            .await
+            .unwrap();
         let mut buf = vec![0u8; 4096];
         let n = stream.read(&mut buf).await.unwrap();
         let resp: Response =
@@ -729,9 +808,14 @@ mod tests {
     #[tokio::test]
     async fn server_rejects_request_with_wrong_token() {
         let port = start_server_with_token("test-secret").await;
-        let mut stream = TcpStream::connect(format!("127.0.0.1:{port}")).await.unwrap();
+        let mut stream = TcpStream::connect(format!("127.0.0.1:{port}"))
+            .await
+            .unwrap();
         let req = r#"{"cmd":"ping","params":{},"token":"wrong-token"}"#;
-        stream.write_all(format!("{req}\n").as_bytes()).await.unwrap();
+        stream
+            .write_all(format!("{req}\n").as_bytes())
+            .await
+            .unwrap();
         let mut buf = vec![0u8; 4096];
         let n = stream.read(&mut buf).await.unwrap();
         let resp: Response =
@@ -744,9 +828,14 @@ mod tests {
     async fn server_no_token_configured_allows_all() {
         // When daemon_token is None, requests without token should be accepted
         let port = start_server().await;
-        let mut stream = TcpStream::connect(format!("127.0.0.1:{port}")).await.unwrap();
+        let mut stream = TcpStream::connect(format!("127.0.0.1:{port}"))
+            .await
+            .unwrap();
         let req = r#"{"cmd":"ping","params":{}}"#;
-        stream.write_all(format!("{req}\n").as_bytes()).await.unwrap();
+        stream
+            .write_all(format!("{req}\n").as_bytes())
+            .await
+            .unwrap();
         let mut buf = vec![0u8; 4096];
         let n = stream.read(&mut buf).await.unwrap();
         let resp: Response =

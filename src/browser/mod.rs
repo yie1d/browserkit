@@ -146,11 +146,7 @@ impl DaemonState {
 ///
 /// When triggered, removes the browser from state and marks all associated
 /// sessions as disconnected so subsequent commands return `CHROME_DISCONNECTED`.
-pub fn spawn_disconnect_monitor(
-    state: Arc<DaemonState>,
-    host: String,
-    cdp: Arc<CDP>,
-) {
+pub fn spawn_disconnect_monitor(state: Arc<DaemonState>, host: String, cdp: Arc<CDP>) {
     tokio::spawn(async move {
         cdp.closed().await;
         tracing::warn!(host = %host, "CDP WebSocket closed, triggering disconnect cleanup");
@@ -172,8 +168,14 @@ mod tests {
 
     #[test]
     fn build_ws_url_dynamic_port() {
-        let url = build_ws_url("localhost:41753", "/devtools/browser/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee");
-        assert_eq!(url, "ws://localhost:41753/devtools/browser/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee");
+        let url = build_ws_url(
+            "localhost:41753",
+            "/devtools/browser/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+        );
+        assert_eq!(
+            url,
+            "ws://localhost:41753/devtools/browser/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+        );
     }
 
     #[test]

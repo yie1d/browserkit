@@ -7,7 +7,6 @@ use thiserror::Error;
 #[derive(Debug, Error)]
 pub enum BkError {
     // ── Browser related ──────────────────────────────────────────────
-
     /// Chrome executable not found at any known path.
     #[error("Chrome not found. Checked paths: {0:?}")]
     BrowserNotFound(Vec<String>),
@@ -29,19 +28,16 @@ pub enum BkError {
     ElementIndexOutOfRange(usize, usize),
 
     // ── Daemon related ───────────────────────────────────────────────
-
     /// The incoming request could not be parsed.
     #[error("invalid request: {0}")]
     InvalidRequest(String),
 
     // ── CDP related ──────────────────────────────────────────────────
-
     /// An error propagated from the cdpkit CDP layer.
     #[error("CDP error: {0}")]
     Cdp(#[from] cdpkit::CdpError),
 
     // ── IO / serialization ───────────────────────────────────────────
-
     /// Standard I/O error.
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
@@ -53,7 +49,6 @@ pub enum BkError {
     // ── Persistence ──────────────────────────────────────────────────
 
     // ── Navigation ───────────────────────────────────────────────────
-
     /// A navigation or page-load operation failed.
     #[error("navigation failed: {0}")]
     NavigationFailed(String),
@@ -71,7 +66,6 @@ pub enum BkError {
     ElementNotFound(usize),
 
     // ── Catch-all ────────────────────────────────────────────────────
-
     /// Generic error for cases not covered by specific variants.
     #[error("{0}")]
     Other(String),
@@ -118,19 +112,29 @@ impl ErrorCode {
     pub fn suggestion(&self) -> &'static str {
         match self {
             Self::NotConnected => "run 'bk connect' first to establish a browser connection",
-            Self::RefNotFound => "call snapshot to refresh refs -- page may have changed since last snapshot",
-            Self::RemoteDebugNotEnabled => "open chrome://inspect/#remote-debugging and enable, then retry bk connect",
-            Self::ConnectionRefused => "check if Chrome showed an authorization dialog and click Allow, then retry",
+            Self::RefNotFound => {
+                "call snapshot to refresh refs -- page may have changed since last snapshot"
+            }
+            Self::RemoteDebugNotEnabled => {
+                "open chrome://inspect/#remote-debugging and enable, then retry bk connect"
+            }
+            Self::ConnectionRefused => {
+                "check if Chrome showed an authorization dialog and click Allow, then retry"
+            }
             Self::BrowserNotRunning => "manually open Chrome/Edge, then retry bk connect",
             Self::BrowserVersionTooOld => "upgrade Chrome/Edge to version 112 or later",
             Self::BrowserNotInstalled => "install Google Chrome from https://www.google.com/chrome",
             Self::ChromeDisconnected => "Chrome may have closed; run bk connect to reconnect",
             Self::SessionNotFound => "session may have expired or been closed; create a new one",
             Self::SessionNoTab => "use bk open to create a tab first",
-            Self::DialogBlocking => "handle the dialog first: bk dialog accept or bk dialog dismiss",
+            Self::DialogBlocking => {
+                "handle the dialog first: bk dialog accept or bk dialog dismiss"
+            }
             Self::NavigateFailed => "check URL is valid and accessible",
             Self::Timeout => "increase --timeout or check if page is responsive",
-            Self::ElementNotVisible => "element may be hidden or overlapped; try scrolling or waiting",
+            Self::ElementNotVisible => {
+                "element may be hidden or overlapped; try scrolling or waiting"
+            }
             Self::ElementNotInteractable => "element is disabled; check page state",
             Self::TargetNotFound => "tab may have been closed; run bk tabs to see available tabs",
             Self::TargetAlreadyAttached => "detach the target from its current session first",
@@ -140,9 +144,13 @@ impl ErrorCode {
             Self::DaemonError => "restart daemon: bk daemon stop && bk daemon start",
             Self::FileNotFound => "check file path exists and is absolute",
             Self::SelectorNotFound => "selector matched no elements; check page state",
-            Self::SessionLimitExceeded => "close unused sessions with 'bk session close --session <name>'",
+            Self::SessionLimitExceeded => {
+                "close unused sessions with 'bk session close --session <name>'"
+            }
             Self::TabLimitExceeded => "close unused tabs with 'bk close --target <tid>'",
-            Self::Unauthorized => "daemon token mismatch; restart daemon or check ~/.bk/daemon.token",
+            Self::Unauthorized => {
+                "daemon token mismatch; restart daemon or check ~/.bk/daemon.token"
+            }
         }
     }
 

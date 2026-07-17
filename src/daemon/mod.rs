@@ -186,7 +186,9 @@ pub async fn start_daemon() -> Result<DaemonStartResult, crate::error::BkError> 
 
     // Take the receiver that was created alongside persist_tx in DaemonState::new(),
     // then wrap in Arc. The real persist task will use this receiver.
-    let persist_rx = fresh_state._persist_rx_guard.take()
+    let persist_rx = fresh_state
+        ._persist_rx_guard
+        .take()
         .expect("DaemonState::new() always creates a receiver");
     let state = Arc::new(fresh_state);
     persist::spawn_persist_task_with_rx(Arc::clone(&state), persist_rx);
@@ -201,7 +203,10 @@ pub async fn start_daemon() -> Result<DaemonStartResult, crate::error::BkError> 
     token::write_token_file(&daemon_token).map_err(crate::error::BkError::Io)?;
 
     let server = server::DaemonServer::start_with_token(
-        state.clone(), shutdown_tx, shutdown_rx, Some(daemon_token),
+        state.clone(),
+        shutdown_tx,
+        shutdown_rx,
+        Some(daemon_token),
     )
     .await
     .map_err(crate::error::BkError::Io)?;
@@ -337,7 +342,11 @@ mod tests {
             Err(e) => e.to_string(),
             Ok(_) => panic!("expected error, got Ok"),
         };
-        assert!(err_msg.contains("already running"), "error should mention already running: {}", err_msg);
+        assert!(
+            err_msg.contains("already running"),
+            "error should mention already running: {}",
+            err_msg
+        );
 
         // Clean up
         drop(result1);
@@ -395,9 +404,16 @@ mod tests {
         cleanup_daemon_files();
 
         let result = try_acquire_daemon_lock();
-        assert!(result.is_ok(), "should not return IO error: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "should not return IO error: {:?}",
+            result.err()
+        );
         // Lock must be acquirable when no other test holds it
-        assert!(result.unwrap().is_some(), "lock should be acquirable when free");
+        assert!(
+            result.unwrap().is_some(),
+            "lock should be acquirable when free"
+        );
     }
 
     #[test]
@@ -406,7 +422,9 @@ mod tests {
         cleanup_daemon_files();
 
         // Acquire the lock once
-        let held = try_acquire_daemon_lock().unwrap().expect("should acquire lock");
+        let held = try_acquire_daemon_lock()
+            .unwrap()
+            .expect("should acquire lock");
 
         // While held, a second attempt in the same process should fail
         let second = try_acquire_daemon_lock();
@@ -459,18 +477,25 @@ mod tests {
         let _lock_file = result._lock_file;
 
         // Read the token that start_daemon wrote
-        let daemon_token = token::read_token_file().expect("token file should exist after start_daemon");
+        let daemon_token =
+            token::read_token_file().expect("token file should exist after start_daemon");
 
         // Send daemon.stop via TCP (same as `bk daemon stop` would)
-        use tokio::io::{AsyncWriteExt, AsyncBufReadExt, BufReader};
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
         let stream = tokio::net::TcpStream::connect(format!("127.0.0.1:{}", port))
             .await
             .unwrap();
         let (reader, mut writer) = stream.into_split();
         let mut reader = BufReader::new(reader);
 
-        let req = format!(r#"{{"cmd":"daemon.stop","params":{{}},"token":"{}"}}"#, daemon_token);
-        writer.write_all(format!("{}\n", req).as_bytes()).await.unwrap();
+        let req = format!(
+            r#"{{"cmd":"daemon.stop","params":{{}},"token":"{}"}}"#,
+            daemon_token
+        );
+        writer
+            .write_all(format!("{}\n", req).as_bytes())
+            .await
+            .unwrap();
         writer.flush().await.unwrap();
 
         let mut line = String::new();
@@ -480,19 +505,22 @@ mod tests {
         assert!(resp.ok);
 
         // The shutdown_rx should now fire (the handler sent true on the channel)
-        let changed = tokio::time::timeout(
-            std::time::Duration::from_secs(2),
-            shutdown_rx.changed(),
-        )
-        .await;
-        assert!(changed.is_ok(), "shutdown_rx.changed() should resolve after daemon.stop");
+        let changed =
+            tokio::time::timeout(std::time::Duration::from_secs(2), shutdown_rx.changed()).await;
+        assert!(
+            changed.is_ok(),
+            "shutdown_rx.changed() should resolve after daemon.stop"
+        );
         assert_eq!(*shutdown_rx.borrow(), true);
 
         // The TCP server accept loop should have stopped — new connections should fail
         let mut failed = false;
         for _ in 0..20 {
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-            if tokio::net::TcpStream::connect(format!("127.0.0.1:{}", port)).await.is_err() {
+            if tokio::net::TcpStream::connect(format!("127.0.0.1:{}", port))
+                .await
+                .is_err()
+            {
                 failed = true;
                 break;
             }

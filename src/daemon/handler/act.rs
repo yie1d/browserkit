@@ -140,8 +140,8 @@ fn parse_act_params(params: &serde_json::Value) -> Result<ActParams, Response> {
     };
     reject_unexpected_fields(params, kind_str, allowed_fields)?;
 
-    let session_name = parse_optional_string(params, "session")?
-        .unwrap_or_else(|| "default".to_string());
+    let session_name =
+        parse_optional_string(params, "session")?.unwrap_or_else(|| "default".to_string());
     let target = parse_optional_string(params, "target")?;
     let timeout = parse_optional_u64(params, "timeout")?.unwrap_or(30000);
     let no_state_diff = parse_optional_bool(params, "no_state_diff")?.unwrap_or(false);
@@ -839,10 +839,7 @@ fn action_error(action: &str, error: crate::error::BkError) -> Response {
     Response::error_detail(code, format!("{action} failed: {error}"), None)
 }
 
-fn upload_action_error(
-    selector_target: bool,
-    error: crate::error::BkError,
-) -> Response {
+fn upload_action_error(selector_target: bool, error: crate::error::BkError) -> Response {
     let code = match &error {
         crate::error::BkError::InvalidRequest(message)
             if message.contains("file path must be absolute:")
@@ -967,14 +964,40 @@ async fn dispatch_key_combo(session: &cdpkit::Session<'_>, key_str: &str) -> Res
         send_key_event(session, "rawKeyDown", "Alt", "AltLeft", 18, None, modifiers).await?;
     }
     if modifiers & 2 != 0 {
-        send_key_event(session, "rawKeyDown", "Control", "ControlLeft", 17, None, modifiers)
-            .await?;
+        send_key_event(
+            session,
+            "rawKeyDown",
+            "Control",
+            "ControlLeft",
+            17,
+            None,
+            modifiers,
+        )
+        .await?;
     }
     if modifiers & 4 != 0 {
-        send_key_event(session, "rawKeyDown", "Meta", "MetaLeft", 91, None, modifiers).await?;
+        send_key_event(
+            session,
+            "rawKeyDown",
+            "Meta",
+            "MetaLeft",
+            91,
+            None,
+            modifiers,
+        )
+        .await?;
     }
     if modifiers & 8 != 0 {
-        send_key_event(session, "rawKeyDown", "Shift", "ShiftLeft", 16, None, modifiers).await?;
+        send_key_event(
+            session,
+            "rawKeyDown",
+            "Shift",
+            "ShiftLeft",
+            16,
+            None,
+            modifiers,
+        )
+        .await?;
     }
 
     let event_type = if key_def.text.is_some() {
@@ -1532,19 +1555,17 @@ mod tests {
                 value: "alpha".into(),
             }]
         );
-        assert!(
-            parse_act_params(&json!({
-                "kind": "fill",
-                "fields": [{"index": 0, "value": "alpha"}]
-            }))
-            .is_err()
-        );
+        assert!(parse_act_params(&json!({
+            "kind": "fill",
+            "fields": [{"index": 0, "value": "alpha"}]
+        }))
+        .is_err());
     }
 
     #[test]
     fn parse_act_fill_distinguishes_fields_array_validation() {
-        let missing = serde_json::to_value(parse_act_params(&json!({"kind": "fill"})).unwrap_err())
-            .unwrap();
+        let missing =
+            serde_json::to_value(parse_act_params(&json!({"kind": "fill"})).unwrap_err()).unwrap();
         assert_eq!(missing["error"]["code"], "INVALID_ARGUMENT");
         assert_eq!(missing["error"]["message"], "fill requires fields array");
 
@@ -1557,14 +1578,20 @@ mod tests {
         )
         .unwrap();
         assert_eq!(non_array["error"]["code"], "INVALID_ARGUMENT");
-        assert_eq!(non_array["error"]["message"], "fill fields must be an array");
+        assert_eq!(
+            non_array["error"]["message"],
+            "fill fields must be an array"
+        );
 
         let empty = serde_json::to_value(
             parse_act_params(&json!({"kind": "fill", "fields": []})).unwrap_err(),
         )
         .unwrap();
         assert_eq!(empty["error"]["code"], "INVALID_ARGUMENT");
-        assert_eq!(empty["error"]["message"], "fill requires at least one field");
+        assert_eq!(
+            empty["error"]["message"],
+            "fill requires at least one field"
+        );
 
         let parsed = parse_act_params(&json!({
             "kind": "fill",
@@ -1611,9 +1638,14 @@ mod tests {
 
     #[test]
     fn parse_act_upload_and_drag_require_complete_targets() {
-        assert!(parse_act_params(&json!({"kind": "upload", "ref": 42, "files": ["a.txt"]})).is_ok());
+        assert!(
+            parse_act_params(&json!({"kind": "upload", "ref": 42, "files": ["a.txt"]})).is_ok()
+        );
         assert!(parse_act_params(&json!({"kind": "upload", "files": ["a.txt"]})).is_err());
-        assert!(parse_act_params(&json!({"kind": "drag", "from_ref": 10, "to_selector": "#drop"})).is_ok());
+        assert!(
+            parse_act_params(&json!({"kind": "drag", "from_ref": 10, "to_selector": "#drop"}))
+                .is_ok()
+        );
         assert!(parse_act_params(&json!({"kind": "drag", "from_ref": 10})).is_err());
     }
 
@@ -1699,7 +1731,10 @@ mod tests {
             ("scroll", json!({"kind": "scroll"})),
             ("hover", json!({"kind": "hover", "ref": 42})),
             ("focus", json!({"kind": "focus", "ref": 42})),
-            ("select", json!({"kind": "select", "ref": 42, "value": "green"})),
+            (
+                "select",
+                json!({"kind": "select", "ref": 42, "value": "green"}),
+            ),
             ("options", json!({"kind": "options", "ref": 42})),
             (
                 "fill",
@@ -1718,7 +1753,10 @@ mod tests {
                 let mut params = base.clone();
                 params[field] = field_value;
                 let value = serde_json::to_value(parse_act_params(&params).unwrap_err()).unwrap();
-                assert_eq!(value["error"]["code"], "INVALID_ARGUMENT", "{kind} + {field}");
+                assert_eq!(
+                    value["error"]["code"], "INVALID_ARGUMENT",
+                    "{kind} + {field}"
+                );
             }
         }
     }
@@ -1948,25 +1986,58 @@ mod tests {
     fn parse_act_rejects_wrong_field_types() {
         let cases = [
             ("session", json!({"kind": "click", "ref": 1, "session": 7})),
-            ("target", json!({"kind": "click", "ref": 1, "target": false})),
-            ("timeout", json!({"kind": "click", "ref": 1, "timeout": "slow"})),
-            ("no_state_diff", json!({"kind": "click", "ref": 1, "no_state_diff": 1})),
+            (
+                "target",
+                json!({"kind": "click", "ref": 1, "target": false}),
+            ),
+            (
+                "timeout",
+                json!({"kind": "click", "ref": 1, "timeout": "slow"}),
+            ),
+            (
+                "no_state_diff",
+                json!({"kind": "click", "ref": 1, "no_state_diff": 1}),
+            ),
             ("ref", json!({"kind": "click", "ref": "1"})),
             ("x", json!({"kind": "click", "x": "10", "y": 20})),
             ("y", json!({"kind": "click", "x": 10, "y": "20"})),
             ("text", json!({"kind": "type", "ref": 1, "text": 7})),
             ("value", json!({"kind": "select", "ref": 1, "value": false})),
-            ("append", json!({"kind": "type", "ref": 1, "text": "a", "append": "yes"})),
-            ("fields", json!({"kind": "fill", "fields": {"ref": 1, "value": "a"}})),
+            (
+                "append",
+                json!({"kind": "type", "ref": 1, "text": "a", "append": "yes"}),
+            ),
+            (
+                "fields",
+                json!({"kind": "fill", "fields": {"ref": 1, "value": "a"}}),
+            ),
             ("keys", json!({"kind": "press", "keys": "Enter"})),
             ("direction", json!({"kind": "scroll", "direction": 1})),
-            ("amount", json!({"kind": "scroll", "direction": "down", "amount": "10"})),
+            (
+                "amount",
+                json!({"kind": "scroll", "direction": "down", "amount": "10"}),
+            ),
             ("selector", json!({"kind": "scroll", "selector": 1})),
-            ("files", json!({"kind": "upload", "ref": 1, "files": "a.txt"})),
-            ("from_ref", json!({"kind": "drag", "from_ref": "1", "to_ref": 2})),
-            ("from_selector", json!({"kind": "drag", "from_selector": 1, "to_ref": 2})),
-            ("to_ref", json!({"kind": "drag", "from_ref": 1, "to_ref": "2"})),
-            ("to_selector", json!({"kind": "drag", "from_ref": 1, "to_selector": 2})),
+            (
+                "files",
+                json!({"kind": "upload", "ref": 1, "files": "a.txt"}),
+            ),
+            (
+                "from_ref",
+                json!({"kind": "drag", "from_ref": "1", "to_ref": 2}),
+            ),
+            (
+                "from_selector",
+                json!({"kind": "drag", "from_selector": 1, "to_ref": 2}),
+            ),
+            (
+                "to_ref",
+                json!({"kind": "drag", "from_ref": 1, "to_ref": "2"}),
+            ),
+            (
+                "to_selector",
+                json!({"kind": "drag", "from_ref": 1, "to_selector": 2}),
+            ),
         ];
 
         for (field, params) in cases {
@@ -1981,8 +2052,8 @@ mod tests {
 
     #[test]
     fn parse_act_rejects_mixed_key_types() {
-        let response = parse_act_params(&json!({"kind": "press", "keys": ["Control", 7]}))
-            .unwrap_err();
+        let response =
+            parse_act_params(&json!({"kind": "press", "keys": ["Control", 7]})).unwrap_err();
         let error = response.error.unwrap();
         assert_eq!(error["code"], "INVALID_ARGUMENT");
         assert!(error["message"].as_str().unwrap().contains("keys"));
@@ -1999,7 +2070,11 @@ mod tests {
             json!({"kind": "click", "ref": 1, "x": 10, "y": 20}),
         ] {
             let response = parse_act_params(&params).unwrap_err();
-            assert_eq!(response.error.unwrap()["code"], "INVALID_ARGUMENT", "{params}");
+            assert_eq!(
+                response.error.unwrap()["code"],
+                "INVALID_ARGUMENT",
+                "{params}"
+            );
         }
     }
 
@@ -2280,27 +2355,27 @@ mod tests {
     async fn click_new_tab_matches_session_and_opener() {
         let state = DaemonState::new();
         let mut events = crate::daemon::target_lifecycle::subscribe_target_events(&state);
-        let _ = state
-            .target_events
-            .send(crate::daemon::target_lifecycle::TargetLifecycleEvent::Created {
+        let _ = state.target_events.send(
+            crate::daemon::target_lifecycle::TargetLifecycleEvent::Created {
                 session: "other".into(),
                 target_id: "WRONG_SESSION".into(),
                 opener_id: Some("T1".into()),
-            });
-        let _ = state
-            .target_events
-            .send(crate::daemon::target_lifecycle::TargetLifecycleEvent::Created {
+            },
+        );
+        let _ = state.target_events.send(
+            crate::daemon::target_lifecycle::TargetLifecycleEvent::Created {
                 session: "default".into(),
                 target_id: "WRONG_OPENER".into(),
                 opener_id: Some("T2".into()),
-            });
-        let _ = state
-            .target_events
-            .send(crate::daemon::target_lifecycle::TargetLifecycleEvent::Created {
+            },
+        );
+        let _ = state.target_events.send(
+            crate::daemon::target_lifecycle::TargetLifecycleEvent::Created {
                 session: "default".into(),
                 target_id: "NEW_TAB".into(),
                 opener_id: Some("T1".into()),
-            });
+            },
+        );
 
         let result = wait_for_click_new_tab(&mut events, "default", "T1", 100).await;
 
@@ -2323,11 +2398,18 @@ mod tests {
     #[test]
     fn action_error_maps_selector_not_found_before_ref_not_found() {
         for (action, message) in [
-            ("scroll", "scroll to selector: element not found for selector"),
+            (
+                "scroll",
+                "scroll to selector: element not found for selector",
+            ),
             ("drag", "no element found for selector: #drop"),
         ] {
             let response = action_error(action, BkError::Other(message.into()));
-            assert_eq!(response.error.unwrap()["code"], "SELECTOR_NOT_FOUND", "{action}");
+            assert_eq!(
+                response.error.unwrap()["code"],
+                "SELECTOR_NOT_FOUND",
+                "{action}"
+            );
         }
     }
 

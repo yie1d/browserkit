@@ -138,11 +138,13 @@ fn cookie_scope(session: &Session) -> Result<CookieScope, Response> {
             .browser_context_id
             .clone()
             .map(CookieScope::BrowserContext)
-            .ok_or_else(|| Response::error_detail(
-                ErrorCode::ChromeDisconnected,
-                format!("isolated session '{}' has no BrowserContext", session.name),
-                None,
-            )),
+            .ok_or_else(|| {
+                Response::error_detail(
+                    ErrorCode::ChromeDisconnected,
+                    format!("isolated session '{}' has no BrowserContext", session.name),
+                    None,
+                )
+            }),
     }
 }
 
@@ -171,8 +173,12 @@ fn required_string_param<'a>(
 ) -> Result<&'a str, Response> {
     match params.get(field) {
         Some(Value::String(value)) => Ok(value),
-        Some(_) => Err(invalid_argument(format!("{command} requires '{field}' string param"))),
-        None => Err(invalid_argument(format!("{command} requires '{field}' param"))),
+        Some(_) => Err(invalid_argument(format!(
+            "{command} requires '{field}' string param"
+        ))),
+        None => Err(invalid_argument(format!(
+            "{command} requires '{field}' param"
+        ))),
     }
 }
 
@@ -303,11 +309,13 @@ fn session_cookie_context_id(
     state: &DaemonState,
     session_name: &str,
 ) -> Result<Option<String>, Response> {
-    let session = state.sessions.get(session_name).ok_or_else(|| Response::error_detail(
-        ErrorCode::SessionNotFound,
-        format!("session '{}' not found", session_name),
-        None,
-    ))?;
+    let session = state.sessions.get(session_name).ok_or_else(|| {
+        Response::error_detail(
+            ErrorCode::SessionNotFound,
+            format!("session '{}' not found", session_name),
+            None,
+        )
+    })?;
     cookie_scope(&session).map(CookieScope::browser_context_id)
 }
 
@@ -338,7 +346,10 @@ pub async fn handle_session_close(req: &Request, state: &Arc<DaemonState>) -> Re
     };
 
     let tabs_closed = plan.targets.len();
-    let cdp = state.browsers.get(&plan.browser_host).map(|b| Arc::clone(&b.cdp));
+    let cdp = state
+        .browsers
+        .get(&plan.browser_host)
+        .map(|b| Arc::clone(&b.cdp));
 
     let mut first_close_error = None;
     for target in &plan.targets {
@@ -619,10 +630,7 @@ pub async fn handle_session_cookies_clear(req: &Request, state: &Arc<DaemonState
     }
 }
 
-pub async fn handle_session_storage_local_get(
-    req: &Request,
-    state: &Arc<DaemonState>,
-) -> Response {
+pub async fn handle_session_storage_local_get(req: &Request, state: &Arc<DaemonState>) -> Response {
     let ctx = match resolve_session_target(state, &req.params) {
         Ok(ctx) => ctx,
         Err(response) => return response,
@@ -646,7 +654,10 @@ pub async fn handle_session_storage_local_get(
         Err(error) => return daemon_error(format!("localStorage get failed: {error}")),
     };
     if let Some(details) = &resp.exception_details {
-        return js_error(format!("localStorage get failed: {}", exception_message(details)));
+        return js_error(format!(
+            "localStorage get failed: {}",
+            exception_message(details)
+        ));
     }
     let value = resp.result.value.unwrap_or(Value::Null);
     Response::ok(json!({
@@ -657,10 +668,7 @@ pub async fn handle_session_storage_local_get(
     }))
 }
 
-pub async fn handle_session_storage_local_set(
-    req: &Request,
-    state: &Arc<DaemonState>,
-) -> Response {
+pub async fn handle_session_storage_local_set(req: &Request, state: &Arc<DaemonState>) -> Response {
     let ctx = match resolve_session_target(state, &req.params) {
         Ok(ctx) => ctx,
         Err(response) => return response,
@@ -692,7 +700,10 @@ pub async fn handle_session_storage_local_set(
         Err(error) => return daemon_error(format!("localStorage set failed: {error}")),
     };
     if let Some(details) = &resp.exception_details {
-        return js_error(format!("localStorage set failed: {}", exception_message(details)));
+        return js_error(format!(
+            "localStorage set failed: {}",
+            exception_message(details)
+        ));
     }
     Response::ok(json!({
         "session": ctx.session_name,
@@ -703,10 +714,7 @@ pub async fn handle_session_storage_local_set(
     }))
 }
 
-pub async fn handle_session_storage_export(
-    req: &Request,
-    state: &Arc<DaemonState>,
-) -> Response {
+pub async fn handle_session_storage_export(req: &Request, state: &Arc<DaemonState>) -> Response {
     let ctx = match resolve_session_target(state, &req.params) {
         Ok(ctx) => ctx,
         Err(response) => return response,
@@ -734,7 +742,10 @@ pub async fn handle_session_storage_export(
         Err(error) => return daemon_error(format!("localStorage export failed: {error}")),
     };
     if let Some(details) = &ls_resp.exception_details {
-        return js_error(format!("localStorage export failed: {}", exception_message(details)));
+        return js_error(format!(
+            "localStorage export failed: {}",
+            exception_message(details)
+        ));
     }
     let local_storage =
         match parse_local_storage_export_value(ls_resp.result.value.unwrap_or(Value::Null)) {
@@ -753,10 +764,7 @@ pub async fn handle_session_storage_export(
     }))
 }
 
-pub async fn handle_session_storage_import(
-    req: &Request,
-    state: &Arc<DaemonState>,
-) -> Response {
+pub async fn handle_session_storage_import(req: &Request, state: &Arc<DaemonState>) -> Response {
     let ctx = match resolve_session_target(state, &req.params) {
         Ok(ctx) => ctx,
         Err(response) => return response,
@@ -815,7 +823,10 @@ pub async fn handle_session_storage_import(
         Err(error) => return daemon_error(format!("localStorage import failed: {error}")),
     };
     if let Some(details) = &resp.exception_details {
-        return js_error(format!("localStorage import failed: {}", exception_message(details)));
+        return js_error(format!(
+            "localStorage import failed: {}",
+            exception_message(details)
+        ));
     }
 
     Response::ok(json!({
@@ -936,9 +947,11 @@ mod tests {
         assert!(actions.contains(&SessionTargetCloseAction::CloseTarget {
             target_id: "OWNED".into(),
         }));
-        assert!(actions.contains(&SessionTargetCloseAction::DetachFromTarget {
-            cdp_session_id: "CDP-ATTACHED".into(),
-        }));
+        assert!(
+            actions.contains(&SessionTargetCloseAction::DetachFromTarget {
+                cdp_session_id: "CDP-ATTACHED".into(),
+            })
+        );
         assert!(actions.contains(&SessionTargetCloseAction::AlreadyDetached));
         assert_eq!(actions.len(), 3);
     }
@@ -947,11 +960,8 @@ mod tests {
     fn session_limit_check_at_limit() {
         let state = Arc::new(DaemonState::new());
         for i in 0..10 {
-            let s = Session::new_isolated(
-                format!("s{i}"),
-                "localhost:9222".into(),
-                format!("CTX{i}"),
-            );
+            let s =
+                Session::new_isolated(format!("s{i}"), "localhost:9222".into(), format!("CTX{i}"));
             state.sessions.insert(format!("s{i}"), s);
         }
         let result = check_session_limit(&state, 10);
@@ -964,11 +974,8 @@ mod tests {
     fn session_limit_check_under_limit() {
         let state = Arc::new(DaemonState::new());
         for i in 0..5 {
-            let s = Session::new_isolated(
-                format!("s{i}"),
-                "localhost:9222".into(),
-                format!("CTX{i}"),
-            );
+            let s =
+                Session::new_isolated(format!("s{i}"), "localhost:9222".into(), format!("CTX{i}"));
             state.sessions.insert(format!("s{i}"), s);
         }
         let result = check_session_limit(&state, 10);
@@ -979,11 +986,8 @@ mod tests {
     fn session_limit_check_unlimited() {
         let state = Arc::new(DaemonState::new());
         for i in 0..20 {
-            let s = Session::new_isolated(
-                format!("s{i}"),
-                "localhost:9222".into(),
-                format!("CTX{i}"),
-            );
+            let s =
+                Session::new_isolated(format!("s{i}"), "localhost:9222".into(), format!("CTX{i}"));
             state.sessions.insert(format!("s{i}"), s);
         }
         // 0 = unlimited
@@ -1034,11 +1038,8 @@ mod tests {
         state.sessions.insert("default".into(), default);
 
         for i in 0..9 {
-            let s = Session::new_isolated(
-                format!("s{i}"),
-                "localhost:9222".into(),
-                format!("CTX{i}"),
-            );
+            let s =
+                Session::new_isolated(format!("s{i}"), "localhost:9222".into(), format!("CTX{i}"));
             state.sessions.insert(format!("s{i}"), s);
         }
         // 9 isolated + 1 default, limit is 10 on isolated only
@@ -1094,11 +1095,8 @@ mod tests {
     async fn handle_session_close_removes_only_successful_mixed_tab_actions() {
         let state = Arc::new(DaemonState::new());
         let mut session = Session::new_default("localhost:9222".into());
-        let mut owned = SessionTab::new_owned(
-            "OWNED".into(),
-            "https://owned.test".into(),
-            "Owned".into(),
-        );
+        let mut owned =
+            SessionTab::new_owned("OWNED".into(), "https://owned.test".into(), "Owned".into());
         owned.cdp_session_id = "CDP-OWNED".into();
         session.tabs.insert(owned.target_id.clone(), owned);
         session.tabs.insert(

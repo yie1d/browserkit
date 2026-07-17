@@ -150,7 +150,8 @@ impl DialogState {
 
     /// Cancel all subscriptions for a session.
     pub fn cancel_all_for_session(&self, session_name: &str) {
-        let keys_to_remove: Vec<DialogKey> = self.subscription_tokens
+        let keys_to_remove: Vec<DialogKey> = self
+            .subscription_tokens
             .iter()
             .filter(|entry| entry.key().0 == session_name)
             .map(|entry| entry.key().clone())
@@ -163,7 +164,6 @@ impl DialogState {
         }
         self.policies.remove(session_name);
     }
-
 }
 
 impl Default for DialogState {
@@ -221,10 +221,10 @@ fn spawn_dialog_subscription_for_key(
     }
 
     // Store the new token
-    state.dialog_state.subscription_tokens.insert(
-        key.clone(),
-        cancel.clone(),
-    );
+    state
+        .dialog_state
+        .subscription_tokens
+        .insert(key.clone(), cancel.clone());
 
     tokio::spawn(async move {
         let owned_session = cdp.owned_session(&cdp_session_id);
@@ -369,7 +369,10 @@ fn spawn_dialog_subscription_for_key(
 /// Construct HandleJavaScriptDialog params for manual accept/dismiss.
 ///
 /// This is the pure logic used by the handler — extracted for unit testing.
-pub fn build_handle_params(accept: bool, prompt_text: Option<&str>) -> cdpkit::page::methods::HandleJavaScriptDialog {
+pub fn build_handle_params(
+    accept: bool,
+    prompt_text: Option<&str>,
+) -> cdpkit::page::methods::HandleJavaScriptDialog {
     let mut cmd = cdpkit::page::methods::HandleJavaScriptDialog::new(accept);
     if let Some(text) = prompt_text {
         cmd = cmd.with_prompt_text(text);
@@ -390,12 +393,27 @@ mod tests {
 
     #[test]
     fn policy_from_str_valid() {
-        assert_eq!(DialogPolicy::from_str_opt("manual"), Some(DialogPolicy::Manual));
-        assert_eq!(DialogPolicy::from_str_opt("accept"), Some(DialogPolicy::Accept));
-        assert_eq!(DialogPolicy::from_str_opt("dismiss"), Some(DialogPolicy::Dismiss));
+        assert_eq!(
+            DialogPolicy::from_str_opt("manual"),
+            Some(DialogPolicy::Manual)
+        );
+        assert_eq!(
+            DialogPolicy::from_str_opt("accept"),
+            Some(DialogPolicy::Accept)
+        );
+        assert_eq!(
+            DialogPolicy::from_str_opt("dismiss"),
+            Some(DialogPolicy::Dismiss)
+        );
         // Case insensitive
-        assert_eq!(DialogPolicy::from_str_opt("ACCEPT"), Some(DialogPolicy::Accept));
-        assert_eq!(DialogPolicy::from_str_opt("Manual"), Some(DialogPolicy::Manual));
+        assert_eq!(
+            DialogPolicy::from_str_opt("ACCEPT"),
+            Some(DialogPolicy::Accept)
+        );
+        assert_eq!(
+            DialogPolicy::from_str_opt("Manual"),
+            Some(DialogPolicy::Manual)
+        );
     }
 
     #[test]
@@ -407,7 +425,11 @@ mod tests {
 
     #[test]
     fn policy_as_str_roundtrip() {
-        for p in [DialogPolicy::Manual, DialogPolicy::Accept, DialogPolicy::Dismiss] {
+        for p in [
+            DialogPolicy::Manual,
+            DialogPolicy::Accept,
+            DialogPolicy::Dismiss,
+        ] {
             let s = p.as_str();
             assert_eq!(DialogPolicy::from_str_opt(s), Some(p));
         }
@@ -458,27 +480,39 @@ mod tests {
     #[test]
     fn dialog_state_list_pending_for_session() {
         let ds = DialogState::new();
-        ds.set_pending("ws1", "tid1", PendingDialog {
-            dialog_type: "alert".to_string(),
-            message: "A".to_string(),
-            default_prompt: None,
-            url: "https://a.com".to_string(),
-            opened_at: 1000,
-        });
-        ds.set_pending("ws1", "tid2", PendingDialog {
-            dialog_type: "prompt".to_string(),
-            message: "B".to_string(),
-            default_prompt: Some("default".to_string()),
-            url: "https://b.com".to_string(),
-            opened_at: 2000,
-        });
-        ds.set_pending("ws2", "tid3", PendingDialog {
-            dialog_type: "confirm".to_string(),
-            message: "C".to_string(),
-            default_prompt: None,
-            url: "https://c.com".to_string(),
-            opened_at: 3000,
-        });
+        ds.set_pending(
+            "ws1",
+            "tid1",
+            PendingDialog {
+                dialog_type: "alert".to_string(),
+                message: "A".to_string(),
+                default_prompt: None,
+                url: "https://a.com".to_string(),
+                opened_at: 1000,
+            },
+        );
+        ds.set_pending(
+            "ws1",
+            "tid2",
+            PendingDialog {
+                dialog_type: "prompt".to_string(),
+                message: "B".to_string(),
+                default_prompt: Some("default".to_string()),
+                url: "https://b.com".to_string(),
+                opened_at: 2000,
+            },
+        );
+        ds.set_pending(
+            "ws2",
+            "tid3",
+            PendingDialog {
+                dialog_type: "confirm".to_string(),
+                message: "C".to_string(),
+                default_prompt: None,
+                url: "https://c.com".to_string(),
+                opened_at: 3000,
+            },
+        );
 
         let ws1_dialogs = ds.list_pending_for_session("ws1");
         assert_eq!(ws1_dialogs.len(), 2);
@@ -504,18 +538,26 @@ mod tests {
     fn dialog_state_cancel_subscription_cleans_pending() {
         let ds = DialogState::new();
         let token = CancellationToken::new();
-        ds.subscription_tokens.insert(("ws1".to_string(), "tid1".to_string()), token);
-        ds.set_pending("ws1", "tid1", PendingDialog {
-            dialog_type: "alert".to_string(),
-            message: "test".to_string(),
-            default_prompt: None,
-            url: "https://test.com".to_string(),
-            opened_at: 1000,
-        });
+        ds.subscription_tokens
+            .insert(("ws1".to_string(), "tid1".to_string()), token);
+        ds.set_pending(
+            "ws1",
+            "tid1",
+            PendingDialog {
+                dialog_type: "alert".to_string(),
+                message: "test".to_string(),
+                default_prompt: None,
+                url: "https://test.com".to_string(),
+                opened_at: 1000,
+            },
+        );
 
         ds.cancel_subscription("ws1", "tid1");
         assert!(ds.get_pending("ws1", "tid1").is_none());
-        assert!(ds.subscription_tokens.get(&("ws1".to_string(), "tid1".to_string())).is_none());
+        assert!(ds
+            .subscription_tokens
+            .get(&("ws1".to_string(), "tid1".to_string()))
+            .is_none());
     }
 
     #[test]
@@ -527,10 +569,8 @@ mod tests {
         let old_token = CancellationToken::new();
         let new_token = CancellationToken::new();
 
-        ds.subscription_tokens.insert(
-            ("ws1".to_string(), "tid1".to_string()),
-            old_token.clone(),
-        );
+        ds.subscription_tokens
+            .insert(("ws1".to_string(), "tid1".to_string()), old_token.clone());
 
         // Simulate the fix: remove-and-cancel before insert
         let key = ("ws1".to_string(), "tid1".to_string());
@@ -550,16 +590,23 @@ mod tests {
         let t1 = CancellationToken::new();
         let t2 = CancellationToken::new();
         let t3 = CancellationToken::new();
-        ds.subscription_tokens.insert(("ws1".to_string(), "tid1".to_string()), t1.clone());
-        ds.subscription_tokens.insert(("ws1".to_string(), "tid2".to_string()), t2.clone());
-        ds.subscription_tokens.insert(("ws2".to_string(), "tid3".to_string()), t3.clone());
-        ds.set_pending("ws1", "tid1", PendingDialog {
-            dialog_type: "alert".to_string(),
-            message: "a".to_string(),
-            default_prompt: None,
-            url: "https://a.com".to_string(),
-            opened_at: 1000,
-        });
+        ds.subscription_tokens
+            .insert(("ws1".to_string(), "tid1".to_string()), t1.clone());
+        ds.subscription_tokens
+            .insert(("ws1".to_string(), "tid2".to_string()), t2.clone());
+        ds.subscription_tokens
+            .insert(("ws2".to_string(), "tid3".to_string()), t3.clone());
+        ds.set_pending(
+            "ws1",
+            "tid1",
+            PendingDialog {
+                dialog_type: "alert".to_string(),
+                message: "a".to_string(),
+                default_prompt: None,
+                url: "https://a.com".to_string(),
+                opened_at: 1000,
+            },
+        );
         ds.set_policy("ws1", DialogPolicy::Accept);
         ds.set_policy("ws2", DialogPolicy::Dismiss);
 

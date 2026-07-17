@@ -54,9 +54,7 @@ pub async fn goto(cdp: &Arc<CDP>, session_id: &str, url: &str) -> Result<String,
 /// Reload the current page using CDP `Page.reload`.
 pub async fn reload(cdp: &Arc<CDP>, session_id: &str) -> Result<(), BkError> {
     let session = cdp.session(session_id);
-    cdpkit::page::methods::Reload::new()
-        .send(&session)
-        .await?;
+    cdpkit::page::methods::Reload::new().send(&session).await?;
 
     wait_for_load(cdp, session_id, PAGE_LOAD_TIMEOUT).await?;
 
@@ -73,11 +71,15 @@ pub async fn back(cdp: &Arc<CDP>, session_id: &str) -> Result<(), BkError> {
     // Safely check bounds: current_index is i64 from CDP, subtraction won't overflow
     // in practice but we guard against it and negative indices explicitly.
     if history.current_index <= 0 {
-        return Err(BkError::NavigationFailed("no previous history entry".into()));
+        return Err(BkError::NavigationFailed(
+            "no previous history entry".into(),
+        ));
     }
     let new_index = (history.current_index - 1) as usize;
     if new_index >= history.entries.len() {
-        return Err(BkError::NavigationFailed("no previous history entry".into()));
+        return Err(BkError::NavigationFailed(
+            "no previous history entry".into(),
+        ));
     }
 
     let entry_id = history.entries[new_index].id;

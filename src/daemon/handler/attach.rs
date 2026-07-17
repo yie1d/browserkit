@@ -285,8 +285,8 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        handle_attach, select_attach_target, validate_attach_context,
-        validate_attach_ownership, validate_attach_session_mode, AttachCandidate,
+        handle_attach, select_attach_target, validate_attach_context, validate_attach_ownership,
+        validate_attach_session_mode, AttachCandidate,
     };
     use crate::daemon::protocol::Request;
     use crate::daemon::session::{Session, SessionTab};

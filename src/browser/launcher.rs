@@ -52,7 +52,10 @@ fn find_available_port() -> Result<(std::net::TcpListener, u16), BkError> {
 ///    If `headless` is true, passes `--headless=new`; otherwise the browser
 ///    window is shown.
 /// 4. Polls the TCP port for up to 5 seconds until CDP is ready.
-pub async fn launch_chrome_with_config(disable_security: bool, headless: bool) -> Result<LaunchResult, BkError> {
+pub async fn launch_chrome_with_config(
+    disable_security: bool,
+    headless: bool,
+) -> Result<LaunchResult, BkError> {
     let chrome_path = BrowserFinder::find()?;
     let (port_holder, port) = find_available_port()?;
 
@@ -85,7 +88,12 @@ pub async fn launch_chrome_with_config(disable_security: bool, headless: bool) -
     // Wait up to 5 seconds for the CDP endpoint to accept connections.
     wait_for_cdp_ready(port, Duration::from_secs(5)).await?;
 
-    tracing::info!(port = port, pid = pid, headless = headless, "Chrome launched");
+    tracing::info!(
+        port = port,
+        pid = pid,
+        headless = headless,
+        "Chrome launched"
+    );
 
     Ok(LaunchResult { port, pid, child })
 }

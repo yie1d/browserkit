@@ -165,7 +165,11 @@ mod tests {
     fn session_console_routing_appends_to_session_tab_log() {
         let state = DaemonState::new();
         let mut session = Session::new_default("localhost:9222".into());
-        session.add_tab("TARGET-SESSION".into(), "https://session.test".into(), "Session".into());
+        session.add_tab(
+            "TARGET-SESSION".into(),
+            "https://session.test".into(),
+            "Session".into(),
+        );
         state.sessions.insert("default".into(), session);
 
         assert!(record_console_entry_for_session(
@@ -176,9 +180,13 @@ mod tests {
         ));
 
         let session = state.sessions.get("default").unwrap();
-        let log = session.tabs.get("TARGET-SESSION").unwrap().console_log.lock();
+        let log = session
+            .tabs
+            .get("TARGET-SESSION")
+            .unwrap()
+            .console_log
+            .lock();
         assert_eq!(log.len(), 1);
         assert_eq!(log[0].text, "session log");
     }
-
 }

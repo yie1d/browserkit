@@ -5,32 +5,35 @@ use std::sync::Arc;
 use serde_json::json;
 use tracing::info;
 
-use crate::daemon::dialog::{DialogPolicy, build_handle_params};
+use super::common::{resolve_session_selection, resolve_session_target};
+use crate::daemon::dialog::{build_handle_params, DialogPolicy};
 use crate::daemon::protocol::{Request, Response};
 use crate::daemon::state::DaemonState;
 use crate::error::{BkError, ErrorCode};
-use super::common::{resolve_session_selection, resolve_session_target};
 
 pub async fn handle_dialog_list(req: &Request, state: &Arc<DaemonState>) -> Response {
     do_dialog_list(req, state).await.unwrap_or_else(|resp| resp)
 }
 
 pub async fn handle_dialog_accept(req: &Request, state: &Arc<DaemonState>) -> Response {
-    do_dialog_accept(req, state).await.unwrap_or_else(|resp| resp)
+    do_dialog_accept(req, state)
+        .await
+        .unwrap_or_else(|resp| resp)
 }
 
 pub async fn handle_dialog_dismiss(req: &Request, state: &Arc<DaemonState>) -> Response {
-    do_dialog_dismiss(req, state).await.unwrap_or_else(|resp| resp)
+    do_dialog_dismiss(req, state)
+        .await
+        .unwrap_or_else(|resp| resp)
 }
 
 pub async fn handle_dialog_policy(req: &Request, state: &Arc<DaemonState>) -> Response {
-    do_dialog_policy(req, state).await.unwrap_or_else(|resp| resp)
+    do_dialog_policy(req, state)
+        .await
+        .unwrap_or_else(|resp| resp)
 }
 
-async fn do_dialog_list(
-    req: &Request,
-    state: &Arc<DaemonState>,
-) -> Result<Response, Response> {
+async fn do_dialog_list(req: &Request, state: &Arc<DaemonState>) -> Result<Response, Response> {
     let session_name = resolve_dialog_session(state, &req.params)?;
     let pending = state.dialog_state.list_pending_for_session(&session_name);
 
@@ -52,10 +55,7 @@ async fn do_dialog_list(
     Ok(Response::ok(json!(items)))
 }
 
-async fn do_dialog_accept(
-    req: &Request,
-    state: &Arc<DaemonState>,
-) -> Result<Response, Response> {
+async fn do_dialog_accept(req: &Request, state: &Arc<DaemonState>) -> Result<Response, Response> {
     let session_name = resolve_dialog_session(state, &req.params)?;
     let target_param = optional_string_field(&req.params, "target")?;
     let prompt_text = optional_string_field(&req.params, "text")?;
@@ -89,10 +89,7 @@ async fn do_dialog_accept(
     })))
 }
 
-async fn do_dialog_dismiss(
-    req: &Request,
-    state: &Arc<DaemonState>,
-) -> Result<Response, Response> {
+async fn do_dialog_dismiss(req: &Request, state: &Arc<DaemonState>) -> Result<Response, Response> {
     let session_name = resolve_dialog_session(state, &req.params)?;
     let target_param = optional_string_field(&req.params, "target")?;
     let target_id = resolve_dialog_target_for_action(state, &session_name, target_param)?;
@@ -125,18 +122,17 @@ async fn do_dialog_dismiss(
     })))
 }
 
-async fn do_dialog_policy(
-    req: &Request,
-    state: &Arc<DaemonState>,
-) -> Result<Response, Response> {
+async fn do_dialog_policy(req: &Request, state: &Arc<DaemonState>) -> Result<Response, Response> {
     let session_name = resolve_dialog_session(state, &req.params)?;
 
     // If a policy value is provided, set it; otherwise return current
     if let Some(policy_str) = req.params.get("policy").and_then(|v| v.as_str()) {
-        let policy = DialogPolicy::from_str_opt(policy_str)
-            .ok_or_else(|| request_error(
-                format!("invalid dialog policy '{}', expected: manual, accept, dismiss", policy_str)
-            ))?;
+        let policy = DialogPolicy::from_str_opt(policy_str).ok_or_else(|| {
+            request_error(format!(
+                "invalid dialog policy '{}', expected: manual, accept, dismiss",
+                policy_str
+            ))
+        })?;
         state.dialog_state.set_policy(&session_name, policy);
         touch_session(state, &session_name);
         info!(session = %session_name, policy = %policy.as_str(), "dialog: policy updated");
@@ -265,7 +261,11 @@ mod tests {
 
     fn session_with_tab(target_id: &str) -> Session {
         let mut session = Session::new_default("localhost:9222".into());
-        session.add_tab(target_id.into(), "https://example.test".into(), "Example".into());
+        session.add_tab(
+            target_id.into(),
+            "https://example.test".into(),
+            "Example".into(),
+        );
         session
             .tabs
             .get_mut(target_id)
@@ -277,9 +277,10 @@ mod tests {
     #[tokio::test]
     async fn dialog_list_uses_session_and_target_fields() {
         let state = Arc::new(DaemonState::new());
-        state
-            .sessions
-            .insert("agent".into(), Session::new_default("localhost:9222".into()));
+        state.sessions.insert(
+            "agent".into(),
+            Session::new_default("localhost:9222".into()),
+        );
         state
             .dialog_state
             .set_pending("agent", "T1", pending_dialog("confirm"));
@@ -302,9 +303,10 @@ mod tests {
     #[tokio::test]
     async fn dialog_policy_uses_session_field() {
         let state = Arc::new(DaemonState::new());
-        state
-            .sessions
-            .insert("agent".into(), Session::new_default("localhost:9222".into()));
+        state.sessions.insert(
+            "agent".into(),
+            Session::new_default("localhost:9222".into()),
+        );
 
         let req = Request {
             cmd: "dialog.policy".into(),
@@ -324,9 +326,10 @@ mod tests {
     #[tokio::test]
     async fn dialog_accept_omitted_target_rejects_zero_pending_dialogs_with_structured_error() {
         let state = Arc::new(DaemonState::new());
-        state
-            .sessions
-            .insert("agent".into(), Session::new_default("localhost:9222".into()));
+        state.sessions.insert(
+            "agent".into(),
+            Session::new_default("localhost:9222".into()),
+        );
 
         let req = Request {
             cmd: "dialog.accept".into(),
@@ -345,11 +348,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn dialog_accept_omitted_target_rejects_ambiguous_pending_dialogs_with_structured_error() {
+    async fn dialog_accept_omitted_target_rejects_ambiguous_pending_dialogs_with_structured_error()
+    {
         let state = Arc::new(DaemonState::new());
-        state
-            .sessions
-            .insert("agent".into(), Session::new_default("localhost:9222".into()));
+        state.sessions.insert(
+            "agent".into(),
+            Session::new_default("localhost:9222".into()),
+        );
         state
             .dialog_state
             .set_pending("agent", "T1", pending_dialog("confirm"));
@@ -376,7 +381,9 @@ mod tests {
     #[tokio::test]
     async fn dialog_accept_explicit_target_without_pending_dialog_is_structured_error() {
         let state = Arc::new(DaemonState::new());
-        state.sessions.insert("agent".into(), session_with_tab("T1"));
+        state
+            .sessions
+            .insert("agent".into(), session_with_tab("T1"));
 
         let req = Request {
             cmd: "dialog.accept".into(),
@@ -397,7 +404,9 @@ mod tests {
     #[tokio::test]
     async fn dialog_accept_keeps_pending_when_cdp_session_resolution_fails() {
         let state = Arc::new(DaemonState::new());
-        state.sessions.insert("agent".into(), session_with_tab("T1"));
+        state
+            .sessions
+            .insert("agent".into(), session_with_tab("T1"));
         state
             .dialog_state
             .set_pending("agent", "T1", pending_dialog("confirm"));

@@ -42,7 +42,10 @@ fn validate_evaluate_params(params: &serde_json::Value) -> Result<EvaluateParams
             .and_then(|v| v.as_str())
             .unwrap_or("default")
             .into(),
-        target: params.get("target").and_then(|v| v.as_str()).map(|s| s.into()),
+        target: params
+            .get("target")
+            .and_then(|v| v.as_str())
+            .map(|s| s.into()),
         expression,
         timeout: params
             .get("timeout")
@@ -123,8 +126,8 @@ pub async fn handle_evaluate(req: &Request, state: &Arc<DaemonState>) -> Respons
     let timeout_dur = std::time::Duration::from_millis(params.timeout);
     let eval_result = tokio::time::timeout(timeout_dur, async {
         let js_timeout_seconds = state.config.limits.js_timeout_seconds;
-        let mut eval = cdpkit::runtime::methods::Evaluate::new(&params.expression)
-            .with_return_by_value(true);
+        let mut eval =
+            cdpkit::runtime::methods::Evaluate::new(&params.expression).with_return_by_value(true);
         if params.await_promise {
             eval = eval.with_await_promise(true);
         }
@@ -139,20 +142,14 @@ pub async fn handle_evaluate(req: &Request, state: &Arc<DaemonState>) -> Respons
         Ok(Ok(resp)) => {
             if let Some(details) = &resp.exception_details {
                 let err_msg = exception_message(details);
-                return Response::error_detail(
-                    ErrorCode::JsError,
-                    err_msg,
-                    None,
-                );
+                return Response::error_detail(ErrorCode::JsError, err_msg, None);
             }
             let result = resp.result.value.unwrap_or(serde_json::Value::Null);
             Response::ok(json!({ "result": result }))
         }
-        Ok(Err(e)) => Response::error_detail(
-            ErrorCode::JsError,
-            format!("evaluate failed: {e}"),
-            None,
-        ),
+        Ok(Err(e)) => {
+            Response::error_detail(ErrorCode::JsError, format!("evaluate failed: {e}"), None)
+        }
         Err(_) => Response::error_detail(
             ErrorCode::Timeout,
             format!("evaluate timed out after {}ms", params.timeout),

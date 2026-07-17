@@ -189,7 +189,8 @@ async fn discover_and_connect(
         drop(existing);
         count
     } else {
-        let session = build_new_session_for_connect(session_name, host.clone(), browser_context_id)?;
+        let session =
+            build_new_session_for_connect(session_name, host.clone(), browser_context_id)?;
         let count = session.tab_count();
         state.sessions.insert(session_name.to_string(), session);
         count
@@ -315,7 +316,10 @@ mod tests {
 
         // Without a browser in state, check_already_connected should return None
         let result = check_already_connected(&state, "default");
-        assert!(result.is_none(), "no browser in state => not already connected");
+        assert!(
+            result.is_none(),
+            "no browser in state => not already connected"
+        );
     }
 
     #[test]
@@ -328,7 +332,10 @@ mod tests {
         state.sessions.insert("default".into(), session);
 
         let result = check_already_connected(&state, "default");
-        assert!(result.is_none(), "disconnected session => not already connected");
+        assert!(
+            result.is_none(),
+            "disconnected session => not already connected"
+        );
     }
 
     #[test]
@@ -415,8 +422,8 @@ mod tests {
 
     #[test]
     fn connect_new_named_session_requires_browser_context_id() {
-        let err = build_new_session_for_connect("agent-a", "localhost:9222".into(), None)
-            .unwrap_err();
+        let err =
+            build_new_session_for_connect("agent-a", "localhost:9222".into(), None).unwrap_err();
         let json = serde_json::to_value(&err).unwrap();
 
         assert_eq!(json["ok"], false);

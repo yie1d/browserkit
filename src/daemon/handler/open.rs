@@ -281,8 +281,7 @@ mod tests {
     fn register_opened_target_keeps_watcher_registered_tab() {
         let state = Arc::new(DaemonState::new());
         let mut session = Session::new_default("localhost:9222".into());
-        let mut tab =
-            SessionTab::new_owned("T1".into(), "https://a.test".into(), String::new());
+        let mut tab = SessionTab::new_owned("T1".into(), "https://a.test".into(), String::new());
         tab.cdp_session_id = "WATCHER_SESSION".into();
         session.tabs.insert("T1".into(), tab);
         state.sessions.insert("default".into(), session);
@@ -310,10 +309,7 @@ mod tests {
         let err = validate_open_params(&params).unwrap_err();
         let json = serde_json::to_value(&err).unwrap();
         assert_eq!(json["error"]["code"], "INVALID_ARGUMENT");
-        assert!(json["error"]["message"]
-            .as_str()
-            .unwrap()
-            .contains("url"));
+        assert!(json["error"]["message"].as_str().unwrap().contains("url"));
     }
 
     #[test]
@@ -336,7 +332,11 @@ mod tests {
         let state = Arc::new(DaemonState::new());
         let mut session = Session::new_default("localhost:9222".into());
         for i in 0..5 {
-            session.add_tab(format!("T{i}"), format!("https://t{i}.com"), format!("T{i}"));
+            session.add_tab(
+                format!("T{i}"),
+                format!("https://t{i}.com"),
+                format!("T{i}"),
+            );
         }
         state.sessions.insert("default".into(), session);
 
@@ -356,7 +356,11 @@ mod tests {
         let state = Arc::new(DaemonState::new());
         let mut session = Session::new_default("localhost:9222".into());
         for i in 0..100 {
-            session.add_tab(format!("T{i}"), format!("https://t{i}.com"), format!("T{i}"));
+            session.add_tab(
+                format!("T{i}"),
+                format!("https://t{i}.com"),
+                format!("T{i}"),
+            );
         }
         state.sessions.insert("default".into(), session);
 

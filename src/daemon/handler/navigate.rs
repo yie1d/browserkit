@@ -38,11 +38,23 @@ struct NavigateParams {
 fn validate_navigate_params(params: &serde_json::Value) -> Result<NavigateParams, Response> {
     let action = if let Some(url) = params.get("url").and_then(|v| v.as_str()) {
         NavAction::Goto(url.to_string())
-    } else if params.get("back").and_then(|v| v.as_bool()).unwrap_or(false) {
+    } else if params
+        .get("back")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+    {
         NavAction::Back
-    } else if params.get("forward").and_then(|v| v.as_bool()).unwrap_or(false) {
+    } else if params
+        .get("forward")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+    {
         NavAction::Forward
-    } else if params.get("reload").and_then(|v| v.as_bool()).unwrap_or(false) {
+    } else if params
+        .get("reload")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+    {
         NavAction::Reload
     } else {
         return Err(Response::error_detail(
@@ -59,7 +71,10 @@ fn validate_navigate_params(params: &serde_json::Value) -> Result<NavigateParams
             .and_then(|v| v.as_str())
             .unwrap_or("default")
             .into(),
-        target: params.get("target").and_then(|v| v.as_str()).map(|s| s.into()),
+        target: params
+            .get("target")
+            .and_then(|v| v.as_str())
+            .map(|s| s.into()),
         timeout: params
             .get("timeout")
             .and_then(|v| v.as_u64())

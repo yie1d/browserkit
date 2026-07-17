@@ -185,10 +185,7 @@ pub fn spawn_session_tab_subscriptions(
     spawn_console_subscription(state, session_name, target_id, cdp, cdp_session_id);
 }
 
-pub fn remove_session_tab(
-    state: &DaemonState,
-    target_id: &str,
-) -> Option<(String, SessionTab)> {
+pub fn remove_session_tab(state: &DaemonState, target_id: &str) -> Option<(String, SessionTab)> {
     let session_name = find_target_owner(state, target_id)?;
     let mut session = state.sessions.get_mut(&session_name)?;
     let removed = session.tabs.remove(target_id)?;
@@ -634,8 +631,7 @@ mod tests {
     #[test]
     fn unique_isolated_browser_context_maps_to_session() {
         let state = DaemonState::new();
-        let session =
-            Session::new_isolated("agent".into(), "localhost:9222".into(), "CTX1".into());
+        let session = Session::new_isolated("agent".into(), "localhost:9222".into(), "CTX1".into());
         state.sessions.insert("agent".into(), session);
 
         assert_eq!(
@@ -678,8 +674,7 @@ mod tests {
     #[test]
     fn browser_context_on_another_host_is_ignored() {
         let state = DaemonState::new();
-        let session =
-            Session::new_isolated("agent".into(), "localhost:9333".into(), "CTX1".into());
+        let session = Session::new_isolated("agent".into(), "localhost:9333".into(), "CTX1".into());
         state.sessions.insert("agent".into(), session);
 
         assert_eq!(
@@ -716,12 +711,10 @@ mod tests {
     #[test]
     fn target_watcher_token_replaces_cancelled_entry() {
         let state = DaemonState::new();
-        let first =
-            ensure_target_watcher_token(&state, "localhost:9222", CancellationToken::new);
+        let first = ensure_target_watcher_token(&state, "localhost:9222", CancellationToken::new);
         first.cancel();
 
-        let second =
-            ensure_target_watcher_token(&state, "localhost:9222", CancellationToken::new);
+        let second = ensure_target_watcher_token(&state, "localhost:9222", CancellationToken::new);
 
         assert!(!second.is_cancelled());
         second.cancel();
@@ -740,7 +733,12 @@ mod tests {
         state.sessions.insert("default".into(), session);
         let mut events = subscribe_target_events(&state);
 
-        assert!(update_session_tab_info(&state, "T1", "https://new.test", "New"));
+        assert!(update_session_tab_info(
+            &state,
+            "T1",
+            "https://new.test",
+            "New"
+        ));
 
         let session = state.sessions.get("default").unwrap();
         let tab = session.tabs.get("T1").unwrap();
@@ -761,11 +759,13 @@ mod tests {
     #[test]
     fn open_wins_registration_emits_created_once_and_tracks_owned_tab() {
         let state = DaemonState::new();
-        state
-            .sessions
-            .insert("default".into(), Session::new_default("localhost:9222".into()));
+        state.sessions.insert(
+            "default".into(),
+            Session::new_default("localhost:9222".into()),
+        );
         let mut events = subscribe_target_events(&state);
-        let mut tab = SessionTab::new_owned("T-OPEN".into(), "https://open.test".into(), String::new());
+        let mut tab =
+            SessionTab::new_owned("T-OPEN".into(), "https://open.test".into(), String::new());
         tab.cdp_session_id = "CDP-OPEN".into();
 
         let outcome = register_initialized_session_tab(&state, "default", tab).unwrap();
@@ -774,7 +774,10 @@ mod tests {
         let session = state.sessions.get("default").unwrap();
         let stored = session.tabs.get("T-OPEN").unwrap();
         assert_eq!(stored.cdp_session_id, "CDP-OPEN");
-        assert_eq!(stored.ownership, crate::daemon::session::TabOwnership::Owned);
+        assert_eq!(
+            stored.ownership,
+            crate::daemon::session::TabOwnership::Owned
+        );
         drop(session);
         emit_session_tab_created(&state, "default", "T-OPEN", None);
         assert_eq!(
@@ -794,15 +797,13 @@ mod tests {
     #[test]
     fn watcher_wins_registration_is_idempotent_without_ownership_overwrite() {
         let state = DaemonState::new();
-        state
-            .sessions
-            .insert("default".into(), Session::new_default("localhost:9222".into()));
-        let mut events = subscribe_target_events(&state);
-        let mut watcher_tab = SessionTab::new_owned(
-            "T-RACE".into(),
-            "https://race.test".into(),
-            "Race".into(),
+        state.sessions.insert(
+            "default".into(),
+            Session::new_default("localhost:9222".into()),
         );
+        let mut events = subscribe_target_events(&state);
+        let mut watcher_tab =
+            SessionTab::new_owned("T-RACE".into(), "https://race.test".into(), "Race".into());
         watcher_tab.cdp_session_id = "CDP-WATCHER".into();
         let mut open_tab =
             SessionTab::new_owned("T-RACE".into(), "https://race.test".into(), String::new());
@@ -823,7 +824,10 @@ mod tests {
         let session = state.sessions.get("default").unwrap();
         let stored = session.tabs.get("T-RACE").unwrap();
         assert_eq!(stored.cdp_session_id, "CDP-WATCHER");
-        assert_eq!(stored.ownership, crate::daemon::session::TabOwnership::Owned);
+        assert_eq!(
+            stored.ownership,
+            crate::daemon::session::TabOwnership::Owned
+        );
         drop(session);
         assert!(matches!(
             events.try_recv(),

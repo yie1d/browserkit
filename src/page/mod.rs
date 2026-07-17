@@ -178,7 +178,11 @@ mod tests {
             Some("TypeError: Cannot read properties of null (reading 'value')\n    at <anonymous>:1:5"),
         );
         let msg = exception_message(&details);
-        assert!(msg.contains("TypeError"), "should contain full description: {}", msg);
+        assert!(
+            msg.contains("TypeError"),
+            "should contain full description: {}",
+            msg
+        );
         assert!(msg.contains("Cannot read properties"), "got: {}", msg);
     }
 

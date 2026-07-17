@@ -70,10 +70,7 @@ pub async fn capture_element(
     // serde_json::to_string produces a quoted JS string literal — embed directly
     let json_selector = serde_json::to_string(selector)
         .map_err(|e| BkError::Other(format!("failed to serialize selector: {}", e)))?;
-    let js = format!(
-        r#"document.querySelector({})"#,
-        json_selector
-    );
+    let js = format!(r#"document.querySelector({})"#, json_selector);
     let eval_resp = cdpkit::runtime::methods::Evaluate::new(&js)
         .send(&session)
         .await?;
@@ -81,7 +78,8 @@ pub async fn capture_element(
     if let Some(details) = &eval_resp.exception_details {
         return Err(BkError::Other(format!(
             "failed to query selector '{}': {}",
-            selector, exception_message(details)
+            selector,
+            exception_message(details)
         )));
     }
 
@@ -100,10 +98,7 @@ pub async fn capture_element(
     }
 
     let object_id = eval_resp.result.object_id.ok_or_else(|| {
-        BkError::Other(format!(
-            "no objectId returned for selector: {}",
-            selector
-        ))
+        BkError::Other(format!("no objectId returned for selector: {}", selector))
     })?;
 
     // 2. Scroll the element into view
@@ -286,13 +281,19 @@ pub async fn get_html(
 /// When `full_page` is true, uses `position:absolute` with document-relative coordinates
 /// so labels remain correct in full-page captures. Otherwise uses `position:fixed` with
 /// viewport-relative coordinates for viewport screenshots.
-pub async fn inject_labels(cdp: &Arc<CDP>, session_id: &str, full_page: bool) -> Result<(), BkError> {
+pub async fn inject_labels(
+    cdp: &Arc<CDP>,
+    session_id: &str,
+    full_page: bool,
+) -> Result<(), BkError> {
     let session = cdp.session(session_id);
 
     let js = if full_page {
         const_format::concatcp!(
             r#"(() => {
-    const selectors = '"#, INTERACTIVE_SELECTOR, r#"';
+    const selectors = '"#,
+            INTERACTIVE_SELECTOR,
+            r#"';
     function collectElements(root, sel, results) {
         for (const el of root.querySelectorAll(sel)) {
             results.push(el);
@@ -333,7 +334,9 @@ pub async fn inject_labels(cdp: &Arc<CDP>, session_id: &str, full_page: bool) ->
     } else {
         const_format::concatcp!(
             r#"(() => {
-    const selectors = '"#, INTERACTIVE_SELECTOR, r#"';
+    const selectors = '"#,
+            INTERACTIVE_SELECTOR,
+            r#"';
     function collectElements(root, sel, results) {
         for (const el of root.querySelectorAll(sel)) {
             results.push(el);
@@ -377,7 +380,10 @@ pub async fn inject_labels(cdp: &Arc<CDP>, session_id: &str, full_page: bool) ->
         .await?;
 
     if let Some(details) = &resp.exception_details {
-        return Err(BkError::Other(format!("inject_labels: {}", exception_message(details))));
+        return Err(BkError::Other(format!(
+            "inject_labels: {}",
+            exception_message(details)
+        )));
     }
 
     Ok(())
@@ -399,7 +405,10 @@ pub async fn remove_labels(cdp: &Arc<CDP>, session_id: &str) -> Result<(), BkErr
         .await?;
 
     if let Some(details) = &resp.exception_details {
-        return Err(BkError::Other(format!("remove_labels: {}", exception_message(details))));
+        return Err(BkError::Other(format!(
+            "remove_labels: {}",
+            exception_message(details)
+        )));
     }
 
     Ok(())
@@ -412,8 +421,16 @@ mod tests {
         let selector = "#my-element .child";
         let json_selector = serde_json::to_string(selector).unwrap();
         let js = format!("document.querySelector({})", json_selector);
-        assert!(!js.contains("JSON.parse"), "should not use JSON.parse: {}", js);
-        assert!(js.contains("querySelector(\"#my-element .child\")"), "got: {}", js);
+        assert!(
+            !js.contains("JSON.parse"),
+            "should not use JSON.parse: {}",
+            js
+        );
+        assert!(
+            js.contains("querySelector(\"#my-element .child\")"),
+            "got: {}",
+            js
+        );
     }
 
     #[test]
@@ -422,7 +439,11 @@ mod tests {
         let json_selector = serde_json::to_string(selector).unwrap();
         let js = format!(r#"document.querySelector({})"#, json_selector);
         assert!(!js.contains("JSON.parse"));
-        assert!(js.contains(r#"[data-name=\"foo\"]"#), "should escape: {}", js);
+        assert!(
+            js.contains(r#"[data-name=\"foo\"]"#),
+            "should escape: {}",
+            js
+        );
     }
 
     #[test]
@@ -433,8 +454,16 @@ mod tests {
             r#"(() => {{ const sel = {}; const el = document.querySelector(sel); if (!el) throw new Error('element not found for selector: ' + sel); return el.outerHTML; }})()"#,
             json_sel
         );
-        assert!(!js.contains("JSON.parse"), "should not use JSON.parse: {}", js);
-        assert!(js.contains(r#"const sel = "div.content > p""#), "got: {}", js);
+        assert!(
+            !js.contains("JSON.parse"),
+            "should not use JSON.parse: {}",
+            js
+        );
+        assert!(
+            js.contains(r#"const sel = "div.content > p""#),
+            "got: {}",
+            js
+        );
     }
 
     #[test]
@@ -445,7 +474,11 @@ mod tests {
             r#"(() => {{ const sel = {}; const el = document.querySelector(sel); if (!el) throw new Error('element not found for selector: ' + sel); return el.outerHTML; }})()"#,
             json_sel
         );
-        assert!(!js.contains("JSON.parse"), "should not use JSON.parse: {}", js);
+        assert!(
+            !js.contains("JSON.parse"),
+            "should not use JSON.parse: {}",
+            js
+        );
     }
 
     // ── inject_labels JS content tests ───────────────
@@ -453,7 +486,9 @@ mod tests {
     /// The viewport (non-full-page) inject_labels JS.
     const INJECT_LABELS_VIEWPORT_JS: &str = const_format::concatcp!(
         r#"(() => {
-    const selectors = '"#, super::INTERACTIVE_SELECTOR, r#"';
+    const selectors = '"#,
+        super::INTERACTIVE_SELECTOR,
+        r#"';
     function collectElements(root, sel, results) {
         for (const el of root.querySelectorAll(sel)) {
             results.push(el);
@@ -493,7 +528,9 @@ mod tests {
     /// The full-page inject_labels JS (uses absolute positioning).
     const INJECT_LABELS_FULLPAGE_JS: &str = const_format::concatcp!(
         r#"(() => {
-    const selectors = '"#, super::INTERACTIVE_SELECTOR, r#"';
+    const selectors = '"#,
+        super::INTERACTIVE_SELECTOR,
+        r#"';
     function collectElements(root, sel, results) {
         for (const el of root.querySelectorAll(sel)) {
             results.push(el);
@@ -541,84 +578,150 @@ mod tests {
 
     #[test]
     fn inject_labels_viewport_js_uses_bk_label_class() {
-        assert!(INJECT_LABELS_VIEWPORT_JS.contains("_bk_label"), "should use _bk_label class marker");
+        assert!(
+            INJECT_LABELS_VIEWPORT_JS.contains("_bk_label"),
+            "should use _bk_label class marker"
+        );
     }
 
     #[test]
     fn inject_labels_viewport_js_uses_fixed_positioning() {
-        assert!(INJECT_LABELS_VIEWPORT_JS.contains("position:fixed"), "viewport labels should use fixed positioning");
+        assert!(
+            INJECT_LABELS_VIEWPORT_JS.contains("position:fixed"),
+            "viewport labels should use fixed positioning"
+        );
     }
 
     #[test]
     fn inject_labels_fullpage_js_uses_absolute_positioning() {
-        assert!(INJECT_LABELS_FULLPAGE_JS.contains("position:absolute"), "full-page labels should use absolute positioning");
+        assert!(
+            INJECT_LABELS_FULLPAGE_JS.contains("position:absolute"),
+            "full-page labels should use absolute positioning"
+        );
     }
 
     #[test]
     fn inject_labels_fullpage_js_adds_scroll_offset() {
-        assert!(INJECT_LABELS_FULLPAGE_JS.contains("rect.x + scrollX"), "full-page should add scrollX");
-        assert!(INJECT_LABELS_FULLPAGE_JS.contains("rect.y + scrollY"), "full-page should add scrollY");
+        assert!(
+            INJECT_LABELS_FULLPAGE_JS.contains("rect.x + scrollX"),
+            "full-page should add scrollX"
+        );
+        assert!(
+            INJECT_LABELS_FULLPAGE_JS.contains("rect.y + scrollY"),
+            "full-page should add scrollY"
+        );
     }
 
     #[test]
     fn inject_labels_viewport_js_creates_div_element() {
-        assert!(INJECT_LABELS_VIEWPORT_JS.contains("createElement('div')"), "should create div elements for labels");
+        assert!(
+            INJECT_LABELS_VIEWPORT_JS.contains("createElement('div')"),
+            "should create div elements for labels"
+        );
     }
 
     #[test]
     fn inject_labels_viewport_js_has_high_z_index() {
-        assert!(INJECT_LABELS_VIEWPORT_JS.contains("z-index:99999"), "labels should have high z-index to appear on top");
+        assert!(
+            INJECT_LABELS_VIEWPORT_JS.contains("z-index:99999"),
+            "labels should have high z-index to appear on top"
+        );
     }
 
     #[test]
     fn inject_labels_viewport_js_disables_pointer_events() {
-        assert!(INJECT_LABELS_VIEWPORT_JS.contains("pointer-events:none"), "labels should not intercept clicks");
+        assert!(
+            INJECT_LABELS_VIEWPORT_JS.contains("pointer-events:none"),
+            "labels should not intercept clicks"
+        );
     }
 
     #[test]
     fn inject_labels_viewport_js_filters_invisible_elements() {
-        assert!(INJECT_LABELS_VIEWPORT_JS.contains("style.display === 'none'"), "should skip display:none elements");
-        assert!(INJECT_LABELS_VIEWPORT_JS.contains("style.visibility === 'hidden'"), "should skip visibility:hidden elements");
-        assert!(INJECT_LABELS_VIEWPORT_JS.contains("parseFloat(style.opacity) < 0.01"), "should skip near-zero opacity elements");
-        assert!(INJECT_LABELS_VIEWPORT_JS.contains("rect.width === 0"), "should skip zero-width elements");
-        assert!(INJECT_LABELS_VIEWPORT_JS.contains("rect.height === 0"), "should skip zero-height elements");
+        assert!(
+            INJECT_LABELS_VIEWPORT_JS.contains("style.display === 'none'"),
+            "should skip display:none elements"
+        );
+        assert!(
+            INJECT_LABELS_VIEWPORT_JS.contains("style.visibility === 'hidden'"),
+            "should skip visibility:hidden elements"
+        );
+        assert!(
+            INJECT_LABELS_VIEWPORT_JS.contains("parseFloat(style.opacity) < 0.01"),
+            "should skip near-zero opacity elements"
+        );
+        assert!(
+            INJECT_LABELS_VIEWPORT_JS.contains("rect.width === 0"),
+            "should skip zero-width elements"
+        );
+        assert!(
+            INJECT_LABELS_VIEWPORT_JS.contains("rect.height === 0"),
+            "should skip zero-height elements"
+        );
     }
 
     #[test]
     fn inject_labels_viewport_js_uses_same_selectors_as_discover() {
-        assert!(INJECT_LABELS_VIEWPORT_JS.contains(super::INTERACTIVE_SELECTOR), "should use shared INTERACTIVE_SELECTOR");
+        assert!(
+            INJECT_LABELS_VIEWPORT_JS.contains(super::INTERACTIVE_SELECTOR),
+            "should use shared INTERACTIVE_SELECTOR"
+        );
     }
 
     #[test]
     fn inject_labels_viewport_js_positions_at_element_coordinates() {
-        assert!(INJECT_LABELS_VIEWPORT_JS.contains("rect.x + 'px'"), "should position left at element x");
-        assert!(INJECT_LABELS_VIEWPORT_JS.contains("rect.y + 'px'"), "should position top at element y");
+        assert!(
+            INJECT_LABELS_VIEWPORT_JS.contains("rect.x + 'px'"),
+            "should position left at element x"
+        );
+        assert!(
+            INJECT_LABELS_VIEWPORT_JS.contains("rect.y + 'px'"),
+            "should position top at element y"
+        );
     }
 
     #[test]
     fn inject_labels_viewport_js_returns_count() {
-        assert!(INJECT_LABELS_VIEWPORT_JS.contains("return index"), "should return the number of labels injected");
+        assert!(
+            INJECT_LABELS_VIEWPORT_JS.contains("return index"),
+            "should return the number of labels injected"
+        );
     }
 
     #[test]
     fn inject_labels_js_penetrates_shadow_dom() {
-        assert!(INJECT_LABELS_VIEWPORT_JS.contains("el.shadowRoot"), "viewport should recurse into shadow roots");
-        assert!(INJECT_LABELS_FULLPAGE_JS.contains("el.shadowRoot"), "full-page should recurse into shadow roots");
+        assert!(
+            INJECT_LABELS_VIEWPORT_JS.contains("el.shadowRoot"),
+            "viewport should recurse into shadow roots"
+        );
+        assert!(
+            INJECT_LABELS_FULLPAGE_JS.contains("el.shadowRoot"),
+            "full-page should recurse into shadow roots"
+        );
     }
 
     #[test]
     fn remove_labels_js_queries_bk_label_class() {
-        assert!(REMOVE_LABELS_JS.contains("querySelectorAll('._bk_label')"), "should select all _bk_label elements");
+        assert!(
+            REMOVE_LABELS_JS.contains("querySelectorAll('._bk_label')"),
+            "should select all _bk_label elements"
+        );
     }
 
     #[test]
     fn remove_labels_js_removes_each_label() {
-        assert!(REMOVE_LABELS_JS.contains("l.remove()"), "should remove each label from DOM");
+        assert!(
+            REMOVE_LABELS_JS.contains("l.remove()"),
+            "should remove each label from DOM"
+        );
     }
 
     #[test]
     fn remove_labels_js_returns_count() {
-        assert!(REMOVE_LABELS_JS.contains("return labels.length"), "should return how many labels were removed");
+        assert!(
+            REMOVE_LABELS_JS.contains("return labels.length"),
+            "should return how many labels were removed"
+        );
     }
 
     #[test]

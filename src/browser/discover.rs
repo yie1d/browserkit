@@ -75,9 +75,9 @@ pub fn default_devtools_port_path() -> Option<PathBuf> {
 fn parse_devtools_port_content(content: &str) -> Result<(u16, String), BkError> {
     let mut lines = content.lines();
 
-    let port_line = lines.next().ok_or_else(|| {
-        BkError::Other("DevToolsActivePort file is empty".into())
-    })?;
+    let port_line = lines
+        .next()
+        .ok_or_else(|| BkError::Other("DevToolsActivePort file is empty".into()))?;
 
     let port: u16 = port_line.trim().parse().map_err(|e| {
         BkError::Other(format!(
@@ -102,9 +102,7 @@ pub fn discover_chrome(custom_path: Option<&str>) -> Result<DiscoveredChrome, Bk
     let path = match custom_path {
         Some(p) => PathBuf::from(p),
         None => default_devtools_port_path().ok_or_else(|| {
-            BkError::Other(
-                "cannot determine DevToolsActivePort path for this OS".into(),
-            )
+            BkError::Other("cannot determine DevToolsActivePort path for this OS".into())
         })?,
     };
 
@@ -226,11 +224,18 @@ mod tests {
     fn discover_chrome_reads_valid_file() {
         let tmp = tempfile::NamedTempFile::new().unwrap();
         writeln!(tmp.as_file(), "41753").unwrap();
-        writeln!(tmp.as_file(), "/devtools/browser/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee").unwrap();
+        writeln!(
+            tmp.as_file(),
+            "/devtools/browser/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+        )
+        .unwrap();
 
         let result = discover_chrome(Some(tmp.path().to_str().unwrap())).unwrap();
         assert_eq!(result.host, "localhost:41753");
-        assert_eq!(result.ws_path, "/devtools/browser/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee");
+        assert_eq!(
+            result.ws_path,
+            "/devtools/browser/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+        );
     }
 
     #[test]
@@ -266,8 +271,16 @@ mod tests {
     fn discover_chrome_nonexistent_path() {
         let err = discover_chrome(Some("C:\\nonexistent\\path\\DevToolsActivePort")).unwrap_err();
         let msg = err.to_string();
-        assert!(msg.contains("cannot read"), "should report file read error, got: {}", msg);
-        assert!(msg.contains("remote debugging"), "should hint about enabling remote debugging, got: {}", msg);
+        assert!(
+            msg.contains("cannot read"),
+            "should report file read error, got: {}",
+            msg
+        );
+        assert!(
+            msg.contains("remote debugging"),
+            "should hint about enabling remote debugging, got: {}",
+            msg
+        );
     }
 
     // ── default_devtools_port_path ──────────────────────────────────────
@@ -276,7 +289,11 @@ mod tests {
     fn default_path_returns_some() {
         // On any supported OS this should return Some
         let path = default_devtools_port_path();
-        if cfg!(any(target_os = "windows", target_os = "macos", target_os = "linux")) {
+        if cfg!(any(
+            target_os = "windows",
+            target_os = "macos",
+            target_os = "linux"
+        )) {
             assert!(path.is_some());
             let p = path.unwrap();
             assert!(p.to_string_lossy().contains("DevToolsActivePort"));
@@ -290,7 +307,11 @@ mod tests {
             let s = path.to_string_lossy();
             assert!(s.contains("Google"), "path should contain 'Google': {}", s);
             assert!(s.contains("Chrome"), "path should contain 'Chrome': {}", s);
-            assert!(s.contains("User Data"), "path should contain 'User Data': {}", s);
+            assert!(
+                s.contains("User Data"),
+                "path should contain 'User Data': {}",
+                s
+            );
         }
     }
 }

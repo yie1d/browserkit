@@ -117,7 +117,13 @@ pub async fn find_elements(
     max: usize,
     include_text: bool,
 ) -> Result<Vec<FoundElement>, BkError> {
-    let js = build_find_elements_js(selector, attributes, max, include_text, DEFAULT_TEXT_TRUNCATE);
+    let js = build_find_elements_js(
+        selector,
+        attributes,
+        max,
+        include_text,
+        DEFAULT_TEXT_TRUNCATE,
+    );
     let session = cdp.session(session_id);
 
     let resp = cdpkit::runtime::methods::Evaluate::new(&js)
@@ -157,7 +163,11 @@ mod tests {
         // Should contain the selector as a JS literal
         assert!(js.contains(r#""div.item""#), "js: {}", js);
         assert!(js.contains("querySelectorAll"), "js: {}", js);
-        assert!(!js.contains("JSON.parse"), "must not use JSON.parse: {}", js);
+        assert!(
+            !js.contains("JSON.parse"),
+            "must not use JSON.parse: {}",
+            js
+        );
     }
 
     #[test]
@@ -203,7 +213,11 @@ mod tests {
     fn build_js_no_json_parse() {
         // Verify no JSON.parse wrapping anywhere
         let js = build_find_elements_js("div", &["id".to_string()], 50, true, 200);
-        assert!(!js.contains("JSON.parse"), "must not use JSON.parse: {}", js);
+        assert!(
+            !js.contains("JSON.parse"),
+            "must not use JSON.parse: {}",
+            js
+        );
     }
 
     #[test]
@@ -217,7 +231,11 @@ mod tests {
     #[test]
     fn build_js_contains_error_handling() {
         let js = build_find_elements_js("div", &[], 50, false, 200);
-        assert!(js.contains("Invalid CSS selector"), "should have error handler: {}", js);
+        assert!(
+            js.contains("Invalid CSS selector"),
+            "should have error handler: {}",
+            js
+        );
         assert!(js.contains("catch"), "should try/catch: {}", js);
     }
 

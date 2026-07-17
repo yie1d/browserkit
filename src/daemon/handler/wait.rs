@@ -18,9 +18,8 @@ struct WaitParams {
 }
 
 fn validate_wait_params(params: &serde_json::Value) -> Result<WaitParams, Response> {
-    let conditions = crate::page::wait::WaitConditions::from_params(params).map_err(|e| {
-        Response::error_detail(ErrorCode::InvalidArgument, e.to_string(), None)
-    })?;
+    let conditions = crate::page::wait::WaitConditions::from_params(params)
+        .map_err(|e| Response::error_detail(ErrorCode::InvalidArgument, e.to_string(), None))?;
 
     Ok(WaitParams {
         session_name: params
@@ -28,7 +27,10 @@ fn validate_wait_params(params: &serde_json::Value) -> Result<WaitParams, Respon
             .and_then(|v| v.as_str())
             .unwrap_or("default")
             .into(),
-        target: params.get("target").and_then(|v| v.as_str()).map(|s| s.into()),
+        target: params
+            .get("target")
+            .and_then(|v| v.as_str())
+            .map(|s| s.into()),
         conditions,
     })
 }

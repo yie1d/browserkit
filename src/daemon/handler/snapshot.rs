@@ -69,7 +69,10 @@ fn validate_snapshot_params(params: &serde_json::Value) -> SnapshotParams {
             .and_then(|v| v.as_str())
             .unwrap_or("default")
             .into(),
-        target: params.get("target").and_then(|v| v.as_str()).map(|s| s.into()),
+        target: params
+            .get("target")
+            .and_then(|v| v.as_str())
+            .map(|s| s.into()),
         wait_strategy: WaitStrategy::from_param(params.get("wait").and_then(|v| v.as_str())),
         full: params
             .get("full")
@@ -270,9 +273,9 @@ pub async fn handle_snapshot(req: &Request, state: &Arc<DaemonState>) -> Respons
                 .await;
 
                 match wait_result {
-                    Ok(Ok(_)) => {} // Wait completed successfully
+                    Ok(Ok(_)) => {}  // Wait completed successfully
                     Ok(Err(_)) => {} // JS error during wait -- proceed with snapshot anyway
-                    Err(_) => {} // Timeout -- proceed with snapshot of current state
+                    Err(_) => {}     // Timeout -- proceed with snapshot of current state
                 }
             }
             WaitStrategy::NetworkIdle => {
@@ -330,8 +333,7 @@ pub async fn handle_snapshot(req: &Request, state: &Arc<DaemonState>) -> Respons
             };
             let raw_text = &page_state.page_text.text;
             let text_slice = truncate_page_text(raw_text, max_text);
-            let truncated =
-                page_state.page_text.truncated || text_slice.len() < raw_text.len();
+            let truncated = page_state.page_text.truncated || text_slice.len() < raw_text.len();
 
             let page_text_out = if params.no_page_text {
                 String::new()
@@ -368,11 +370,7 @@ pub async fn handle_snapshot(req: &Request, state: &Arc<DaemonState>) -> Respons
 
             Response::ok(data)
         }
-        Err(e) => Response::error_detail(
-            ErrorCode::JsError,
-            format!("snapshot failed: {e}"),
-            None,
-        ),
+        Err(e) => Response::error_detail(ErrorCode::JsError, format!("snapshot failed: {e}"), None),
     }
 }
 
@@ -413,9 +411,18 @@ mod tests {
 
     #[test]
     fn wait_strategy_from_str() {
-        assert_eq!(WaitStrategy::from_param(Some("dom-stable")), WaitStrategy::DomStable);
-        assert_eq!(WaitStrategy::from_param(Some("domstable")), WaitStrategy::DomStable);
-        assert_eq!(WaitStrategy::from_param(Some("networkidle")), WaitStrategy::NetworkIdle);
+        assert_eq!(
+            WaitStrategy::from_param(Some("dom-stable")),
+            WaitStrategy::DomStable
+        );
+        assert_eq!(
+            WaitStrategy::from_param(Some("domstable")),
+            WaitStrategy::DomStable
+        );
+        assert_eq!(
+            WaitStrategy::from_param(Some("networkidle")),
+            WaitStrategy::NetworkIdle
+        );
         assert_eq!(
             WaitStrategy::from_param(Some("network-idle")),
             WaitStrategy::NetworkIdle
@@ -507,10 +514,7 @@ mod tests {
         assert!(wrapped.starts_with("[PAGE_CONTENT_START]"));
         assert!(wrapped.ends_with("[PAGE_CONTENT_END]"));
         assert!(wrapped.contains("Hello World"));
-        assert_eq!(
-            wrapped,
-            "[PAGE_CONTENT_START]Hello World[PAGE_CONTENT_END]"
-        );
+        assert_eq!(wrapped, "[PAGE_CONTENT_START]Hello World[PAGE_CONTENT_END]");
     }
 
     #[test]
@@ -787,11 +791,8 @@ mod tests {
     #[tokio::test]
     async fn handle_snapshot_with_explicit_session() {
         let state = Arc::new(DaemonState::new());
-        let session = Session::new_isolated(
-            "agent-a".into(),
-            "localhost:9222".into(),
-            "CTX1".into(),
-        );
+        let session =
+            Session::new_isolated("agent-a".into(), "localhost:9222".into(), "CTX1".into());
         state.sessions.insert("agent-a".into(), session);
 
         let req = Request {

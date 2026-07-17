@@ -186,7 +186,10 @@ mod tests {
     #[test]
     fn explicit_missing_session_does_not_fall_back() {
         let state = DaemonState::new();
-        state.sessions.insert("default".into(), Session::new_default("localhost:9222".into()));
+        state.sessions.insert(
+            "default".into(),
+            Session::new_default("localhost:9222".into()),
+        );
         let error = resolve_session_selection(&state, Some("missing")).unwrap_err();
         assert_eq!(error_code(&error), "SESSION_NOT_FOUND");
     }

@@ -30,13 +30,22 @@ fn validate_screenshot_params(params: &serde_json::Value) -> ScreenshotParams {
             .and_then(|v| v.as_str())
             .unwrap_or("default")
             .into(),
-        target: params.get("target").and_then(|v| v.as_str()).map(|s| s.into()),
+        target: params
+            .get("target")
+            .and_then(|v| v.as_str())
+            .map(|s| s.into()),
         full_page: params
             .get("full_page")
             .and_then(|v| v.as_bool())
             .unwrap_or(false),
-        output: params.get("output").and_then(|v| v.as_str()).map(|s| s.into()),
-        selector: params.get("selector").and_then(|v| v.as_str()).map(|s| s.into()),
+        output: params
+            .get("output")
+            .and_then(|v| v.as_str())
+            .map(|s| s.into()),
+        selector: params
+            .get("selector")
+            .and_then(|v| v.as_str())
+            .map(|s| s.into()),
         labels: params
             .get("labels")
             .and_then(|v| v.as_bool())
@@ -104,12 +113,9 @@ pub async fn handle_screenshot(req: &Request, state: &Arc<DaemonState>) -> Respo
     };
 
     if params.labels {
-        if let Err(e) = crate::page::capture::inject_labels(
-            &cdp,
-            &session_tab.cdp_session_id,
-            params.full_page,
-        )
-        .await
+        if let Err(e) =
+            crate::page::capture::inject_labels(&cdp, &session_tab.cdp_session_id, params.full_page)
+                .await
         {
             return Response::error_detail(
                 ErrorCode::DaemonError,
@@ -128,7 +134,8 @@ pub async fn handle_screenshot(req: &Request, state: &Arc<DaemonState>) -> Respo
     };
 
     if params.labels {
-        if let Err(e) = crate::page::capture::remove_labels(&cdp, &session_tab.cdp_session_id).await {
+        if let Err(e) = crate::page::capture::remove_labels(&cdp, &session_tab.cdp_session_id).await
+        {
             tracing::warn!("failed to remove screenshot labels: {e}");
         }
     }

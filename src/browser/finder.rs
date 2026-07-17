@@ -25,11 +25,7 @@ pub fn parse_devtools_active_port(path: &Path) -> Result<DevToolsPortInfo, Strin
         .trim()
         .parse()
         .map_err(|e| format!("invalid port number: {e}"))?;
-    let ws_path = lines
-        .next()
-        .unwrap_or("")
-        .trim()
-        .to_string();
+    let ws_path = lines.next().unwrap_or("").trim().to_string();
     Ok(DevToolsPortInfo { port, ws_path })
 }
 
@@ -244,8 +240,7 @@ impl BrowserFinder {
                 ),
                 (
                     "chrome-beta",
-                    "/Applications/Google Chrome Beta.app/Contents/MacOS/Google Chrome Beta"
-                        .into(),
+                    "/Applications/Google Chrome Beta.app/Contents/MacOS/Google Chrome Beta".into(),
                 ),
                 (
                     "chrome-dev",
@@ -283,24 +278,15 @@ impl BrowserFinder {
                     ));
                     paths.push((
                         "chrome-beta",
-                        format!(
-                            "{}\\Google\\Chrome Beta\\Application\\chrome.exe",
-                            prefix
-                        ),
+                        format!("{}\\Google\\Chrome Beta\\Application\\chrome.exe", prefix),
                     ));
                     paths.push((
                         "chrome-dev",
-                        format!(
-                            "{}\\Google\\Chrome Dev\\Application\\chrome.exe",
-                            prefix
-                        ),
+                        format!("{}\\Google\\Chrome Dev\\Application\\chrome.exe", prefix),
                     ));
                     paths.push((
                         "chrome-canary",
-                        format!(
-                            "{}\\Google\\Chrome SxS\\Application\\chrome.exe",
-                            prefix
-                        ),
+                        format!("{}\\Google\\Chrome SxS\\Application\\chrome.exe", prefix),
                     ));
                 }
             }
@@ -362,8 +348,7 @@ mod discover_tests {
 
     #[test]
     fn parse_devtools_active_port_missing_file() {
-        let result =
-            parse_devtools_active_port(Path::new("/nonexistent/DevToolsActivePort"));
+        let result = parse_devtools_active_port(Path::new("/nonexistent/DevToolsActivePort"));
         assert!(result.is_err());
     }
 

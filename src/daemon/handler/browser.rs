@@ -23,10 +23,7 @@ use super::common::handler;
 
 handler!(handle_browser_connect, do_browser_connect(req, state));
 
-async fn do_browser_connect(
-    req: &Request,
-    state: &Arc<DaemonState>,
-) -> Result<Response, BkError> {
+async fn do_browser_connect(req: &Request, state: &Arc<DaemonState>) -> Result<Response, BkError> {
     let arg = req
         .params
         .get("host")
@@ -40,7 +37,9 @@ async fn do_browser_connect(
     if let Some(b) = state.browsers.get(&key) {
         info!(key = %key, "browser already connected");
         ensure_target_watcher(state, &key, Arc::clone(&b.cdp));
-        return Ok(Response::ok(json!({ "host": b.host, "managed": b.managed })));
+        return Ok(Response::ok(
+            json!({ "host": b.host, "managed": b.managed }),
+        ));
     }
 
     // Use the original arg as connect_target (may be a ws:// URL for direct connect),
@@ -63,10 +62,7 @@ handler!(handle_browser_discover, do_browser_discover(req, state));
 ///
 /// Params:
 ///   - `path` (optional): custom path to DevToolsActivePort file
-async fn do_browser_discover(
-    req: &Request,
-    state: &Arc<DaemonState>,
-) -> Result<Response, BkError> {
+async fn do_browser_discover(req: &Request, state: &Arc<DaemonState>) -> Result<Response, BkError> {
     let custom_path = req.params.get("path").and_then(|v| v.as_str());
 
     let discovered = crate::browser::discover::discover_chrome(custom_path)?;
@@ -84,18 +80,16 @@ async fn do_browser_discover(
     // Chrome 136+ with toggle-enabled debugging disables /json/* HTTP
     // endpoints, so prefer the ws path from DevToolsActivePort when present.
     let connect_target = if !discovered.ws_path.is_empty() {
-        Some(crate::browser::build_ws_url(&discovered.host, &discovered.ws_path))
+        Some(crate::browser::build_ws_url(
+            &discovered.host,
+            &discovered.ws_path,
+        ))
     } else {
         None
     };
 
     let cdp = state
-        .get_or_connect_browser_with_url(
-            &discovered.host,
-            connect_target.as_deref(),
-            false,
-            None,
-        )
+        .get_or_connect_browser_with_url(&discovered.host, connect_target.as_deref(), false, None)
         .await
         .map_err(|e| {
             BkError::Other(format!(
@@ -189,14 +183,12 @@ fn cleanup_error_from_target(
     error: &SessionTargetCloseError,
 ) -> BrowserCleanupError {
     match error {
-        SessionTargetCloseError::BrowserDisconnected { target_id, action } => {
-            BrowserCleanupError {
-                session: session.to_string(),
-                target_id: Some(target_id.clone()),
-                action: (*action).to_string(),
-                message: error.to_string(),
-            }
-        }
+        SessionTargetCloseError::BrowserDisconnected { target_id, action } => BrowserCleanupError {
+            session: session.to_string(),
+            target_id: Some(target_id.clone()),
+            action: (*action).to_string(),
+            message: error.to_string(),
+        },
         SessionTargetCloseError::Cdp {
             target_id, action, ..
         } => BrowserCleanupError {
@@ -391,7 +383,10 @@ async fn do_browser_disconnect(
         .to_string();
 
     if !state.browsers.contains_key(&host) {
-        return Err(BkError::BrowserConnectionFailed(format!("no connection for host: {}", host)));
+        return Err(BkError::BrowserConnectionFailed(format!(
+            "no connection for host: {}",
+            host
+        )));
     }
 
     let report = cleanup_browser_sessions_for_host(state, &host).await;
@@ -429,12 +424,14 @@ mod tests {
     #[tokio::test]
     async fn browser_session_cleanup_marks_matching_sessions_and_cancels_watcher() {
         let state = Arc::new(DaemonState::new());
-        state
-            .sessions
-            .insert("default".into(), Session::new_default("localhost:9222".into()));
-        state
-            .sessions
-            .insert("other".into(), Session::new_default("localhost:9333".into()));
+        state.sessions.insert(
+            "default".into(),
+            Session::new_default("localhost:9222".into()),
+        );
+        state.sessions.insert(
+            "other".into(),
+            Session::new_default("localhost:9333".into()),
+        );
         let watcher = CancellationToken::new();
         state
             .target_watchers
