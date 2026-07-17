@@ -15,7 +15,6 @@ use crate::daemon::target_close::{
     close_session_target, dispose_session_browser_context, session_tab_close_requests,
     SessionTargetCloseError, SessionTargetCloseRequest,
 };
-use crate::daemon::target_lifecycle::ensure_target_watcher;
 use crate::daemon::target_lifecycle::remove_session_tab;
 use crate::error::{BkError, ErrorCode};
 
@@ -34,26 +33,23 @@ async fn do_browser_connect(req: &Request, state: &Arc<DaemonState>) -> Result<R
     // Normalize to host:port so ws:// URLs and bare host:port hit the same key
     let key = normalize_browser_key(&arg);
 
-    if let Some(b) = state.browsers.get(&key) {
-        info!(key = %key, "browser already connected");
-        ensure_target_watcher(state, &key, Arc::clone(&b.cdp));
-        return Ok(Response::ok(
-            json!({ "host": b.host, "managed": b.managed }),
-        ));
-    }
+    let already_connected = state.browsers.contains_key(&key);
 
     // Use the original arg as connect_target (may be a ws:// URL for direct connect),
     // but only when it differs from the normalized key.
     let connect_target = if arg != key { Some(arg.as_str()) } else { None };
 
-    let cdp = state
+    let _cdp = state
         .get_or_connect_browser_with_url(&key, connect_target, false, None)
         .await?;
-    ensure_target_watcher(state, &key, Arc::clone(&cdp));
     state.request_persist();
     info!(key = %key, "connected to unmanaged browser");
 
-    Ok(Response::ok(json!({ "host": key, "managed": false })))
+    Ok(Response::ok(json!({
+        "host": key,
+        "managed": false,
+        "status": if already_connected { "already_connected" } else { "connected" },
+    })))
 }
 
 handler!(handle_browser_discover, do_browser_discover(req, state));
@@ -67,15 +63,7 @@ async fn do_browser_discover(req: &Request, state: &Arc<DaemonState>) -> Result<
 
     let discovered = crate::browser::discover::discover_chrome(custom_path)?;
 
-    if let Some(b) = state.browsers.get(&discovered.host) {
-        info!(host = %discovered.host, "browser already connected (via discover)");
-        ensure_target_watcher(state, &discovered.host, Arc::clone(&b.cdp));
-        return Ok(Response::ok(json!({
-            "host": b.host,
-            "managed": b.managed,
-            "status": "already_connected",
-        })));
-    }
+    let already_connected = state.browsers.contains_key(&discovered.host);
 
     // Chrome 136+ with toggle-enabled debugging disables /json/* HTTP
     // endpoints, so prefer the ws path from DevToolsActivePort when present.
@@ -88,7 +76,7 @@ async fn do_browser_discover(req: &Request, state: &Arc<DaemonState>) -> Result<
         None
     };
 
-    let cdp = state
+    let _cdp = state
         .get_or_connect_browser_with_url(&discovered.host, connect_target.as_deref(), false, None)
         .await
         .map_err(|e| {
@@ -99,7 +87,6 @@ async fn do_browser_discover(req: &Request, state: &Arc<DaemonState>) -> Result<
                 discovered.host, e
             ))
         })?;
-    ensure_target_watcher(state, &discovered.host, Arc::clone(&cdp));
     state.request_persist();
     info!(host = %discovered.host, ws_path = %discovered.ws_path, "connected to user's Chrome via DevToolsActivePort");
 
@@ -107,7 +94,7 @@ async fn do_browser_discover(req: &Request, state: &Arc<DaemonState>) -> Result<
         "host": discovered.host,
         "ws_path": discovered.ws_path,
         "managed": false,
-        "status": "connected",
+        "status": if already_connected { "already_connected" } else { "connected" },
     })))
 }
 

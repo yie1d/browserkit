@@ -10,6 +10,7 @@ use cdpkit::CDP;
 use tokio::time::timeout;
 
 use crate::daemon::state::{Browser, DaemonState};
+use crate::daemon::target_lifecycle::ensure_target_watcher;
 use crate::error::BkError;
 
 /// Default timeout for CDP connection attempts (seconds).
@@ -97,16 +98,27 @@ impl DaemonState {
     /// If `connect_target` is `None`, falls back to using `key` as the target
     /// (original /json/version-based behavior).
     pub async fn get_or_connect_browser_with_url(
-        &self,
+        self: &Arc<Self>,
         key: &str,
         connect_target: Option<&str>,
         managed: bool,
         pid: Option<u32>,
     ) -> Result<Arc<CDP>, BkError> {
-        // Reuse existing connection if available
+        // Reuse existing connection if available.
         if let Some(browser) = self.browsers.get(key) {
             tracing::debug!(key = key, "Reusing existing browser connection");
-            return Ok(Arc::clone(&browser.cdp));
+            let cdp = Arc::clone(&browser.cdp);
+            drop(browser);
+            ensure_target_watcher(self, key, Arc::clone(&cdp));
+            return Ok(cdp);
+        }
+
+        let _connect_guard = self.browser_launch_lock.lock().await;
+        if let Some(browser) = self.browsers.get(key) {
+            let cdp = Arc::clone(&browser.cdp);
+            drop(browser);
+            ensure_target_watcher(self, key, Arc::clone(&cdp));
+            return Ok(cdp);
         }
 
         // Establish a new connection using the explicit target or the key itself
@@ -120,6 +132,8 @@ impl DaemonState {
             child: None,
         };
         self.browsers.insert(key.to_string(), browser);
+        ensure_target_watcher(self, key, Arc::clone(&cdp));
+        spawn_disconnect_monitor(Arc::clone(self), key.to_string(), Arc::clone(&cdp));
         Ok(cdp)
     }
 
@@ -130,7 +144,7 @@ impl DaemonState {
     ///
     /// Uses DashMap's interior mutability — no `&mut self` needed.
     pub async fn get_or_connect_browser(
-        &self,
+        self: &Arc<Self>,
         host: &str,
         managed: bool,
         pid: Option<u32>,
@@ -150,7 +164,7 @@ pub fn spawn_disconnect_monitor(state: Arc<DaemonState>, host: String, cdp: Arc<
     tokio::spawn(async move {
         cdp.closed().await;
         tracing::warn!(host = %host, "CDP WebSocket closed, triggering disconnect cleanup");
-        state.handle_browser_disconnect(&host);
+        state.handle_browser_disconnect(&host, &cdp);
     });
 }
 

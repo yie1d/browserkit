@@ -19,7 +19,7 @@ use crate::daemon::session::{Session, SessionMode, SessionTab, TabOwnership};
 use crate::daemon::state::{Browser, DaemonState};
 use crate::daemon::target_close::detach_unregistered_target_session;
 use crate::daemon::target_lifecycle::{
-    enable_session_tab_domains, ensure_target_watcher, spawn_session_tab_subscriptions,
+    enable_session_tab_domains, spawn_session_tab_subscriptions,
 };
 
 pub mod migrate_v2;
@@ -373,19 +373,15 @@ pub async fn restore_into_state(state: &Arc<DaemonState>) {
             continue;
         }
 
-        match crate::browser::connect_to_browser(&persisted_browser.host).await {
-            Ok(cdp) => {
-                let browser = Browser {
-                    host: persisted_browser.host.clone(),
-                    cdp: Arc::clone(&cdp),
-                    managed: persisted_browser.managed,
-                    pid: persisted_browser.pid,
-                    child: None,
-                };
-                state
-                    .browsers
-                    .insert(persisted_browser.host.clone(), browser);
-                ensure_target_watcher(state, &persisted_browser.host, cdp);
+        match state
+            .get_or_connect_browser(
+                &persisted_browser.host,
+                persisted_browser.managed,
+                persisted_browser.pid,
+            )
+            .await
+        {
+            Ok(_) => {
                 tracing::info!(host = %persisted_browser.host, "restored managed browser connection");
             }
             Err(error) => {

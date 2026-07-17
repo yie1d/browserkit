@@ -15,6 +15,10 @@ use crate::daemon::persist::{MigrationReport, PersistTx};
 use crate::daemon::session::Session;
 use crate::daemon::target_lifecycle::TargetLifecycleEvent;
 
+fn same_connection<T>(current: &Arc<T>, disconnected: &Arc<T>) -> bool {
+    Arc::ptr_eq(current, disconnected)
+}
+
 /// Daemon global state, shared via `Arc<DaemonState>`.
 ///
 /// All mutable state uses interior-mutability primitives:
@@ -122,19 +126,61 @@ impl DaemonState {
     /// Called when a browser WebSocket disconnects (Chrome crash, shutdown, or network error).
     /// Removes browser from DashMap, cancels target watchers, and marks all sessions
     /// using that browser as disconnected.
-    pub fn handle_browser_disconnect(&self, host: &str) {
-        self.browsers.remove(host);
+    pub fn handle_browser_disconnect(&self, host: &str, disconnected_cdp: &Arc<CDP>) {
+        use dashmap::mapref::entry::Entry;
+
+        let removed_current = match self.browsers.entry(host.to_string()) {
+            Entry::Occupied(entry) if same_connection(&entry.get().cdp, disconnected_cdp) => {
+                entry.remove();
+                true
+            }
+            Entry::Occupied(_) | Entry::Vacant(_) => false,
+        };
+        if !removed_current {
+            tracing::debug!(host, "ignoring stale browser disconnect notification");
+            return;
+        }
+
+        self.disconnect_browser_runtime_state(host);
+        self.request_persist();
+        tracing::warn!(host, "browser disconnected, sessions marked");
+    }
+
+    fn disconnect_browser_runtime_state(&self, host: &str) {
         if let Some((_, token)) = self.target_watchers.remove(host) {
             token.cancel();
         }
-        // Mark all sessions using this browser as disconnected
-        for mut entry in self.sessions.iter_mut() {
-            if entry.value().browser_host == host {
-                entry.value_mut().mark_disconnected();
+        self.disconnect_sessions_for_host(host);
+    }
+
+    pub(crate) fn disconnect_sessions_for_host(&self, host: &str) {
+        let session_names: Vec<String> = self
+            .sessions
+            .iter_mut()
+            .filter_map(|mut entry| {
+                if entry.value().browser_host == host {
+                    entry.value_mut().mark_disconnected();
+                    Some(entry.key().clone())
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        for session_name in session_names {
+            let console_keys: Vec<_> = self
+                .console_subscription_tokens
+                .iter()
+                .filter(|entry| entry.key().0 == session_name)
+                .map(|entry| entry.key().clone())
+                .collect();
+            for key in console_keys {
+                if let Some((_, token)) = self.console_subscription_tokens.remove(&key) {
+                    token.cancel();
+                }
             }
+            self.dialog_state.cancel_all_for_session(&session_name);
         }
-        self.request_persist();
-        tracing::warn!(host, "browser disconnected, sessions marked");
     }
 }
 
@@ -207,8 +253,7 @@ mod tests {
             .target_watchers
             .insert("localhost:9222".into(), token.clone());
 
-        // Call handle_browser_disconnect
-        state.handle_browser_disconnect("localhost:9222");
+        state.disconnect_browser_runtime_state("localhost:9222");
 
         // Browser should be removed (it wasn't there, so just verify no panic)
         assert!(!state.browsers.contains_key("localhost:9222"));
@@ -230,10 +275,59 @@ mod tests {
         state.sessions.insert("other".into(), session);
 
         // Disconnect a different host
-        state.handle_browser_disconnect("localhost:9222");
+        state.disconnect_browser_runtime_state("localhost:9222");
 
         // The unrelated session should NOT be marked disconnected
         let s = state.sessions.get("other").unwrap();
         assert!(!s.disconnected);
+    }
+
+    #[test]
+    fn connection_identity_rejects_stale_replacement_monitor() {
+        let original = Arc::new(());
+        let replacement = Arc::new(());
+
+        assert!(same_connection(&original, &Arc::clone(&original)));
+        assert!(!same_connection(&replacement, &original));
+    }
+
+    #[test]
+    fn disconnect_sessions_for_host_cancels_live_subscription_handles() {
+        use crate::daemon::dialog::PendingDialog;
+        use crate::daemon::session::Session;
+
+        let state = DaemonState::new();
+        let mut session = Session::new_default("localhost:9222".into());
+        session.add_tab("T1".into(), "https://example.test".into(), "Example".into());
+        state.sessions.insert("default".into(), session);
+
+        let console_token = CancellationToken::new();
+        state
+            .console_subscription_tokens
+            .insert(("default".into(), "T1".into()), console_token.clone());
+        let dialog_token = CancellationToken::new();
+        state
+            .dialog_state
+            .subscription_tokens
+            .insert(("default".into(), "T1".into()), dialog_token.clone());
+        state.dialog_state.set_pending(
+            "default",
+            "T1",
+            PendingDialog {
+                dialog_type: "alert".into(),
+                message: "message".into(),
+                default_prompt: None,
+                url: "https://example.test".into(),
+                opened_at: 1,
+            },
+        );
+
+        state.disconnect_sessions_for_host("localhost:9222");
+
+        assert!(state.sessions.get("default").unwrap().disconnected);
+        assert!(console_token.is_cancelled());
+        assert!(dialog_token.is_cancelled());
+        assert!(state.console_subscription_tokens.is_empty());
+        assert!(state.dialog_state.get_pending("default", "T1").is_none());
     }
 }

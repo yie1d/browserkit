@@ -9,10 +9,9 @@ use std::sync::Arc;
 use serde_json::json;
 
 use crate::browser::finder;
-use crate::browser::spawn_disconnect_monitor;
 use crate::daemon::protocol::{Request, Response};
 use crate::daemon::session::{Session, SessionMode};
-use crate::daemon::state::{Browser, DaemonState};
+use crate::daemon::state::DaemonState;
 use crate::daemon::target_lifecycle::{ensure_target_watcher, spawn_session_tab_subscriptions};
 use crate::error::ErrorCode;
 
@@ -239,32 +238,21 @@ async fn discover_and_connect(
         format!("ws://127.0.0.1:{}{}", port_info.port, port_info.ws_path)
     };
 
-    let cdp = crate::browser::connect_to_browser(&ws_url)
+    let host = format!("127.0.0.1:{}", port_info.port);
+
+    let cdp = state
+        .get_or_connect_browser_with_url(&host, Some(&ws_url), false, None)
         .await
-        .map_err(|e| {
+        .map_err(|error| {
             Response::error_detail(
                 ErrorCode::ConnectionRefused,
-                format!("CDP connection failed: {e}"),
+                format!("CDP connection failed: {error}"),
                 None,
             )
         })?;
 
-    let host = format!("127.0.0.1:{}", port_info.port);
-
     // Get browser version via CDP Browser.getVersion
     let browser_version = get_browser_version(&cdp).await;
-
-    // Register browser in state
-    state.browsers.insert(
-        host.clone(),
-        Browser {
-            host: host.clone(),
-            cdp: Arc::clone(&cdp),
-            managed: false,
-            pid: None,
-            child: None,
-        },
-    );
 
     let tab_count = if state.sessions.contains_key(session_name) {
         let backend = CdpReconnectBackend { cdp: &cdp };
@@ -288,11 +276,6 @@ async fn discover_and_connect(
         count
     };
     state.request_persist();
-
-    ensure_target_watcher(state, &host, Arc::clone(&cdp));
-
-    // Spawn disconnect monitor
-    spawn_disconnect_monitor(Arc::clone(state), host, Arc::clone(&cdp));
 
     Ok(build_connect_response(
         "connected",
