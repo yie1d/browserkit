@@ -1057,7 +1057,7 @@ async fn dispatch(cli: &Cli, client: &mut DaemonClient) -> Result<(), String> {
             }
         },
 
-        // ── Page State (top-level, v1 legacy) ────────────────────────
+        // ── Session-native page inspection ──────────────────────────
         Command::Find { selector, attributes, max, include_text } => {
             let mut params = json!({"selector": selector, "include_text": include_text});
             if let Some(attrs) = attributes {
