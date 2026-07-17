@@ -84,6 +84,7 @@ fn check_new_session_limit_for_connect(
     check_session_limit(state, state.config.limits.max_sessions)
 }
 
+#[cfg(test)]
 fn build_new_session_for_connect(
     session_name: &str,
     browser_host: String,
@@ -114,6 +115,30 @@ fn build_new_session_for_connect(
 #[derive(Debug, PartialEq, Eq)]
 struct ReconnectResult {
     tab_count: usize,
+    subscriptions: Vec<(String, String)>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SessionBindStatus {
+    Connected,
+    Reconnected,
+    AlreadyConnected,
+}
+
+impl SessionBindStatus {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Connected => "connected",
+            Self::Reconnected => "reconnected",
+            Self::AlreadyConnected => "already_connected",
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct SessionBindResult {
+    pub(crate) status: SessionBindStatus,
+    pub(crate) tab_count: usize,
     subscriptions: Vec<(String, String)>,
 }
 
@@ -199,6 +224,84 @@ async fn reconnect_existing_session<B: SessionReconnectBackend>(
     })
 }
 
+async fn bind_session_state<B: SessionReconnectBackend>(
+    state: &Arc<DaemonState>,
+    session_name: &str,
+    browser_host: &str,
+    backend: &B,
+) -> Result<SessionBindResult, Response> {
+    check_new_session_limit_for_connect(state, session_name)?;
+
+    if let Some(existing) = state.sessions.get(session_name) {
+        if !existing.disconnected {
+            if existing.browser_host == browser_host {
+                return Ok(SessionBindResult {
+                    status: SessionBindStatus::AlreadyConnected,
+                    tab_count: existing.tab_count(),
+                    subscriptions: Vec::new(),
+                });
+            }
+            return Err(Response::error_detail(
+                ErrorCode::InvalidArgument,
+                format!(
+                    "session '{}' is already connected to {}; disconnect it before binding {}",
+                    session_name, existing.browser_host, browser_host
+                ),
+                None,
+            ));
+        }
+    }
+
+    if state.sessions.contains_key(session_name) {
+        let reconnect =
+            reconnect_existing_session(state, session_name, browser_host, backend).await?;
+        return Ok(SessionBindResult {
+            status: SessionBindStatus::Reconnected,
+            tab_count: reconnect.tab_count,
+            subscriptions: reconnect.subscriptions,
+        });
+    }
+
+    let session = if is_default_session(session_name) {
+        Session::new_default(browser_host.to_string())
+    } else {
+        Session::new_isolated(
+            session_name.to_string(),
+            browser_host.to_string(),
+            backend.create_browser_context(session_name).await?,
+        )
+    };
+    let tab_count = session.tab_count();
+    state.sessions.insert(session_name.to_string(), session);
+    Ok(SessionBindResult {
+        status: SessionBindStatus::Connected,
+        tab_count,
+        subscriptions: Vec::new(),
+    })
+}
+
+pub(crate) async fn bind_session_to_browser(
+    state: &Arc<DaemonState>,
+    session_name: &str,
+    browser_host: &str,
+    cdp: &Arc<cdpkit::CDP>,
+) -> Result<SessionBindResult, Response> {
+    let backend = CdpReconnectBackend { cdp };
+    let result = bind_session_state(state, session_name, browser_host, &backend).await?;
+
+    for (target_id, cdp_session_id) in &result.subscriptions {
+        spawn_session_tab_subscriptions(
+            Arc::clone(state),
+            session_name.to_string(),
+            target_id.clone(),
+            Arc::clone(cdp),
+            cdp_session_id.clone(),
+        );
+    }
+    state.request_persist();
+    Ok(result)
+}
+
 /// Determine which error code best describes why connection failed.
 fn determine_connection_error(
     is_running: bool,
@@ -219,8 +322,6 @@ async fn discover_and_connect(
     state: &Arc<DaemonState>,
     session_name: &str,
 ) -> Result<Response, Response> {
-    check_new_session_limit_for_connect(state, session_name)?;
-
     // Find DevToolsActivePort
     let port_info = match finder::find_devtools_port() {
         Some(info) => info,
@@ -254,34 +355,13 @@ async fn discover_and_connect(
     // Get browser version via CDP Browser.getVersion
     let browser_version = get_browser_version(&cdp).await;
 
-    let tab_count = if state.sessions.contains_key(session_name) {
-        let backend = CdpReconnectBackend { cdp: &cdp };
-        let reconnect = reconnect_existing_session(state, session_name, &host, &backend).await?;
-        for (target_id, cdp_session_id) in reconnect.subscriptions {
-            spawn_session_tab_subscriptions(
-                Arc::clone(state),
-                session_name.to_string(),
-                target_id,
-                Arc::clone(&cdp),
-                cdp_session_id,
-            );
-        }
-        reconnect.tab_count
-    } else {
-        let browser_context_id = create_browser_context_for_session(&cdp, session_name).await?;
-        let session =
-            build_new_session_for_connect(session_name, host.clone(), browser_context_id)?;
-        let count = session.tab_count();
-        state.sessions.insert(session_name.to_string(), session);
-        count
-    };
-    state.request_persist();
+    let bound = bind_session_to_browser(state, session_name, &host, &cdp).await?;
 
     Ok(build_connect_response(
-        "connected",
+        bound.status.as_str(),
         &browser_version,
         session_name,
-        tab_count,
+        bound.tab_count,
     ))
 }
 
@@ -658,5 +738,69 @@ mod tests {
         assert!(restored.tabs.is_empty());
         assert!(restored.active_target.is_none());
         assert!(result.subscriptions.is_empty());
+    }
+
+    #[tokio::test]
+    async fn bind_session_state_creates_default_session_for_explicit_endpoint() {
+        let state = Arc::new(DaemonState::new());
+        let backend = FakeReconnectBackend::with_reattached_session("unused", "unused");
+
+        let result = bind_session_state(&state, "default", "remote.example:9222", &backend)
+            .await
+            .unwrap();
+
+        let session = state.sessions.get("default").unwrap();
+        assert_eq!(session.browser_host, "remote.example:9222");
+        assert!(!session.disconnected);
+        assert_eq!(result.status, SessionBindStatus::Connected);
+    }
+
+    #[tokio::test]
+    async fn bind_session_state_restores_disconnected_explicit_session() {
+        let state = Arc::new(DaemonState::new());
+        let mut session = Session::new_default("remote.example:9222".into());
+        session.mark_disconnected();
+        session.tabs.insert(
+            "T1".into(),
+            SessionTab::new_attached(
+                "T1".into(),
+                "https://example.test".into(),
+                "Example".into(),
+                String::new(),
+            ),
+        );
+        state.sessions.insert("default".into(), session);
+        let backend = FakeReconnectBackend::with_reattached_session("T1", "S1");
+
+        let result = bind_session_state(&state, "default", "remote.example:9222", &backend)
+            .await
+            .unwrap();
+
+        assert_eq!(result.status, SessionBindStatus::Reconnected);
+        assert_eq!(
+            state.sessions.get("default").unwrap().tabs["T1"].cdp_session_id,
+            "S1"
+        );
+    }
+
+    #[tokio::test]
+    async fn bind_session_state_rejects_live_session_on_different_browser() {
+        let state = Arc::new(DaemonState::new());
+        state.sessions.insert(
+            "default".into(),
+            Session::new_default("first.example:9222".into()),
+        );
+        let backend = FakeReconnectBackend::with_reattached_session("unused", "unused");
+
+        let response = bind_session_state(&state, "default", "second.example:9222", &backend)
+            .await
+            .unwrap_err();
+        let value = serde_json::to_value(response).unwrap();
+
+        assert_eq!(value["error"]["code"], "INVALID_ARGUMENT");
+        assert_eq!(
+            state.sessions.get("default").unwrap().browser_host,
+            "first.example:9222"
+        );
     }
 }

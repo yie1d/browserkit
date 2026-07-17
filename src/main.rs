@@ -801,6 +801,12 @@ fn add_session_target_params(params: &mut serde_json::Value, cli: &Cli) {
     }
 }
 
+fn add_session_param(params: &mut serde_json::Value, cli: &Cli) {
+    if let Some(session) = &cli.session {
+        params["session"] = json!(session);
+    }
+}
+
 async fn dispatch(cli: &Cli, client: &mut DaemonClient) -> Result<(), String> {
     match &cli.command {
         // ══════════════════════════════════════════════════════════
@@ -1197,7 +1203,9 @@ async fn dispatch(cli: &Cli, client: &mut DaemonClient) -> Result<(), String> {
         // ── Browser ────────────────────────────────────────
         Command::Browser { action } => match action {
             BrowserAction::Connect { host } => {
-                let resp = send_cmd(client, "browser.connect", json!({"host": host})).await?;
+                let mut params = json!({"host": host});
+                add_session_param(&mut params, cli);
+                let resp = send_cmd(client, "browser.connect", params).await?;
                 print_response(&resp);
             }
             BrowserAction::Discover { path } => {
@@ -1205,6 +1213,7 @@ async fn dispatch(cli: &Cli, client: &mut DaemonClient) -> Result<(), String> {
                 if let Some(p) = path {
                     params["path"] = json!(p);
                 }
+                add_session_param(&mut params, cli);
                 let resp = send_cmd(client, "browser.discover", params).await?;
                 print_response(&resp);
             }
@@ -1487,6 +1496,24 @@ mod tests {
     fn cli_parses_connect_with_session() {
         let cli = try_parse(&["bk", "--session", "agent-a", "connect"]).unwrap();
         assert_eq!(cli.session, Some("agent-a".into()));
+    }
+
+    #[test]
+    fn browser_admin_connection_params_include_global_session() {
+        let cli = try_parse(&[
+            "bk",
+            "--session",
+            "agent-a",
+            "browser",
+            "connect",
+            "remote.example:9222",
+        ])
+        .unwrap();
+        let mut params = json!({"host": "remote.example:9222"});
+
+        add_session_param(&mut params, &cli);
+
+        assert_eq!(params["session"], "agent-a");
     }
 
     #[test]

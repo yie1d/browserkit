@@ -18,17 +18,29 @@ use crate::daemon::target_close::{
 use crate::daemon::target_lifecycle::remove_session_tab;
 use crate::error::{BkError, ErrorCode};
 
-use super::common::handler;
+use super::common::{handler, session_name_param};
+use super::connect::bind_session_to_browser;
 
-handler!(handle_browser_connect, do_browser_connect(req, state));
+pub async fn handle_browser_connect(req: &Request, state: &Arc<DaemonState>) -> Response {
+    do_browser_connect(req, state)
+        .await
+        .unwrap_or_else(|response| response)
+}
 
-async fn do_browser_connect(req: &Request, state: &Arc<DaemonState>) -> Result<Response, BkError> {
+async fn do_browser_connect(req: &Request, state: &Arc<DaemonState>) -> Result<Response, Response> {
     let arg = req
         .params
         .get("host")
         .and_then(|v| v.as_str())
-        .ok_or_else(|| BkError::InvalidRequest("browser.connect requires 'host' param".into()))?
+        .ok_or_else(|| {
+            Response::error_detail(
+                ErrorCode::InvalidArgument,
+                "browser.connect requires string 'host' param".into(),
+                None,
+            )
+        })?
         .to_string();
+    let session_name = session_name_param(&req.params)?;
 
     // Normalize to host:port so ws:// URLs and bare host:port hit the same key
     let key = normalize_browser_key(&arg);
@@ -39,29 +51,43 @@ async fn do_browser_connect(req: &Request, state: &Arc<DaemonState>) -> Result<R
     // but only when it differs from the normalized key.
     let connect_target = if arg != key { Some(arg.as_str()) } else { None };
 
-    let _cdp = state
+    let cdp = state
         .get_or_connect_browser_with_url(&key, connect_target, false, None)
-        .await?;
+        .await
+        .map_err(Response::from)?;
+    let bound = bind_session_to_browser(state, session_name, &key, &cdp).await?;
     state.request_persist();
     info!(key = %key, "connected to unmanaged browser");
 
     Ok(Response::ok(json!({
         "host": key,
         "managed": false,
-        "status": if already_connected { "already_connected" } else { "connected" },
+        "browser_status": if already_connected { "already_connected" } else { "connected" },
+        "status": bound.status.as_str(),
+        "session": session_name,
+        "tabs": bound.tab_count,
     })))
 }
 
-handler!(handle_browser_discover, do_browser_discover(req, state));
+pub async fn handle_browser_discover(req: &Request, state: &Arc<DaemonState>) -> Response {
+    do_browser_discover(req, state)
+        .await
+        .unwrap_or_else(|response| response)
+}
 
 /// Connect to the user's Chrome by reading DevToolsActivePort.
 ///
 /// Params:
 ///   - `path` (optional): custom path to DevToolsActivePort file
-async fn do_browser_discover(req: &Request, state: &Arc<DaemonState>) -> Result<Response, BkError> {
+async fn do_browser_discover(
+    req: &Request,
+    state: &Arc<DaemonState>,
+) -> Result<Response, Response> {
     let custom_path = req.params.get("path").and_then(|v| v.as_str());
+    let session_name = session_name_param(&req.params)?;
 
-    let discovered = crate::browser::discover::discover_chrome(custom_path)?;
+    let discovered =
+        crate::browser::discover::discover_chrome(custom_path).map_err(Response::from)?;
 
     let already_connected = state.browsers.contains_key(&discovered.host);
 
@@ -76,17 +102,18 @@ async fn do_browser_discover(req: &Request, state: &Arc<DaemonState>) -> Result<
         None
     };
 
-    let _cdp = state
+    let cdp = state
         .get_or_connect_browser_with_url(&discovered.host, connect_target.as_deref(), false, None)
         .await
         .map_err(|e| {
-            BkError::Other(format!(
+            Response::from(BkError::Other(format!(
                 "DevToolsActivePort file found (port {}), but connection failed: {}. \
                  The file may be stale — Chrome may have exited without cleaning it up. \
                  Try restarting Chrome or deleting the DevToolsActivePort file.",
                 discovered.host, e
-            ))
+            )))
         })?;
+    let bound = bind_session_to_browser(state, session_name, &discovered.host, &cdp).await?;
     state.request_persist();
     info!(host = %discovered.host, ws_path = %discovered.ws_path, "connected to user's Chrome via DevToolsActivePort");
 
@@ -94,7 +121,10 @@ async fn do_browser_discover(req: &Request, state: &Arc<DaemonState>) -> Result<
         "host": discovered.host,
         "ws_path": discovered.ws_path,
         "managed": false,
-        "status": if already_connected { "already_connected" } else { "connected" },
+        "browser_status": if already_connected { "already_connected" } else { "connected" },
+        "status": bound.status.as_str(),
+        "session": session_name,
+        "tabs": bound.tab_count,
     })))
 }
 

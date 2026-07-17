@@ -358,6 +358,11 @@ mod tests {
                 "session.cookies.clear",
                 serde_json::json!({"session": false}),
             ),
+            (
+                "browser.connect",
+                serde_json::json!({"host": "remote.example:9222", "session": false}),
+            ),
+            ("browser.discover", serde_json::json!({"session": false})),
         ];
 
         for (cmd, params) in invalid_session_cases {
