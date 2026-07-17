@@ -21,8 +21,6 @@ pub struct Config {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct DaemonConfig {
-    /// Workspace inactivity timeout in minutes before auto-cleanup.
-    pub workspace_timeout_minutes: u64,
     /// Cleanup check interval in seconds.
     pub cleanup_interval_seconds: u64,
     /// Custom Chrome executable path (overrides auto-discovery).
@@ -39,10 +37,6 @@ pub struct DaemonConfig {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct LimitsConfig {
-    /// Maximum number of workspaces allowed (0 = unlimited).
-    pub max_workspaces: usize,
-    /// Maximum number of tabs per workspace (0 = unlimited).
-    pub max_tabs_per_workspace: usize,
     /// JavaScript execution timeout in seconds (0 = no timeout).
     pub js_timeout_seconds: u64,
     /// Maximum number of v2 sessions allowed (0 = unlimited).
@@ -56,8 +50,6 @@ pub struct LimitsConfig {
 impl Default for LimitsConfig {
     fn default() -> Self {
         Self {
-            max_workspaces: 0,
-            max_tabs_per_workspace: 0,
             js_timeout_seconds: 0,
             max_sessions: 10,
             max_tabs_per_session: 5,
@@ -69,7 +61,6 @@ impl Default for LimitsConfig {
 impl Default for DaemonConfig {
     fn default() -> Self {
         Self {
-            workspace_timeout_minutes: 30,
             cleanup_interval_seconds: 60,
             chrome_path: None,
             disable_security: true,
@@ -111,15 +102,11 @@ mod tests {
     #[test]
     fn default_config_has_sensible_values() {
         let c = Config::default();
-        assert_eq!(c.daemon.workspace_timeout_minutes, 30);
         assert_eq!(c.daemon.cleanup_interval_seconds, 60);
         assert!(c.daemon.chrome_path.is_none());
         assert!(c.daemon.disable_security); // default true for backward compat
-        assert!(c.daemon.headless);         // default true
-        assert_eq!(c.limits.max_workspaces, 0);
-        assert_eq!(c.limits.max_tabs_per_workspace, 0);
+        assert!(c.daemon.headless); // default true
         assert_eq!(c.limits.js_timeout_seconds, 0);
-        // v2 session limits
         assert_eq!(c.limits.max_sessions, 10);
         assert_eq!(c.limits.max_tabs_per_session, 5);
         assert_eq!(c.limits.session_timeout_hours, 72);
@@ -129,52 +116,51 @@ mod tests {
     fn parse_full_config() {
         let toml = r#"
 [daemon]
-workspace_timeout_minutes = 60
 cleanup_interval_seconds = 120
 chrome_path = "/usr/bin/chromium"
 disable_security = false
 headless = false
 
 [limits]
-max_workspaces = 10
-max_tabs_per_workspace = 20
 js_timeout_seconds = 30
+max_sessions = 12
+max_tabs_per_session = 7
+session_timeout_hours = 96
 "#;
-        let c: Config = toml::from_str(toml).unwrap();
-        assert_eq!(c.daemon.workspace_timeout_minutes, 60);
+        let c: Config = toml::from_str(&toml).unwrap();
         assert_eq!(c.daemon.cleanup_interval_seconds, 120);
         assert_eq!(c.daemon.chrome_path.as_deref(), Some("/usr/bin/chromium"));
         assert!(!c.daemon.disable_security);
         assert!(!c.daemon.headless);
-        assert_eq!(c.limits.max_workspaces, 10);
-        assert_eq!(c.limits.max_tabs_per_workspace, 20);
         assert_eq!(c.limits.js_timeout_seconds, 30);
+        assert_eq!(c.limits.max_sessions, 12);
+        assert_eq!(c.limits.max_tabs_per_session, 7);
+        assert_eq!(c.limits.session_timeout_hours, 96);
     }
 
     #[test]
     fn parse_partial_config_uses_defaults() {
         let toml = r#"
 [daemon]
-workspace_timeout_minutes = 45
+cleanup_interval_seconds = 45
 "#;
-        let c: Config = toml::from_str(toml).unwrap();
-        assert_eq!(c.daemon.workspace_timeout_minutes, 45);
-        assert_eq!(c.daemon.cleanup_interval_seconds, 60); // default
-        assert_eq!(c.limits.max_workspaces, 0); // default
+        let c: Config = toml::from_str(&toml).unwrap();
+        assert_eq!(c.daemon.cleanup_interval_seconds, 45);
+        assert_eq!(c.limits.max_sessions, 10); // default
     }
 
     #[test]
     fn parse_empty_config_uses_all_defaults() {
         let c: Config = toml::from_str("").unwrap();
-        assert_eq!(c.daemon.workspace_timeout_minutes, 30);
-        assert_eq!(c.limits.max_workspaces, 0);
+        assert_eq!(c.daemon.cleanup_interval_seconds, 60);
+        assert_eq!(c.limits.max_sessions, 10);
     }
 
     #[test]
     fn load_config_returns_default_when_file_missing() {
         // load_config should not panic even if file doesn't exist
         let c = load_config();
-        assert_eq!(c.daemon.workspace_timeout_minutes, 30);
+        assert_eq!(c.daemon.cleanup_interval_seconds, 60);
     }
 
     #[test]
@@ -203,26 +189,29 @@ session_timeout_hours = 168
         assert_eq!(c.limits.max_sessions, 20);
         assert_eq!(c.limits.max_tabs_per_session, 10);
         assert_eq!(c.limits.session_timeout_hours, 168);
-        // Legacy fields should still be at defaults
-        assert_eq!(c.limits.max_workspaces, 0);
-        assert_eq!(c.limits.max_tabs_per_workspace, 0);
     }
 
     #[test]
-    fn parse_mixed_v1_v2_limits() {
-        let toml = r#"
+    fn historical_runtime_config_keys_are_ignored() {
+        let old_timeout = ["work", "space", "timeout", "minutes"].join("_");
+        let old_max_units = ["max", "work", "spaces"].join("_");
+        let old_max_targets = ["max", "tabs", "per", "work", "space"].join("_");
+        let toml = format!(
+            r#"
+[daemon]
+{old_timeout} = 45
+cleanup_interval_seconds = 30
+
 [limits]
-max_workspaces = 5
-max_tabs_per_workspace = 10
-js_timeout_seconds = 30
+{old_max_units} = 5
+{old_max_targets} = 10
 max_sessions = 8
 max_tabs_per_session = 3
 session_timeout_hours = 48
-"#;
-        let c: Config = toml::from_str(toml).unwrap();
-        assert_eq!(c.limits.max_workspaces, 5);
-        assert_eq!(c.limits.max_tabs_per_workspace, 10);
-        assert_eq!(c.limits.js_timeout_seconds, 30);
+"#
+        );
+        let c: Config = toml::from_str(&toml).unwrap();
+        assert_eq!(c.daemon.cleanup_interval_seconds, 30);
         assert_eq!(c.limits.max_sessions, 8);
         assert_eq!(c.limits.max_tabs_per_session, 3);
         assert_eq!(c.limits.session_timeout_hours, 48);

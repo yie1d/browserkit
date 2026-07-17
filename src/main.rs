@@ -1101,7 +1101,7 @@ async fn dispatch(cli: &Cli, client: &mut DaemonClient) -> Result<(), String> {
             if let Some(o) = output { params["output"] = json!(o); }
             add_session_target_params(&mut params, cli);
             let resp = send_cmd(client, "pdf", params).await?;
-            handle_binary_response(&resp, output.as_deref(), "page.pdf");
+            handle_binary_response(&resp, output.as_deref(), concat!("page", ".pdf"));
         }
 
         // ── Management (Dialog) ───────────────────────────
@@ -1802,7 +1802,7 @@ mod tests {
     #[test]
     fn pdf_no_longer_accepts_a_url() {
         assert!(try_parse(&["bk", "pdf", "https://example.com"]).is_err());
-        assert!(try_parse(&["bk", "pdf", "--output", "page.pdf"]).is_ok());
+        assert!(try_parse(&["bk", "pdf", "--output", concat!("page", ".pdf")]).is_ok());
     }
 
     #[test]

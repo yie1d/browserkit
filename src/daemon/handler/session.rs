@@ -15,7 +15,8 @@ use crate::daemon::protocol::{Request, Response};
 use crate::daemon::session::{Session, SessionMode};
 use crate::daemon::state::DaemonState;
 use crate::daemon::target_close::{
-    close_session_target, session_tab_close_requests, SessionTargetCloseRequest,
+    close_session_target, dispose_session_browser_context, session_tab_close_requests,
+    SessionContextDisposeError, SessionTargetCloseRequest,
 };
 use crate::daemon::target_lifecycle::remove_session_tab;
 use crate::error::ErrorCode;
@@ -357,32 +358,22 @@ pub async fn handle_session_close(req: &Request, state: &Arc<DaemonState>) -> Re
         return Response::error_detail(ErrorCode::DaemonError, error, None);
     }
 
-    if plan.mode == SessionMode::Isolated {
-        if let Some(ctx) = plan.browser_context_id {
-            let Some(cdp) = cdp.as_deref() else {
-                return Response::error_detail(
-                    ErrorCode::ChromeDisconnected,
-                    format!(
-                        "browser for session '{}' disconnected before disposing BrowserContext",
-                        session_name
-                    ),
-                    None,
-                );
-            };
-            if let Err(error) = cdpkit::target::methods::DisposeBrowserContext::new(ctx)
-                .send(cdp)
-                .await
-            {
-                return Response::error_detail(
-                    ErrorCode::DaemonError,
-                    format!(
-                        "failed to dispose BrowserContext for session '{session_name}': {error}"
-                    ),
-                    None,
-                );
-            }
-        }
+    if let Err(error) = dispose_session_browser_context(
+        cdp.as_deref(),
+        session_name,
+        plan.mode,
+        plan.browser_context_id.as_deref(),
+    )
+    .await
+    {
+        let code = match &error {
+            SessionContextDisposeError::BrowserDisconnected { .. } => ErrorCode::ChromeDisconnected,
+            SessionContextDisposeError::Cdp { .. } => ErrorCode::DaemonError,
+        };
+        return Response::error_detail(code, error.to_string(), None);
+    }
 
+    if plan.mode == SessionMode::Isolated {
         state.dialog_state.cancel_all_for_session(session_name);
         remove_session(state, session_name);
     }

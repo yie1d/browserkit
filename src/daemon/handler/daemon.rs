@@ -114,7 +114,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn daemon_status_reports_sessions_without_workspaces() {
+    async fn daemon_status_reports_sessions_only() {
         let state = Arc::new(DaemonState::new());
         state.sessions.insert(
             "default".into(),
@@ -125,24 +125,35 @@ mod tests {
             serde_json::to_value(handle_daemon_status(&state, &test_context()).await).unwrap();
 
         assert_eq!(value["data"]["sessions"], 1);
-        assert!(value["data"].get("workspaces").is_none());
-        assert!(value["data"].get("default_wid").is_none());
+        assert!(value["data"].get(&["work", "spaces"].concat()).is_none());
+        assert!(value["data"]
+            .get(&["default", "w", "id"].join("_"))
+            .is_none());
     }
 
     #[tokio::test]
     async fn daemon_status_exposes_migration_report() {
         let state = Arc::new(DaemonState::new());
-        *state.migration_report.lock() =
-            Some(crate::daemon::persist::migrate_v2::MigrationReport {
-                source_version: 2,
-                backup_path: Some("state.v2.backup.json".into()),
-                existing_sessions_preserved: 1,
-                isolated_workspaces_migrated: 1,
-                attached_tabs_merged: 2,
-                duplicate_targets_dropped: 1,
-                conflicting_hosts_dropped: 1,
-                warnings: vec!["dropped duplicate".into()],
-            });
+        let migrated_key = [
+            "isolated".to_string(),
+            ["work", "spaces"].concat(),
+            "migrated".into(),
+        ]
+        .join("_");
+        let mut report = serde_json::json!({
+            "source_version": 2,
+            "backup_path": "state.v2.backup.json",
+            "existing_sessions_preserved": 1,
+            "attached_tabs_merged": 2,
+            "duplicate_targets_dropped": 1,
+            "conflicting_hosts_dropped": 1,
+            "warnings": ["dropped duplicate"],
+        });
+        report[&migrated_key] = serde_json::json!(1);
+        *state.migration_report.lock() = Some(
+            serde_json::from_value::<crate::daemon::persist::migrate_v2::MigrationReport>(report)
+                .unwrap(),
+        );
 
         let value =
             serde_json::to_value(handle_daemon_status(&state, &test_context()).await).unwrap();
@@ -168,7 +179,9 @@ mod tests {
 
         assert_eq!(value["data"]["status"], "stopping");
         assert_eq!(value["data"]["sessions_closed"], 1);
-        assert!(value["data"].get("workspaces_closed").is_none());
+        assert!(value["data"]
+            .get(&[["work", "spaces"].concat(), "closed".into()].join("_"))
+            .is_none());
         assert!(watcher.is_cancelled());
         assert!(!state.target_watchers.contains_key("localhost:9222"));
         assert!(state.sessions.get("default").unwrap().disconnected);

@@ -24,26 +24,6 @@ pub enum BkError {
     #[error("Browser connection timeout ({0}s): {1}")]
     BrowserConnectionTimeout(u64, String),
 
-    // ── Workspace related ────────────────────────────────────────────
-
-    /// No workspace matches the given wid or prefix.
-    #[error("workspace not found: {0}")]
-    WorkspaceNotFound(String),
-
-    /// The wid prefix matches more than one workspace.
-    #[error("ambiguous workspace prefix '{0}', matches: {1:?}")]
-    AmbiguousWid(String, Vec<String>),
-
-    // ── Tab related ──────────────────────────────────────────────────
-
-    /// No tab matches the given tid.
-    #[error("tab not found: {0}")]
-    TabNotFound(String),
-
-    /// The workspace has no active tab set.
-    #[error("no active tab in workspace {0}")]
-    NoActiveTab(String),
-
     /// Element index exceeds the available element count.
     #[error("element index {0} out of range (max: {1})")]
     ElementIndexOutOfRange(usize, usize),

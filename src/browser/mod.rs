@@ -125,7 +125,7 @@ impl DaemonState {
 
     /// Get an existing CDP connection for `host`, or create a new one.
     ///
-    /// This ensures connection reuse: multiple workspaces on the same Chrome
+    /// This ensures connection reuse: multiple sessions on the same Chrome
     /// instance share a single `Arc<CDP>` WebSocket connection.
     ///
     /// Uses DashMap's interior mutability — no `&mut self` needed.

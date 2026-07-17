@@ -9,9 +9,14 @@ use crate::daemon::console::{cancel_console_subscription, spawn_console_subscrip
 use crate::daemon::dialog::spawn_dialog_subscription;
 use crate::daemon::session::{SessionMode, SessionTab};
 use crate::daemon::state::DaemonState;
+use crate::daemon::target_close::detach_unregistered_target_session;
 use crate::error::ErrorCode;
 
 const TRACKABLE_TARGET_TYPE: &str = "page";
+
+pub fn is_trackable_page_target(type_: &str) -> bool {
+    type_ == TRACKABLE_TARGET_TYPE
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TargetLifecycleEvent {
@@ -364,7 +369,7 @@ async fn handle_target_created_event(
     cdp: &Arc<cdpkit::CDP>,
     target_info: cdpkit::target::types::TargetInfo,
 ) {
-    if target_info.type_ != TRACKABLE_TARGET_TYPE {
+    if !is_trackable_page_target(&target_info.type_) {
         return;
     }
 
@@ -407,10 +412,7 @@ async fn handle_target_created_event(
     };
 
     if let Err(error) = enable_session_tab_domains(cdp.as_ref(), &cdp_session_id).await {
-        let _ = cdpkit::target::methods::DetachFromTarget::new()
-            .with_session_id(cdp_session_id)
-            .send(cdp.as_ref())
-            .await;
+        let _ = detach_unregistered_target_session(cdp.as_ref(), cdp_session_id).await;
         debug!(
             host = %host,
             target_id = %target_info.target_id,
@@ -444,10 +446,7 @@ async fn handle_target_created_event(
             );
         }
         Ok(SessionTabRegistration::AlreadyTracked) => {
-            let _ = cdpkit::target::methods::DetachFromTarget::new()
-                .with_session_id(cdp_session_id)
-                .send(cdp.as_ref())
-                .await;
+            let _ = detach_unregistered_target_session(cdp.as_ref(), cdp_session_id).await;
             debug!(
                 host = %host,
                 target_id = %target_info.target_id,
@@ -456,10 +455,7 @@ async fn handle_target_created_event(
             return;
         }
         Err(error) => {
-            let _ = cdpkit::target::methods::DetachFromTarget::new()
-                .with_session_id(cdp_session_id)
-                .send(cdp.as_ref())
-                .await;
+            let _ = detach_unregistered_target_session(cdp.as_ref(), cdp_session_id).await;
             debug!(
                 host = %host,
                 target_id = %target_info.target_id,
@@ -485,13 +481,30 @@ mod tests {
 
     use super::{
         emit_session_tab_created, ensure_target_watcher_token, find_target_owner,
-        register_initialized_session_tab, register_session_tab, remove_session_tab,
-        session_for_created_target, subscribe_target_events, update_session_tab_info,
-        SessionTabRegistration, TargetLifecycleEvent,
+        is_trackable_page_target, register_initialized_session_tab, register_session_tab,
+        remove_session_tab, session_for_created_target, subscribe_target_events,
+        update_session_tab_info, SessionTabRegistration, TargetLifecycleEvent,
     };
     use std::sync::{Arc, Barrier};
     use std::thread;
     use tokio_util::sync::CancellationToken;
+
+    #[test]
+    fn target_tracking_keeps_only_page_targets() {
+        assert!(is_trackable_page_target("page"));
+        for type_ in [
+            "service_worker",
+            "shared_worker",
+            "iframe",
+            "worker",
+            "background_page",
+            "browser_ui",
+            "other",
+            "webview",
+        ] {
+            assert!(!is_trackable_page_target(type_));
+        }
+    }
 
     #[test]
     fn target_owner_is_unique_across_sessions() {

@@ -1,4 +1,4 @@
-// Page/Tab: page-level operations
+// Page-level operations
 pub mod capture;
 pub mod element_ref;
 pub mod find_elements;
@@ -8,10 +8,6 @@ pub mod state;
 pub mod state_diff;
 pub mod wait;
 
-use std::collections::VecDeque;
-use std::sync::Arc;
-
-use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 
 /// CSS selector for discovering all interactive elements on a page.
@@ -38,52 +34,6 @@ pub fn exception_message(details: &cdpkit::runtime::types::ExceptionDetails) -> 
         .and_then(|e| e.description.as_deref())
         .unwrap_or(&details.text)
         .to_string()
-}
-
-/// Maximum number of console entries to buffer per tab.
-pub const CONSOLE_LOG_MAX: usize = 200;
-
-/// A single console log entry.
-#[derive(Debug, Clone)]
-pub struct ConsoleEntry {
-    pub level: String,
-    pub text: String,
-    pub timestamp: f64,
-}
-
-/// A tab within a workspace, mapped to a CDP Target.
-#[derive(Debug)]
-pub struct Tab {
-    /// 16-character random hex ID, e.g. "a3f2e1b09c7d4a68"
-    pub tid: String,
-    /// CDP Target ID
-    pub target_id: String,
-    /// CDP Session ID (used to route commands to this tab)
-    pub cdp_session_id: String,
-    /// Current page URL
-    pub url: String,
-    /// Current page title
-    pub title: String,
-    /// Whether this tab was created by bk (`true`) or is a user's existing tab (`false`).
-    ///
-    /// - `managed = true`: bk created this tab (via `tab new` or isolated `ws new`).
-    ///   On close, bk will `CloseTarget`.
-    /// - `managed = false`: bk attached to a pre-existing user tab (via `ws attach` / `tab attach`).
-    ///   On close, bk will only `DetachFromTarget`, leaving the tab open.
-    pub managed: bool,
-    /// Short human-friendly alias for CLI addressing (`t1`, `t2`, ...).
-    /// Workspace-scoped, monotonically increasing, never reused after close.
-    pub alias: String,
-    /// Console log buffer (runtime state, not persisted).
-    /// Ring buffer of the most recent CONSOLE_LOG_MAX entries.
-    pub console_log: Arc<Mutex<VecDeque<ConsoleEntry>>>,
-}
-
-impl Tab {
-    /// Create a new console log buffer (used when constructing new tabs).
-    pub fn new_console_log() -> Arc<Mutex<VecDeque<ConsoleEntry>>> {
-        Arc::new(Mutex::new(VecDeque::new()))
-    }
 }
 
 /// A text search match found on the page.

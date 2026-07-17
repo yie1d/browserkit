@@ -12,8 +12,8 @@ use crate::daemon::protocol::{Request, Response};
 use crate::daemon::session::SessionMode;
 use crate::daemon::state::DaemonState;
 use crate::daemon::target_close::{
-    close_session_target, session_tab_close_requests, SessionTargetCloseError,
-    SessionTargetCloseRequest,
+    close_session_target, dispose_session_browser_context, session_tab_close_requests,
+    SessionTargetCloseError, SessionTargetCloseRequest,
 };
 use crate::daemon::target_lifecycle::ensure_target_watcher;
 use crate::daemon::target_lifecycle::remove_session_tab;
@@ -250,9 +250,6 @@ fn cancel_console_for_session(state: &DaemonState, session_name: &str) {
 }
 
 pub(crate) fn cancel_browser_background_tasks(state: &DaemonState, host: &str) {
-    if let Some((_, token)) = state.auto_attach_tasks.remove(host) {
-        token.cancel();
-    }
     if let Some((_, token)) = state.target_watchers.remove(host) {
         token.cancel();
     }
@@ -260,10 +257,9 @@ pub(crate) fn cancel_browser_background_tasks(state: &DaemonState, host: &str) {
 
 pub(crate) fn cancel_all_browser_background_tasks(state: &DaemonState) {
     let hosts: HashSet<String> = state
-        .auto_attach_tasks
+        .target_watchers
         .iter()
         .map(|entry| entry.key().clone())
-        .chain(state.target_watchers.iter().map(|entry| entry.key().clone()))
         .collect();
 
     for host in hosts {
@@ -303,42 +299,22 @@ pub(crate) async fn cleanup_browser_sessions_for_host(
             }
         }
 
-        if success && plan.mode == SessionMode::Isolated {
-            if let Some(ctx_id) = &plan.browser_context_id {
-                if let Some(cdp) = cdp.as_deref() {
-                    if let Err(error) =
-                        cdpkit::target::methods::DisposeBrowserContext::new(ctx_id.clone())
-                            .send(cdp)
-                            .await
-                    {
-                        report.push_error(cleanup_error_for_context(
-                            &plan.name,
-                            format!(
-                                "failed to dispose BrowserContext for session '{}': {}",
-                                plan.name, error
-                            ),
-                        ));
-                        warn!(
-                            session = %plan.name,
-                            error = %error,
-                            "browser cleanup BrowserContext dispose failed"
-                        );
-                        success = false;
-                    }
-                } else {
-                    report.push_error(cleanup_error_for_context(
-                        &plan.name,
-                        format!(
-                            "browser for session '{}' disconnected before disposing BrowserContext",
-                            plan.name
-                        ),
-                    ));
-                    warn!(
-                        session = %plan.name,
-                        "browser cleanup cannot dispose BrowserContext without browser connection"
-                    );
-                    success = false;
-                }
+        if success {
+            if let Err(error) = dispose_session_browser_context(
+                cdp.as_deref(),
+                &plan.name,
+                plan.mode,
+                plan.browser_context_id.as_deref(),
+            )
+            .await
+            {
+                report.push_error(cleanup_error_for_context(&plan.name, error.to_string()));
+                warn!(
+                    session = %plan.name,
+                    error = %error,
+                    "browser cleanup BrowserContext dispose failed"
+                );
+                success = false;
             }
         }
 

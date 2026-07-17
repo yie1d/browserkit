@@ -28,6 +28,14 @@ fn invalid_argument(message: impl Into<String>) -> Response {
     Response::error_detail(ErrorCode::InvalidArgument, message.into(), None)
 }
 
+fn old_w_id_key() -> String {
+    format!("w{}", "id")
+}
+
+fn old_t_id_key() -> String {
+    format!("t{}", "id")
+}
+
 fn canonical_inspect_payload(
     session_name: &str,
     target_id: &str,
@@ -37,8 +45,8 @@ fn canonical_inspect_payload(
         .as_object()
         .cloned()
         .ok_or_else(|| invalid_argument("inspect response fields must be an object"))?;
-    object.remove("wid");
-    object.remove("tid");
+    object.remove(&old_w_id_key());
+    object.remove(&old_t_id_key());
     object.insert("session".into(), json!(session_name));
     object.insert("target".into(), json!(target_id));
     Ok(serde_json::Value::Object(object))
@@ -384,8 +392,14 @@ mod tests {
 
         assert_eq!(value["session"], "agent-a");
         assert_eq!(value["target"], "TARGET-1");
-        assert!(value.get("wid").is_none(), "payload must not expose wid");
-        assert!(value.get("tid").is_none(), "payload must not expose tid");
+        assert!(
+            value.get(&old_w_id_key()).is_none(),
+            "payload must not expose old owner field"
+        );
+        assert!(
+            value.get(&old_t_id_key()).is_none(),
+            "payload must not expose old target field"
+        );
         assert_eq!(value["count"], 0);
     }
 

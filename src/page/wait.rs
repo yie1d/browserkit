@@ -95,7 +95,7 @@ impl WaitConditions {
             && js_fn.is_none()
         {
             return Err(BkError::InvalidRequest(
-                "page.wait requires at least one condition (--time, --selector, --text, --text-gone, --url, --load-state, --fn)".into()
+                "wait requires at least one condition (--time, --selector, --text, --text-gone, --url, --load-state, --fn)".into()
             ));
         }
 
@@ -200,7 +200,7 @@ pub async fn wait_for_conditions(
         if start.elapsed() >= timeout {
             let pending = conditions.pending_descriptions();
             return Err(BkError::Timeout(format!(
-                "page.wait timed out after {}ms; unsatisfied conditions: {}",
+                "wait timed out after {}ms; unsatisfied conditions: {}",
                 conditions.timeout,
                 pending.join(", ")
             )));
@@ -292,7 +292,7 @@ async fn check_poll_conditions(
         Ok(r) => {
             if let Some(details) = &r.exception_details {
                 tracing::debug!(
-                    "page.wait poll JS error: {}",
+                    "wait poll JS error: {}",
                     exception_message(details)
                 );
                 None
@@ -497,7 +497,7 @@ mod tests {
 
     #[test]
     fn wait_conditions_from_params_requires_at_least_one() {
-        let params = serde_json::json!({"wid": "abc"});
+        let params = serde_json::json!({"session": "agent"});
         let result = WaitConditions::from_params(&params);
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();

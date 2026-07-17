@@ -67,17 +67,10 @@ impl DialogPolicy {
 }
 
 /// Composite key for pending dialogs/subscriptions.
-///
-/// Session-native code uses (session_name, target_id). Legacy workspace code
-/// still uses (wid, tid) until those handlers migrate.
 pub type DialogKey = (String, String);
 
 pub fn session_dialog_key(session_name: &str, target_id: &str) -> DialogKey {
     (session_name.to_string(), target_id.to_string())
-}
-
-pub fn legacy_dialog_key(wid: &str, tid: &str) -> DialogKey {
-    (wid.to_string(), tid.to_string())
 }
 
 /// State container for dialog management, stored in DaemonState.
@@ -142,11 +135,6 @@ impl DialogState {
             .collect()
     }
 
-    /// Legacy workspace callers are still compiled during the migration.
-    pub fn list_pending_for_ws(&self, wid: &str) -> Vec<(String, PendingDialog)> {
-        self.list_pending_for_session(wid)
-    }
-
     /// Cancel and remove the subscription for a specific tab.
     pub fn cancel_subscription(&self, session_name: &str, target_id: &str) {
         if let Some((_, token)) = self
@@ -176,10 +164,6 @@ impl DialogState {
         self.policies.remove(session_name);
     }
 
-    /// Legacy workspace callers are still compiled during the migration.
-    pub fn cancel_all_for_ws(&self, wid: &str) {
-        self.cancel_all_for_session(wid);
-    }
 }
 
 impl Default for DialogState {
@@ -198,7 +182,7 @@ fn now_ts() -> u64 {
 
 /// Spawn a background task that subscribes to JavascriptDialogOpening events
 /// on a specific session (tab) and either records the dialog or auto-handles it
-/// based on the workspace's policy.
+/// based on the session's policy.
 ///
 /// Returns a CancellationToken to stop the subscription.
 pub fn spawn_dialog_subscription(
@@ -214,16 +198,6 @@ pub fn spawn_dialog_subscription(
         cdp,
         cdp_session_id,
     )
-}
-
-pub fn spawn_legacy_dialog_subscription(
-    state: Arc<DaemonState>,
-    cdp: Arc<cdpkit::CDP>,
-    cdp_session_id: String,
-    wid: String,
-    tid: String,
-) -> CancellationToken {
-    spawn_dialog_subscription_for_key(state, legacy_dialog_key(&wid, &tid), cdp, cdp_session_id)
 }
 
 fn spawn_dialog_subscription_for_key(
@@ -301,7 +275,7 @@ fn spawn_dialog_subscription_for_key(
                         opened_at: now_ts(),
                     };
 
-                    // Check workspace policy
+                    // Check session policy
                     let policy = state.dialog_state.get_policy(&key.0);
 
                     match policy {
@@ -406,7 +380,6 @@ pub fn build_handle_params(accept: bool, prompt_text: Option<&str>) -> cdpkit::p
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Arc;
 
     // ─── DialogPolicy ──────────────────────────────────────────────────
 
@@ -483,7 +456,7 @@ mod tests {
     }
 
     #[test]
-    fn dialog_state_list_pending_for_ws() {
+    fn dialog_state_list_pending_for_session() {
         let ds = DialogState::new();
         ds.set_pending("ws1", "tid1", PendingDialog {
             dialog_type: "alert".to_string(),
@@ -507,11 +480,11 @@ mod tests {
             opened_at: 3000,
         });
 
-        let ws1_dialogs = ds.list_pending_for_ws("ws1");
+        let ws1_dialogs = ds.list_pending_for_session("ws1");
         assert_eq!(ws1_dialogs.len(), 2);
-        let ws2_dialogs = ds.list_pending_for_ws("ws2");
+        let ws2_dialogs = ds.list_pending_for_session("ws2");
         assert_eq!(ws2_dialogs.len(), 1);
-        let ws3_dialogs = ds.list_pending_for_ws("ws3");
+        let ws3_dialogs = ds.list_pending_for_session("ws3");
         assert_eq!(ws3_dialogs.len(), 0);
     }
 
@@ -523,7 +496,7 @@ mod tests {
         // Override
         ds.set_policy("ws1", DialogPolicy::Accept);
         assert_eq!(ds.get_policy("ws1"), DialogPolicy::Accept);
-        // Other workspace still manual
+        // Other session still manual
         assert_eq!(ds.get_policy("ws2"), DialogPolicy::Manual);
     }
 
@@ -548,7 +521,7 @@ mod tests {
     #[test]
     fn duplicate_subscription_insert_cancels_old_token() {
         // Simulates what spawn_dialog_subscription does: if a subscription
-        // already exists for (wid, tid), the old token should be cancelled
+        // already exists for a session target, the old token should be cancelled
         // before the new one is stored.
         let ds = DialogState::new();
         let old_token = CancellationToken::new();
@@ -572,7 +545,7 @@ mod tests {
     }
 
     #[test]
-    fn dialog_state_cancel_all_for_ws() {
+    fn dialog_state_cancel_all_for_session() {
         let ds = DialogState::new();
         let t1 = CancellationToken::new();
         let t2 = CancellationToken::new();
@@ -590,7 +563,7 @@ mod tests {
         ds.set_policy("ws1", DialogPolicy::Accept);
         ds.set_policy("ws2", DialogPolicy::Dismiss);
 
-        ds.cancel_all_for_ws("ws1");
+        ds.cancel_all_for_session("ws1");
 
         // ws1 cleaned up
         assert!(t1.is_cancelled());
@@ -601,63 +574,6 @@ mod tests {
         // ws2 untouched
         assert!(!t3.is_cancelled());
         assert_eq!(ds.get_policy("ws2"), DialogPolicy::Dismiss);
-    }
-
-    #[test]
-    fn dialog_key_helpers_keep_session_and_legacy_keys_explicit() {
-        assert_eq!(
-            session_dialog_key("agent", "TARGET1"),
-            ("agent".to_string(), "TARGET1".to_string())
-        );
-        assert_eq!(
-            legacy_dialog_key("ws1", "tid1"),
-            ("ws1".to_string(), "tid1".to_string())
-        );
-        assert_ne!(
-            session_dialog_key("agent", "TARGET1"),
-            legacy_dialog_key("agent", "tid1")
-        );
-    }
-
-    #[test]
-    fn cancelling_session_key_does_not_remove_legacy_pending_dialog() {
-        let ds = DialogState::new();
-        let legacy = PendingDialog {
-            dialog_type: "alert".to_string(),
-            message: "legacy".to_string(),
-            default_prompt: None,
-            url: "https://legacy.test".to_string(),
-            opened_at: 1000,
-        };
-        let session = PendingDialog {
-            dialog_type: "confirm".to_string(),
-            message: "session".to_string(),
-            default_prompt: None,
-            url: "https://session.test".to_string(),
-            opened_at: 1001,
-        };
-        ds.pending.insert(legacy_dialog_key("ws1", "tid1"), legacy);
-        ds.pending
-            .insert(session_dialog_key("agent", "TARGET1"), session);
-
-        ds.cancel_subscription("agent", "TARGET1");
-
-        assert!(ds.get_pending("agent", "TARGET1").is_none());
-        assert_eq!(
-            ds.get_pending("ws1", "tid1").unwrap().message,
-            "legacy"
-        );
-    }
-
-    #[test]
-    fn legacy_dialog_subscription_wrapper_keeps_old_workspace_signature() {
-        let _legacy: fn(
-            Arc<DaemonState>,
-            Arc<cdpkit::CDP>,
-            String,
-            String,
-            String,
-        ) -> CancellationToken = spawn_legacy_dialog_subscription;
     }
 
     // ─── build_handle_params ───────────────────────────────────────────

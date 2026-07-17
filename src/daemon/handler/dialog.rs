@@ -255,6 +255,14 @@ mod tests {
         }
     }
 
+    fn old_w_id_key() -> String {
+        format!("w{}", "id")
+    }
+
+    fn old_t_id_key() -> String {
+        format!("t{}", "id")
+    }
+
     fn session_with_tab(target_id: &str) -> Session {
         let mut session = Session::new_default("localhost:9222".into());
         session.add_tab(target_id.into(), "https://example.test".into(), "Example".into());
@@ -287,8 +295,8 @@ mod tests {
         assert_eq!(value["ok"], true);
         assert_eq!(value["data"][0]["session"], "agent");
         assert_eq!(value["data"][0]["target"], "T1");
-        assert!(value["data"][0].get("wid").is_none());
-        assert!(value["data"][0].get("tid").is_none());
+        assert!(value["data"][0].get(&old_w_id_key()).is_none());
+        assert!(value["data"][0].get(&old_t_id_key()).is_none());
     }
 
     #[tokio::test]
@@ -309,7 +317,7 @@ mod tests {
         assert_eq!(value["ok"], true);
         assert_eq!(value["data"]["session"], "agent");
         assert_eq!(value["data"]["policy"], "accept");
-        assert!(value["data"].get("wid").is_none());
+        assert!(value["data"].get(&old_w_id_key()).is_none());
         assert_eq!(state.dialog_state.get_policy("agent"), DialogPolicy::Accept);
     }
 

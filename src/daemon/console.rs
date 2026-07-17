@@ -7,7 +7,17 @@ use tokio_util::sync::CancellationToken;
 use tracing::debug;
 
 use crate::daemon::state::DaemonState;
-use crate::page::{ConsoleEntry, CONSOLE_LOG_MAX};
+
+/// Maximum number of console entries to buffer per tab.
+pub const CONSOLE_LOG_MAX: usize = 200;
+
+/// A single console log entry.
+#[derive(Debug, Clone)]
+pub struct ConsoleEntry {
+    pub level: String,
+    pub text: String,
+    pub timestamp: f64,
+}
 
 /// Spawn a background task that subscribes to `Runtime.consoleAPICalled` events
 /// for a session and buffers entries into the tab's `console_log`.
@@ -27,22 +37,6 @@ pub fn spawn_console_subscription(
         cdp,
         cdp_session_id,
         record_console_entry_for_session,
-    )
-}
-
-pub fn spawn_legacy_console_subscription(
-    state: Arc<DaemonState>,
-    cdp: Arc<cdpkit::CDP>,
-    cdp_session_id: String,
-    wid: String,
-    tid: String,
-) -> CancellationToken {
-    spawn_console_subscription_for_key(
-        state,
-        (wid, tid),
-        cdp,
-        cdp_session_id,
-        record_console_entry_for_workspace,
     )
 }
 
@@ -126,22 +120,6 @@ pub fn record_console_entry_for_session(
     true
 }
 
-pub fn record_console_entry_for_workspace(
-    state: &DaemonState,
-    wid: &str,
-    tid: &str,
-    entry: ConsoleEntry,
-) -> bool {
-    let Some(workspace) = state.workspaces.get(wid) else {
-        return false;
-    };
-    let Some(tab) = workspace.tabs.get(tid) else {
-        return false;
-    };
-    push_console_entry(tab.console_log.clone(), entry);
-    true
-}
-
 fn push_console_entry(
     console_log: std::sync::Arc<parking_lot::Mutex<std::collections::VecDeque<ConsoleEntry>>>,
     entry: ConsoleEntry,
@@ -169,75 +147,17 @@ pub fn cancel_console_subscription(
     }
 }
 
-pub fn cancel_legacy_console_subscription(state: &DaemonState, wid: &str, tid: &str) -> bool {
-    cancel_console_subscription(state, wid, tid)
-}
-
-pub fn cancel_all_legacy_console_for_workspace(state: &DaemonState, wid: &str) -> usize {
-    let keys: Vec<_> = state
-        .console_subscription_tokens
-        .iter()
-        .filter(|entry| entry.key().0.as_str() == wid)
-        .map(|entry| entry.key().clone())
-        .collect();
-
-    let mut cancelled = 0;
-    for key in keys {
-        if let Some((_, token)) = state.console_subscription_tokens.remove(&key) {
-            token.cancel();
-            cancelled += 1;
-        }
-    }
-    cancelled
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{
-        cancel_all_legacy_console_for_workspace, cancel_legacy_console_subscription,
-        record_console_entry_for_session, record_console_entry_for_workspace,
-        spawn_legacy_console_subscription,
-    };
+    use super::{record_console_entry_for_session, ConsoleEntry};
     use crate::daemon::session::Session;
     use crate::daemon::state::DaemonState;
-    use crate::page::{ConsoleEntry, Tab};
-    use crate::workspace::{Workspace, WorkspaceMode};
-    use std::collections::HashMap;
-    use std::sync::Arc;
-    use tokio_util::sync::CancellationToken;
 
     fn console_entry(text: &str) -> ConsoleEntry {
         ConsoleEntry {
             level: "log".into(),
             text: text.into(),
             timestamp: 1.0,
-        }
-    }
-
-    fn workspace_with_tab(wid: &str, tid: &str) -> Workspace {
-        let tab = Tab {
-            tid: tid.into(),
-            target_id: "TARGET-LEGACY".into(),
-            cdp_session_id: "CDP-LEGACY".into(),
-            url: "https://legacy.test".into(),
-            title: "Legacy".into(),
-            managed: false,
-            alias: "t1".into(),
-            console_log: Tab::new_console_log(),
-        };
-        let mut tabs = HashMap::new();
-        tabs.insert(tid.into(), tab);
-        Workspace {
-            wid: wid.into(),
-            browser_host: "localhost:9222".into(),
-            browser_context_id: None,
-            mode: WorkspaceMode::Attached,
-            label: None,
-            tabs,
-            active_tab: Some(tid.into()),
-            created_at: 1,
-            last_active: 1,
-            next_alias_seq: 1,
         }
     }
 
@@ -261,83 +181,4 @@ mod tests {
         assert_eq!(log[0].text, "session log");
     }
 
-    #[test]
-    fn legacy_console_routing_appends_to_workspace_tab_log_by_tid() {
-        let state = DaemonState::new();
-        state
-            .workspaces
-            .insert("ws1".into(), workspace_with_tab("ws1", "tid1"));
-
-        assert!(record_console_entry_for_workspace(
-            &state,
-            "ws1",
-            "tid1",
-            console_entry("legacy log"),
-        ));
-
-        let workspace = state.workspaces.get("ws1").unwrap();
-        let log = workspace.tabs.get("tid1").unwrap().console_log.lock();
-        assert_eq!(log.len(), 1);
-        assert_eq!(log[0].text, "legacy log");
-    }
-
-    #[test]
-    fn legacy_console_subscription_wrapper_keeps_old_workspace_signature() {
-        let _legacy: fn(
-            Arc<DaemonState>,
-            Arc<cdpkit::CDP>,
-            String,
-            String,
-            String,
-        ) -> CancellationToken = spawn_legacy_console_subscription;
-    }
-
-    #[test]
-    fn target_level_legacy_console_cancellation_removes_entry_and_cancels_token() {
-        let state = DaemonState::new();
-        let token = CancellationToken::new();
-        state
-            .console_subscription_tokens
-            .insert(("ws1".into(), "tid1".into()), token.clone());
-
-        assert!(cancel_legacy_console_subscription(&state, "ws1", "tid1"));
-
-        assert!(token.is_cancelled());
-        assert!(!state
-            .console_subscription_tokens
-            .contains_key(&("ws1".to_string(), "tid1".to_string())));
-    }
-
-    #[test]
-    fn workspace_level_legacy_console_cancellation_removes_only_workspace_entries() {
-        let state = DaemonState::new();
-        let ws_token_a = CancellationToken::new();
-        let ws_token_b = CancellationToken::new();
-        let other_token = CancellationToken::new();
-        state
-            .console_subscription_tokens
-            .insert(("ws1".into(), "tid1".into()), ws_token_a.clone());
-        state
-            .console_subscription_tokens
-            .insert(("ws1".into(), "tid2".into()), ws_token_b.clone());
-        state
-            .console_subscription_tokens
-            .insert(("ws2".into(), "tid3".into()), other_token.clone());
-
-        let cancelled = cancel_all_legacy_console_for_workspace(&state, "ws1");
-
-        assert_eq!(cancelled, 2);
-        assert!(ws_token_a.is_cancelled());
-        assert!(ws_token_b.is_cancelled());
-        assert!(!other_token.is_cancelled());
-        assert!(!state
-            .console_subscription_tokens
-            .contains_key(&("ws1".to_string(), "tid1".to_string())));
-        assert!(!state
-            .console_subscription_tokens
-            .contains_key(&("ws1".to_string(), "tid2".to_string())));
-        assert!(state
-            .console_subscription_tokens
-            .contains_key(&("ws2".to_string(), "tid3".to_string())));
-    }
 }

@@ -2,13 +2,15 @@ use std::sync::Arc;
 
 use serde_json::json;
 
-use crate::daemon::auto_attach::should_exclude_target;
 use crate::daemon::console::spawn_console_subscription;
 use crate::daemon::dialog::spawn_dialog_subscription;
 use crate::daemon::protocol::{Request, Response};
 use crate::daemon::session::{Session, SessionMode, SessionTab};
 use crate::daemon::state::DaemonState;
-use crate::daemon::target_lifecycle::{find_target_owner, register_session_tab};
+use crate::daemon::target_close::detach_unregistered_target_session;
+use crate::daemon::target_lifecycle::{
+    find_target_owner, is_trackable_page_target, register_session_tab,
+};
 use crate::error::ErrorCode;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -153,7 +155,7 @@ pub async fn handle_attach(req: &Request, state: &Arc<DaemonState>) -> Response 
 
     let candidates: Vec<AttachCandidate> = targets
         .iter()
-        .filter(|target| !should_exclude_target(&target.type_, &target.url))
+        .filter(|target| is_trackable_page_target(&target.type_))
         .map(attach_candidate_from_target_info)
         .collect();
 
@@ -202,10 +204,7 @@ pub async fn handle_attach(req: &Request, state: &Arc<DaemonState>) -> Response 
         .send(&cdp_session)
         .await
     {
-        let _ = cdpkit::target::methods::DetachFromTarget::new()
-            .with_session_id(cdp_session_id)
-            .send(cdp.as_ref())
-            .await;
+        let _ = detach_unregistered_target_session(cdp.as_ref(), cdp_session_id).await;
         return error_response(
             ErrorCode::DaemonError,
             format!("failed to enable Page: {error}"),
@@ -215,10 +214,7 @@ pub async fn handle_attach(req: &Request, state: &Arc<DaemonState>) -> Response 
         .send(&cdp_session)
         .await
     {
-        let _ = cdpkit::target::methods::DetachFromTarget::new()
-            .with_session_id(cdp_session_id)
-            .send(cdp.as_ref())
-            .await;
+        let _ = detach_unregistered_target_session(cdp.as_ref(), cdp_session_id).await;
         return error_response(
             ErrorCode::DaemonError,
             format!("failed to enable page lifecycle events: {error}"),
@@ -228,10 +224,7 @@ pub async fn handle_attach(req: &Request, state: &Arc<DaemonState>) -> Response 
         .send(&cdp_session)
         .await
     {
-        let _ = cdpkit::target::methods::DetachFromTarget::new()
-            .with_session_id(cdp_session_id)
-            .send(cdp.as_ref())
-            .await;
+        let _ = detach_unregistered_target_session(cdp.as_ref(), cdp_session_id).await;
         return error_response(
             ErrorCode::DaemonError,
             format!("failed to enable Runtime: {error}"),
@@ -241,10 +234,7 @@ pub async fn handle_attach(req: &Request, state: &Arc<DaemonState>) -> Response 
         .send(&cdp_session)
         .await
     {
-        let _ = cdpkit::target::methods::DetachFromTarget::new()
-            .with_session_id(cdp_session_id)
-            .send(cdp.as_ref())
-            .await;
+        let _ = detach_unregistered_target_session(cdp.as_ref(), cdp_session_id).await;
         return error_response(
             ErrorCode::DaemonError,
             format!("failed to enable Network: {error}"),
@@ -259,10 +249,7 @@ pub async fn handle_attach(req: &Request, state: &Arc<DaemonState>) -> Response 
     );
 
     if let Err(code) = register_session_tab(state, session_name, tab) {
-        let _ = cdpkit::target::methods::DetachFromTarget::new()
-            .with_session_id(attach_response.session_id)
-            .send(cdp.as_ref())
-            .await;
+        let _ = detach_unregistered_target_session(cdp.as_ref(), attach_response.session_id).await;
         return error_response(
             code,
             format!("target '{}' is already attached", candidate.target_id),

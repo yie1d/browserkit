@@ -218,16 +218,19 @@ mod tests {
 
     #[test]
     fn build_request_with_params() {
-        let req = build_request("ws.new", json!({"label": "test"}));
-        assert_eq!(req.cmd, "ws.new");
-        assert_eq!(req.params["label"], "test");
+        let req = build_request("session.list", json!({"verbose": true}));
+        assert_eq!(req.cmd, "session.list");
+        assert_eq!(req.params["verbose"], true);
     }
 
     #[test]
     fn build_request_with_nested_params() {
-        let req = build_request("goto", json!({"wid": "a3f2", "url": "https://example.com"}));
-        assert_eq!(req.cmd, "goto");
-        assert_eq!(req.params["wid"], "a3f2");
+        let req = build_request(
+            "open",
+            json!({"session": "agent", "url": "https://example.com"}),
+        );
+        assert_eq!(req.cmd, "open");
+        assert_eq!(req.params["session"], "agent");
         assert_eq!(req.params["url"], "https://example.com");
     }
 

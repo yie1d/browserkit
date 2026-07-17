@@ -235,8 +235,8 @@ mod tests {
     #[test]
     fn request_roundtrip() {
         let req = Request {
-            cmd: "ws.new".into(),
-            params: json!({"label": "test"}),
+            cmd: "session.list".into(),
+            params: json!({"verbose": true}),
             token: None,
         };
         let json = serde_json::to_string(&req).unwrap();
@@ -246,7 +246,7 @@ mod tests {
 
     #[test]
     fn response_ok_roundtrip() {
-        let resp = Response::ok(json!({"wid": "a3f2"}));
+        let resp = Response::ok(json!({"session": "default"}));
         let json = serde_json::to_string(&resp).unwrap();
         let back: Response = serde_json::from_str(&json).unwrap();
         assert_eq!(resp, back);
@@ -276,12 +276,14 @@ mod tests {
 
     #[test]
     fn from_bkerror_produces_error_response() {
-        let e = BkError::WorkspaceNotFound("a3f2".into());
+        let e = BkError::InvalidRequest("missing command".into());
         let resp: Response = e.into();
         assert!(!resp.ok);
         assert_eq!(
             resp.error,
-            Some(serde_json::Value::String("workspace not found: a3f2".into()))
+            Some(serde_json::Value::String(
+                "invalid request: missing command".into()
+            ))
         );
     }
 

@@ -11,6 +11,7 @@ use serde_json::json;
 use crate::daemon::protocol::{Request, Response};
 use crate::daemon::session::SessionTab;
 use crate::daemon::state::DaemonState;
+use crate::daemon::target_close::detach_unregistered_target_session;
 use crate::daemon::target_lifecycle::{
     emit_session_tab_created, enable_session_tab_domains, register_initialized_session_tab,
     spawn_session_tab_subscriptions, SessionTabRegistration,
@@ -200,10 +201,7 @@ pub async fn handle_open(req: &Request, state: &Arc<DaemonState>) -> Response {
     };
 
     if let Err(error) = enable_session_tab_domains(cdp.as_ref(), &session_id).await {
-        let _ = cdpkit::target::methods::DetachFromTarget::new()
-            .with_session_id(session_id)
-            .send(cdp.as_ref())
-            .await;
+        let _ = detach_unregistered_target_session(cdp.as_ref(), session_id).await;
         return Response::error_detail(
             ErrorCode::DaemonError,
             format!("failed to initialize new tab session: {error}"),
@@ -220,10 +218,7 @@ pub async fn handle_open(req: &Request, state: &Arc<DaemonState>) -> Response {
     ) {
         Ok(registration) => registration,
         Err(code) => {
-            let _ = cdpkit::target::methods::DetachFromTarget::new()
-                .with_session_id(session_id)
-                .send(cdp.as_ref())
-                .await;
+            let _ = detach_unregistered_target_session(cdp.as_ref(), session_id).await;
             return Response::error_detail(
                 code,
                 format!("failed to register opened target '{}'", target_id),
@@ -233,10 +228,7 @@ pub async fn handle_open(req: &Request, state: &Arc<DaemonState>) -> Response {
     };
 
     if registration == OpenTargetRegistration::AlreadyTracked {
-        let _ = cdpkit::target::methods::DetachFromTarget::new()
-            .with_session_id(session_id)
-            .send(cdp.as_ref())
-            .await;
+        let _ = detach_unregistered_target_session(cdp.as_ref(), session_id).await;
     } else {
         spawn_session_tab_subscriptions(
             Arc::clone(state),

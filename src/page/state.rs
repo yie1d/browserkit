@@ -131,7 +131,7 @@ pub async fn get_page_state(
 
     if let Some(details) = &resp.exception_details {
         return Err(BkError::Other(format!(
-            "page.state JS error: {}",
+            "state JS error: {}",
             exception_message(details)
         )));
     }
@@ -141,10 +141,10 @@ pub async fn get_page_state(
         .value
         .as_ref()
         .and_then(|v| v.as_str())
-        .ok_or_else(|| BkError::Other("page.state: no value returned from evaluate".into()))?;
+        .ok_or_else(|| BkError::Other("state: no value returned from evaluate".into()))?;
 
     let mut elements: Vec<ElementInfo> =
-        serde_json::from_str(json_str).map_err(|e| BkError::Other(format!("page.state: failed to parse element list: {}", e)))?;
+        serde_json::from_str(json_str).map_err(|e| BkError::Other(format!("state: failed to parse element list: {}", e)))?;
 
     // Phase 2: Get backendNodeIds
     let backend_ids = get_backend_node_ids(cdp, session_id, elements.len()).await;
@@ -178,7 +178,7 @@ pub async fn get_page_elements_only(
 
     if let Some(details) = &resp.exception_details {
         return Err(BkError::Other(format!(
-            "page.state JS error: {}",
+            "state JS error: {}",
             exception_message(details)
         )));
     }
@@ -188,10 +188,10 @@ pub async fn get_page_elements_only(
         .value
         .as_ref()
         .and_then(|v| v.as_str())
-        .ok_or_else(|| BkError::Other("page.state: no value returned from evaluate".into()))?;
+        .ok_or_else(|| BkError::Other("state: no value returned from evaluate".into()))?;
 
     let elements: Vec<ElementInfo> =
-        serde_json::from_str(json_str).map_err(|e| BkError::Other(format!("page.state: failed to parse element list: {}", e)))?;
+        serde_json::from_str(json_str).map_err(|e| BkError::Other(format!("state: failed to parse element list: {}", e)))?;
 
     Ok(elements)
 }
@@ -404,7 +404,7 @@ pub async fn get_full_page_state(
 
     if let Some(details) = &resp.exception_details {
         return Err(BkError::Other(format!(
-            "page.state JS error: {}",
+            "state JS error: {}",
             exception_message(details)
         )));
     }
@@ -414,10 +414,10 @@ pub async fn get_full_page_state(
         .value
         .as_ref()
         .and_then(|v| v.as_str())
-        .ok_or_else(|| BkError::Other("page.state: no value returned from evaluate".into()))?;
+        .ok_or_else(|| BkError::Other("state: no value returned from evaluate".into()))?;
 
     let mut state: FullPageState = serde_json::from_str(json_str)
-        .map_err(|e| BkError::Other(format!("page.state: failed to parse full state: {}", e)))?;
+        .map_err(|e| BkError::Other(format!("state: failed to parse full state: {}", e)))?;
 
     // Fetch backendNodeIds for stable element references
     let backend_ids = get_backend_node_ids(cdp, session_id, state.elements.len()).await;
@@ -461,7 +461,7 @@ async fn get_backend_node_ids(
     }
 
     let array_object_id = resp.result.object_id.ok_or_else(|| {
-        BkError::Other("page.state refs: no objectId for element array".into())
+        BkError::Other("state refs: no objectId for element array".into())
     })?;
 
     // Get indexed properties of the array
@@ -565,7 +565,7 @@ pub async fn search_page(
 
     if let Some(details) = &resp.exception_details {
         return Err(BkError::Other(format!(
-            "page.search JS error: {}",
+            "search JS error: {}",
             exception_message(details)
         )));
     }
@@ -575,10 +575,10 @@ pub async fn search_page(
         .value
         .as_ref()
         .and_then(|v| v.as_str())
-        .ok_or_else(|| BkError::Other("page.search: no value returned from evaluate".into()))?;
+        .ok_or_else(|| BkError::Other("search: no value returned from evaluate".into()))?;
 
     let matches: Vec<SearchMatch> = serde_json::from_str(json_str)
-        .map_err(|e| BkError::Other(format!("page.search: failed to parse results: {}", e)))?;
+        .map_err(|e| BkError::Other(format!("search: failed to parse results: {}", e)))?;
 
     Ok(matches)
 }
@@ -608,7 +608,7 @@ pub async fn search_page_advanced(
 
     if let Some(details) = &resp.exception_details {
         return Err(BkError::Other(format!(
-            "page.search JS error: {}",
+            "search JS error: {}",
             exception_message(details)
         )));
     }
@@ -618,10 +618,10 @@ pub async fn search_page_advanced(
         .value
         .as_ref()
         .and_then(|v| v.as_str())
-        .ok_or_else(|| BkError::Other("page.search: no value returned from evaluate".into()))?;
+        .ok_or_else(|| BkError::Other("search: no value returned from evaluate".into()))?;
 
     let matches: Vec<SearchMatch> = serde_json::from_str(json_str)
-        .map_err(|e| BkError::Other(format!("page.search: failed to parse results: {}", e)))?;
+        .map_err(|e| BkError::Other(format!("search: failed to parse results: {}", e)))?;
 
     Ok(matches)
 }

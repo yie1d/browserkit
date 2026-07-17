@@ -28,7 +28,7 @@ pub enum TabOwnership {
     Attached,
 }
 
-pub type ConsoleLog = Arc<parking_lot::Mutex<VecDeque<crate::page::ConsoleEntry>>>;
+pub type ConsoleLog = Arc<parking_lot::Mutex<VecDeque<crate::daemon::console::ConsoleEntry>>>;
 
 /// A tab within a session.
 #[derive(Debug, Clone, Serialize, Deserialize)]

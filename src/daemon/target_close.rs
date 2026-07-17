@@ -1,4 +1,4 @@
-use crate::daemon::session::{SessionTab, TabOwnership};
+use crate::daemon::session::{SessionMode, SessionTab, TabOwnership};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionTargetCloseRequest {
@@ -37,6 +37,17 @@ pub enum SessionTargetCloseError {
     },
 }
 
+#[derive(Debug)]
+pub enum SessionContextDisposeError {
+    BrowserDisconnected {
+        session: String,
+    },
+    Cdp {
+        session: String,
+        source: cdpkit::CdpError,
+    },
+}
+
 impl std::fmt::Display for SessionTargetCloseError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -58,6 +69,25 @@ impl std::fmt::Display for SessionTargetCloseError {
 }
 
 impl std::error::Error for SessionTargetCloseError {}
+
+impl std::fmt::Display for SessionContextDisposeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::BrowserDisconnected { session } => write!(
+                f,
+                "browser for session '{session}' disconnected before disposing BrowserContext"
+            ),
+            Self::Cdp { session, source } => {
+                write!(
+                    f,
+                    "failed to dispose BrowserContext for session '{session}': {source}"
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for SessionContextDisposeError {}
 
 pub fn session_target_close_action(
     request: &SessionTargetCloseRequest,
@@ -121,6 +151,43 @@ pub async fn close_session_target(
         SessionTargetCloseAction::AlreadyDetached => {}
     }
     Ok(action)
+}
+
+pub async fn detach_unregistered_target_session(
+    cdp: &cdpkit::CDP,
+    cdp_session_id: String,
+) -> Result<(), cdpkit::CdpError> {
+    cdpkit::target::methods::DetachFromTarget::new()
+        .with_session_id(cdp_session_id)
+        .send(cdp)
+        .await
+}
+
+pub async fn dispose_session_browser_context(
+    cdp: Option<&cdpkit::CDP>,
+    session_name: &str,
+    mode: SessionMode,
+    browser_context_id: Option<&str>,
+) -> Result<bool, SessionContextDisposeError> {
+    if mode != SessionMode::Isolated {
+        return Ok(false);
+    }
+
+    let Some(ctx_id) = browser_context_id else {
+        return Ok(false);
+    };
+
+    let cdp = cdp.ok_or_else(|| SessionContextDisposeError::BrowserDisconnected {
+        session: session_name.to_string(),
+    })?;
+    cdpkit::target::methods::DisposeBrowserContext::new(ctx_id.to_string())
+        .send(cdp)
+        .await
+        .map_err(|source| SessionContextDisposeError::Cdp {
+            session: session_name.to_string(),
+            source,
+        })?;
+    Ok(true)
 }
 
 #[cfg(test)]
@@ -193,6 +260,28 @@ mod tests {
                 action: "close target",
                 ..
             }
+        ));
+    }
+
+    #[tokio::test]
+    async fn default_session_context_disposal_is_noop_without_browser() {
+        let disposed = dispose_session_browser_context(None, "default", SessionMode::Default, None)
+            .await
+            .unwrap();
+
+        assert!(!disposed);
+    }
+
+    #[tokio::test]
+    async fn isolated_session_context_disposal_requires_browser_when_context_exists() {
+        let error =
+            dispose_session_browser_context(None, "agent", SessionMode::Isolated, Some("CTX"))
+                .await
+                .unwrap_err();
+
+        assert!(matches!(
+            error,
+            SessionContextDisposeError::BrowserDisconnected { .. }
         ));
     }
 }

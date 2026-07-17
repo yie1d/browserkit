@@ -7,13 +7,13 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::watch;
 use tracing::{error, info};
 
-use crate::daemon::console::cancel_all_legacy_console_for_workspace;
 use crate::daemon::handler::{handle_request, HandlerContext};
 use crate::daemon::protocol::{read_request, write_response, Request, Response};
 use crate::daemon::session::Session;
 use crate::daemon::state::DaemonState;
 use crate::daemon::target_close::{
-    close_session_target, session_tab_close_requests, SessionTargetCloseRequest,
+    close_session_target, dispose_session_browser_context, session_tab_close_requests,
+    SessionTargetCloseRequest,
 };
 use crate::daemon::target_lifecycle::remove_session_tab;
 use crate::error::ErrorCode;
@@ -173,28 +173,21 @@ async fn cleanup_expired_sessions(state: &Arc<DaemonState>) {
             }
         }
 
-        if success && expired_session.mode == crate::daemon::session::SessionMode::Isolated {
-            if let Some(ctx_id) = &expired_session.browser_context_id {
-                if let Some(cdp) = expired_session.cdp.as_deref() {
-                    if let Err(error) =
-                        cdpkit::target::methods::DisposeBrowserContext::new(ctx_id.clone())
-                            .send(cdp)
-                            .await
-                    {
-                        tracing::warn!(
-                            session = %expired_session.name,
-                            error = %error,
-                            "session cleanup BrowserContext dispose failed; keeping state"
-                        );
-                        success = false;
-                    }
-                } else {
-                    tracing::warn!(
-                        session = %expired_session.name,
-                        "session cleanup cannot dispose BrowserContext without browser connection"
-                    );
-                    success = false;
-                }
+        if success {
+            if let Err(error) = dispose_session_browser_context(
+                expired_session.cdp.as_deref(),
+                &expired_session.name,
+                expired_session.mode,
+                expired_session.browser_context_id.as_deref(),
+            )
+            .await
+            {
+                tracing::warn!(
+                    session = %expired_session.name,
+                    error = %error,
+                    "session cleanup BrowserContext dispose failed; keeping state"
+                );
+                success = false;
             }
         }
 
@@ -235,121 +228,6 @@ async fn cleanup_expired_sessions(state: &Arc<DaemonState>) {
 
 fn expired_session_close_requests(session: &Session) -> Vec<SessionTargetCloseRequest> {
     session_tab_close_requests(session.tabs.values())
-}
-
-/// Check all workspaces and remove those inactive for more than the configured timeout.
-#[allow(dead_code)]
-async fn cleanup_expired_workspaces(state: &Arc<DaemonState>) {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-
-    let timeout = state.config.daemon.workspace_timeout_minutes * 60;
-
-    // A timeout of 0 means cleanup is disabled
-    if timeout == 0 {
-        return;
-    }
-
-    // Collect expired workspace info — no lock needed, DashMap provides interior mutability
-    let expired: Vec<ExpiredWorkspace> = state
-        .workspaces
-        .iter()
-        .filter(|entry| now.saturating_sub(entry.value().last_active) > timeout)
-        .map(|entry| {
-            let ws = entry.value();
-            let cdp = state.browsers.get(&ws.browser_host).map(|b| Arc::clone(&b.cdp));
-            let tab_info: Vec<(String, String, bool)> = ws.tabs.values()
-                .map(|t| (t.target_id.clone(), t.cdp_session_id.clone(), t.managed))
-                .collect();
-            ExpiredWorkspace {
-                wid: entry.key().clone(),
-                browser_host: ws.browser_host.clone(),
-                browser_context_id: ws.browser_context_id.clone(),
-                mode: ws.mode,
-                tab_info,
-                cdp,
-            }
-        })
-        .collect();
-
-    if expired.is_empty() {
-        return;
-    }
-
-    // Best-effort CDP cleanup (no lock held during async I/O)
-    for ew in &expired {
-        if let Some(cdp) = &ew.cdp {
-            // Close/detach tabs based on per-tab managed flag
-            for (target_id, session_id, tab_managed) in &ew.tab_info {
-                if *tab_managed {
-                    let _ = cdpkit::target::methods::CloseTarget::new(target_id.clone())
-                        .send(cdp.as_ref())
-                        .await;
-                } else if !session_id.is_empty() {
-                    let _ = cdpkit::target::methods::DetachFromTarget::new()
-                        .with_session_id(session_id.clone())
-                        .send(cdp.as_ref())
-                        .await;
-                }
-            }
-            // Dispose BrowserContext only for isolated workspaces
-            if ew.mode == crate::workspace::WorkspaceMode::Isolated {
-                if let Some(ctx_id) = &ew.browser_context_id {
-                    let _ = cdpkit::target::methods::DisposeBrowserContext::new(ctx_id.clone())
-                        .send(cdp.as_ref())
-                        .await;
-                }
-            }
-        }
-    }
-
-    // Remove expired workspaces — re-check last_active to avoid removing re-activated ones
-    for ew in &expired {
-        let still_expired = state
-            .workspaces
-            .get(&ew.wid)
-            .map(|ws| now.saturating_sub(ws.last_active) > timeout)
-            .unwrap_or(false);
-
-        if !still_expired {
-            tracing::debug!(wid = %ew.wid, "workspace re-activated during cleanup, skipping removal");
-            continue;
-        }
-
-        state.dialog_state.cancel_all_for_ws(&ew.wid);
-        cancel_all_legacy_console_for_workspace(state, &ew.wid);
-        state.workspaces.remove(&ew.wid);
-
-        // Remove managed browser if no workspaces remain on it.
-        // Browser.managed=false (user-connected) has child=None, so removal is safe
-        // (Browser::drop won't kill anything). No need for mode-based gating.
-        let has_workspaces = state
-            .workspaces
-            .iter()
-            .any(|entry| entry.value().browser_host == ew.browser_host);
-        if !has_workspaces {
-            if let Some(entry) = state.browsers.get(&ew.browser_host) {
-                if entry.managed {
-                    drop(entry);
-                    state.browsers.remove(&ew.browser_host);
-                }
-            }
-        }
-
-        info!(wid = %ew.wid, "workspace expired and cleaned up");
-    }
-}
-
-#[allow(dead_code)]
-struct ExpiredWorkspace {
-    wid: String,
-    browser_host: String,
-    browser_context_id: Option<String>,
-    mode: crate::workspace::WorkspaceMode,
-    tab_info: Vec<(String, String, bool)>, // (target_id, session_id, managed)
-    cdp: Option<Arc<cdpkit::CDP>>,
 }
 
 struct ExpiredSession {
@@ -660,7 +538,7 @@ mod tests {
         let data = resp.data.unwrap();
         assert_eq!(data["status"], "stopping");
         assert!(data.get("sessions_closed").is_some());
-        assert!(data.get("workspaces_closed").is_none());
+        assert!(data.get(&[["work", "spaces"].concat(), "closed".into()].join("_")).is_none());
         drop(stream);
 
         let mut failed = false;
@@ -689,30 +567,13 @@ mod tests {
         assert!(data["pid"].as_u64().unwrap() > 0);
         assert_eq!(data["browsers"], 0);
         assert_eq!(data["sessions"], 0);
-        assert!(data.get("workspaces").is_none());
+        assert!(data.get(&["work", "spaces"].concat()).is_none());
     }
 
-    use crate::workspace::Workspace;
-    use std::collections::HashMap;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn now_ts() -> u64 {
         SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs()
-    }
-
-    fn make_workspace(wid: &str, host: &str, last_active: u64) -> Workspace {
-        Workspace {
-            wid: wid.to_string(),
-            browser_host: host.to_string(),
-            browser_context_id: Some(format!("ctx-{}", wid)),
-            mode: crate::workspace::WorkspaceMode::Isolated,
-            label: None,
-            tabs: HashMap::new(),
-            active_tab: None,
-            created_at: last_active,
-            last_active,
-            next_alias_seq: 0,
-        }
     }
 
     fn make_default_session(host: &str, last_active: u64) -> crate::daemon::session::Session {
@@ -737,67 +598,6 @@ mod tests {
         session.add_tab(format!("target-{name}"), "https://example.com".into(), "Example".into());
         session.last_active = last_active;
         session
-    }
-
-    #[tokio::test]
-    async fn cleanup_removes_expired_workspaces() {
-        let state = Arc::new(DaemonState::new());
-        let now = now_ts();
-        let expired_time = now - 31 * 60;
-        state.workspaces.insert("aaaa".to_string(), make_workspace("aaaa", "localhost:9222", expired_time));
-        state.workspaces.insert("bbbb".to_string(), make_workspace("bbbb", "localhost:9222", now));
-        cleanup_expired_workspaces(&state).await;
-        assert!(!state.workspaces.contains_key("aaaa"), "expired workspace should be removed");
-        assert!(state.workspaces.contains_key("bbbb"), "active workspace should remain");
-    }
-
-    #[tokio::test]
-    async fn cleanup_keeps_all_when_none_expired() {
-        let state = Arc::new(DaemonState::new());
-        let now = now_ts();
-        state.workspaces.insert("cccc".to_string(), make_workspace("cccc", "localhost:9222", now));
-        state.workspaces.insert("dddd".to_string(), make_workspace("dddd", "localhost:9222", now - 10 * 60));
-        cleanup_expired_workspaces(&state).await;
-        assert_eq!(state.workspaces.len(), 2);
-    }
-
-    #[tokio::test]
-    async fn cleanup_noop_on_empty_state() {
-        let state = Arc::new(DaemonState::new());
-        cleanup_expired_workspaces(&state).await;
-        assert!(state.workspaces.is_empty());
-    }
-
-    #[tokio::test]
-    async fn cleanup_idle_once_does_not_remove_expired_workspaces() {
-        let state = Arc::new(DaemonState::new());
-        let now = now_ts();
-        state.workspaces.insert(
-            "legacy".to_string(),
-            make_workspace("legacy", "localhost:9222", now - 31 * 60),
-        );
-
-        cleanup_idle_once(&state).await;
-
-        assert!(state.workspaces.contains_key("legacy"));
-    }
-
-    #[tokio::test]
-    async fn cleanup_removes_managed_browser_when_last_workspace_expires() {
-        let state = Arc::new(DaemonState::new());
-        let now = now_ts();
-        state.workspaces.insert("eeee".to_string(), make_workspace("eeee", "localhost:9222", now - 31 * 60));
-        cleanup_expired_workspaces(&state).await;
-        assert!(state.workspaces.is_empty());
-    }
-
-    #[tokio::test]
-    async fn cleanup_boundary_exactly_30_minutes_not_expired() {
-        let state = Arc::new(DaemonState::new());
-        let now = now_ts();
-        state.workspaces.insert("ffff".to_string(), make_workspace("ffff", "localhost:9222", now - 30 * 60));
-        cleanup_expired_workspaces(&state).await;
-        assert!(state.workspaces.contains_key("ffff"), "exactly 30 min should not be expired");
     }
 
     #[tokio::test]

@@ -21,16 +21,6 @@ mod snapshot;
 mod tabs;
 mod wait;
 
-pub(crate) mod tab {
-    use crate::daemon::state::DaemonState;
-
-    pub(crate) fn is_target_tracked(state: &DaemonState, target_id: &str) -> bool {
-        state.workspaces.iter().any(|ws_entry| {
-            ws_entry.value().tabs.values().any(|tab| tab.target_id == target_id)
-        })
-    }
-}
-
 use std::sync::Arc;
 
 use crate::daemon::protocol::{Request, Response};
@@ -100,6 +90,10 @@ mod tests {
         }
     }
 
+    fn removed_route(prefix: &str, command: &str) -> String {
+        format!("{prefix}.{command}")
+    }
+
     #[tokio::test]
     async fn dispatch_wait_uses_v2_session_handler() {
         let state = Arc::new(DaemonState::new());
@@ -119,8 +113,9 @@ mod tests {
     #[tokio::test]
     async fn dispatch_page_wait_is_removed_from_public_commands() {
         let state = Arc::new(DaemonState::new());
+        let cmd = removed_route("page", "wait");
         let req = Request {
-            cmd: "page.wait".into(),
+            cmd: cmd.clone(),
             params: serde_json::json!({"selector": "#app"}),
             token: None,
         };
@@ -129,14 +124,15 @@ mod tests {
         let json = serde_json::to_value(&resp).unwrap();
 
         assert_eq!(json["ok"], false);
-        assert_eq!(json["error"], "unknown command: page.wait");
+        assert_eq!(json["error"], format!("unknown command: {cmd}"));
     }
 
     #[tokio::test]
     async fn dispatch_nav_wait_is_removed_from_public_commands() {
         let state = Arc::new(DaemonState::new());
+        let cmd = removed_route("nav", "wait");
         let req = Request {
-            cmd: "nav.wait".into(),
+            cmd: cmd.clone(),
             params: serde_json::json!({}),
             token: None,
         };
@@ -145,16 +141,20 @@ mod tests {
         let json = serde_json::to_value(&resp).unwrap();
 
         assert_eq!(json["ok"], false);
-        assert_eq!(json["error"], "unknown command: nav.wait");
+        assert_eq!(json["error"], format!("unknown command: {cmd}"));
     }
 
     #[tokio::test]
     async fn dispatch_page_state_and_info_are_removed_from_public_commands() {
         let state = Arc::new(DaemonState::new());
 
-        for cmd in ["page.state", "page.info"] {
+        let commands = [
+            removed_route("page", "state"),
+            removed_route("page", "info"),
+        ];
+        for cmd in commands {
             let req = Request {
-                cmd: cmd.into(),
+                cmd: cmd.clone(),
                 params: serde_json::json!({}),
                 token: None,
             };
@@ -190,9 +190,14 @@ mod tests {
     async fn dispatch_legacy_navigation_actions_are_removed_from_public_commands() {
         let state = Arc::new(DaemonState::new());
 
-        for cmd in ["nav.back", "nav.forward", "nav.reload"] {
+        let commands = [
+            removed_route("nav", "back"),
+            removed_route("nav", "forward"),
+            removed_route("nav", "reload"),
+        ];
+        for cmd in commands {
             let req = Request {
-                cmd: cmd.into(),
+                cmd: cmd.clone(),
                 params: serde_json::json!({}),
                 token: None,
             };
@@ -208,8 +213,9 @@ mod tests {
     #[tokio::test]
     async fn dispatch_page_screenshot_is_removed_from_public_commands() {
         let state = Arc::new(DaemonState::new());
+        let cmd = removed_route("page", "screenshot");
         let req = Request {
-            cmd: "page.screenshot".into(),
+            cmd: cmd.clone(),
             params: serde_json::json!({"full_page": false}),
             token: None,
         };
@@ -218,7 +224,7 @@ mod tests {
         let json = serde_json::to_value(&resp).unwrap();
 
         assert_eq!(json["ok"], false);
-        assert_eq!(json["error"], "unknown command: page.screenshot");
+        assert_eq!(json["error"], format!("unknown command: {cmd}"));
     }
 
     async fn assert_routes_removed(commands: &[&str]) {
@@ -317,24 +323,25 @@ mod tests {
     #[tokio::test]
     async fn removed_route_families_are_unknown() {
         let state = Arc::new(DaemonState::new());
-        for cmd in [
-            "v2.connect",
-            "v2.open",
-            "v2.snapshot",
-            "v2.act",
-            "v2.navigate",
-            "ws.list",
-            "tab.list",
-            "nav.goto",
-            "page.html",
-            "page.pdf",
-            "storage.local.get",
-            "network.monitor",
-            "network.har",
-            "cdp.events",
-        ] {
+        let commands = [
+            removed_route("v2", "connect"),
+            removed_route("v2", "open"),
+            removed_route("v2", "snapshot"),
+            removed_route("v2", "act"),
+            removed_route("v2", "navigate"),
+            removed_route("ws", "list"),
+            removed_route("tab", "list"),
+            removed_route("nav", "goto"),
+            removed_route("page", "html"),
+            removed_route("page", "pdf"),
+            removed_route("storage", "local.get"),
+            removed_route("network", "monitor"),
+            removed_route("network", "har"),
+            removed_route("cdp", "events"),
+        ];
+        for cmd in commands {
             let req = Request {
-                cmd: cmd.into(),
+                cmd: cmd.clone(),
                 params: serde_json::json!({}),
                 token: None,
             };

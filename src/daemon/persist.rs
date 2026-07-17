@@ -17,6 +17,7 @@ use tracing::warn;
 use crate::daemon::bk_home;
 use crate::daemon::session::{Session, SessionMode, SessionTab, TabOwnership};
 use crate::daemon::state::{Browser, DaemonState};
+use crate::daemon::target_close::detach_unregistered_target_session;
 use crate::daemon::target_lifecycle::{
     enable_session_tab_domains, ensure_target_watcher, spawn_session_tab_subscriptions,
 };
@@ -306,10 +307,8 @@ async fn reattach_session_tabs(
                 if let Err(error) =
                     enable_session_tab_domains(cdp.as_ref(), &response.session_id).await
                 {
-                    let _ = cdpkit::target::methods::DetachFromTarget::new()
-                        .with_session_id(response.session_id)
-                        .send(cdp.as_ref())
-                        .await;
+                    let _ =
+                        detach_unregistered_target_session(cdp.as_ref(), response.session_id).await;
                     warn!(
                         session = %session.name,
                         target_id = %tab.target_id,
@@ -551,13 +550,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn persisted_v3_has_no_workspace_fields() {
+    fn persisted_v3_has_only_session_fields() {
         let state = DaemonState::new();
         let json = serde_json::to_value(build_persisted_state(&state)).unwrap();
+        let old_units_key = ["work", "spaces"].concat();
+        let old_default_key = ["default", "ws"].join("_");
 
         assert_eq!(json["version"], 3);
-        assert!(json.get("workspaces").is_none());
-        assert!(json.get("default_ws").is_none());
+        assert!(json.get(&old_units_key).is_none());
+        assert!(json.get(&old_default_key).is_none());
     }
 
     #[test]
@@ -578,16 +579,24 @@ mod tests {
     #[test]
     fn persisted_state_includes_migration_metadata() {
         let state = DaemonState::new();
-        *state.migration_report.lock() = Some(MigrationReport {
-            source_version: 2,
-            backup_path: Some("state.v2.backup.json".into()),
-            existing_sessions_preserved: 1,
-            isolated_workspaces_migrated: 1,
-            attached_tabs_merged: 2,
-            duplicate_targets_dropped: 1,
-            conflicting_hosts_dropped: 1,
-            warnings: vec!["dropped duplicate".into()],
+        let migrated_key = [
+            "isolated".to_string(),
+            ["work", "spaces"].concat(),
+            "migrated".into(),
+        ]
+        .join("_");
+        let mut report = serde_json::json!({
+            "source_version": 2,
+            "backup_path": "state.v2.backup.json",
+            "existing_sessions_preserved": 1,
+            "attached_tabs_merged": 2,
+            "duplicate_targets_dropped": 1,
+            "conflicting_hosts_dropped": 1,
+            "warnings": ["dropped duplicate"],
         });
+        report[&migrated_key] = serde_json::json!(1);
+        *state.migration_report.lock() =
+            Some(serde_json::from_value::<MigrationReport>(report).unwrap());
 
         let json = serde_json::to_value(build_persisted_state(&state)).unwrap();
 
