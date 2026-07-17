@@ -55,13 +55,19 @@ fn validate_attach_context(
     session: &Session,
     candidate: &AttachCandidate,
     non_default_context_ids: &[String],
+    default_context_id: Option<&str>,
 ) -> Result<(), ErrorCode> {
     if session.mode == SessionMode::Default {
         return match candidate.browser_context_id.as_deref() {
-            Some(context_id) if non_default_context_ids.iter().any(|id| id == context_id) => {
-                Err(ErrorCode::InvalidArgument)
-            }
-            _ => Ok(()),
+            None => Ok(()),
+            Some(context_id) => match default_context_id {
+                Some(default_id) if context_id == default_id => Ok(()),
+                Some(_) => Err(ErrorCode::InvalidArgument),
+                None if non_default_context_ids.iter().any(|id| id == context_id) => {
+                    Err(ErrorCode::InvalidArgument)
+                }
+                None => Ok(()),
+            },
         };
     }
 
@@ -176,12 +182,15 @@ pub async fn handle_attach(req: &Request, state: &Arc<DaemonState>) -> Response 
         }
     };
 
-    let non_default_context_ids = if candidate.browser_context_id.is_some() {
+    let (non_default_context_ids, default_context_id) = if candidate.browser_context_id.is_some() {
         match cdpkit::target::methods::GetBrowserContexts::new()
             .send(cdp.as_ref())
             .await
         {
-            Ok(response) => response.browser_context_ids,
+            Ok(response) => (
+                response.browser_context_ids,
+                response.default_browser_context_id,
+            ),
             Err(error) => {
                 return error_response(
                     ErrorCode::DaemonError,
@@ -190,12 +199,15 @@ pub async fn handle_attach(req: &Request, state: &Arc<DaemonState>) -> Response 
             }
         }
     } else {
-        Vec::new()
+        (Vec::new(), None)
     };
 
-    if let Err(code) =
-        validate_attach_context(&session_snapshot, &candidate, &non_default_context_ids)
-    {
+    if let Err(code) = validate_attach_context(
+        &session_snapshot,
+        &candidate,
+        &non_default_context_ids,
+        default_context_id.as_deref(),
+    ) {
         return error_response(
             code,
             format!(
@@ -366,7 +378,42 @@ mod tests {
             browser_context_id: Some("DEFAULT_CTX".into()),
         };
 
-        assert!(validate_attach_context(&session, &candidate, &[]).is_ok());
+        assert!(validate_attach_context(&session, &candidate, &[], None).is_ok());
+    }
+
+    #[test]
+    fn attach_default_session_accepts_explicit_default_context_id() {
+        let session = Session::new_default("localhost:9222".into());
+        let candidate = AttachCandidate {
+            target_id: "T1".into(),
+            url: "https://a.test".into(),
+            title: "A".into(),
+            browser_context_id: Some("DEFAULT_CTX".into()),
+        };
+
+        assert!(validate_attach_context(
+            &session,
+            &candidate,
+            &["ISOLATED_CTX".into()],
+            Some("DEFAULT_CTX"),
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn attach_default_session_rejects_unknown_context_when_default_id_is_known() {
+        let session = Session::new_default("localhost:9222".into());
+        let candidate = AttachCandidate {
+            target_id: "T1".into(),
+            url: "https://a.test".into(),
+            title: "A".into(),
+            browser_context_id: Some("UNKNOWN_CTX".into()),
+        };
+
+        assert_eq!(
+            validate_attach_context(&session, &candidate, &[], Some("DEFAULT_CTX")).unwrap_err(),
+            ErrorCode::InvalidArgument
+        );
     }
 
     #[test]
@@ -379,7 +426,7 @@ mod tests {
             browser_context_id: Some("CTX1".into()),
         };
         assert_eq!(
-            validate_attach_context(&session, &candidate, &["CTX1".into()]).unwrap_err(),
+            validate_attach_context(&session, &candidate, &["CTX1".into()], None).unwrap_err(),
             ErrorCode::InvalidArgument
         );
     }
@@ -394,7 +441,7 @@ mod tests {
             browser_context_id: Some("CTX1".into()),
         };
 
-        assert!(validate_attach_context(&session, &candidate, &[]).is_ok());
+        assert!(validate_attach_context(&session, &candidate, &[], None).is_ok());
         assert_eq!(
             validate_attach_session_mode(&session).unwrap_err(),
             ErrorCode::InvalidArgument
