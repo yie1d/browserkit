@@ -363,8 +363,6 @@ fn prepare_loaded_state(state: &Arc<DaemonState>, loaded: LoadStateResult) -> Re
     *state.persist_disabled_reason.lock() = loaded.persist_disabled_reason.clone();
     *state.migration_report.lock() = loaded.migration_report.clone();
 
-    cleanup_stale_chrome_dirs(&loaded.state.browsers);
-
     let mut sessions_to_reconnect = HashSet::new();
     for persisted_session in loaded.state.sessions {
         let session_name = persisted_session.name.clone();
@@ -393,6 +391,13 @@ pub(crate) fn prepare_restore_into_state(state: &Arc<DaemonState>) -> RestorePla
 /// Reconnect managed browsers and sessions after the daemon is ready. Session
 /// binding is serialized with live client connect/disconnect operations.
 pub(crate) async fn execute_restore_plan(state: &Arc<DaemonState>, plan: RestorePlan) {
+    let cleanup_browsers = plan.browsers.clone();
+    if let Err(error) =
+        tokio::task::spawn_blocking(move || cleanup_stale_chrome_dirs(&cleanup_browsers)).await
+    {
+        warn!(error = %error, "stale Chrome profile cleanup task failed");
+    }
+
     for persisted_browser in &plan.browsers {
         if !persisted_browser.managed {
             tracing::info!(
@@ -459,6 +464,7 @@ pub(crate) async fn execute_restore_plan(state: &Arc<DaemonState>, plan: Restore
             ),
         }
     }
+    state.request_persist();
 }
 
 /// Legacy all-in-one entry point retained for direct callers and tests.

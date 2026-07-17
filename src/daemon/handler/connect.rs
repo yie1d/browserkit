@@ -224,6 +224,7 @@ async fn reconnect_existing_session<B: SessionReconnectBackend>(
     })
 }
 
+#[cfg(test)]
 async fn bind_session_state<B: SessionReconnectBackend>(
     state: &Arc<DaemonState>,
     session_name: &str,
@@ -231,6 +232,15 @@ async fn bind_session_state<B: SessionReconnectBackend>(
     backend: &B,
 ) -> Result<SessionBindResult, Response> {
     let _bind_guard = state.session_bind_lock.lock().await;
+    bind_session_state_unlocked(state, session_name, browser_host, backend).await
+}
+
+async fn bind_session_state_unlocked<B: SessionReconnectBackend>(
+    state: &Arc<DaemonState>,
+    session_name: &str,
+    browser_host: &str,
+    backend: &B,
+) -> Result<SessionBindResult, Response> {
     check_new_session_limit_for_connect(state, session_name)?;
 
     if let Some(existing) = state.sessions.get(session_name) {
@@ -281,14 +291,38 @@ async fn bind_session_state<B: SessionReconnectBackend>(
     })
 }
 
+fn validate_current_browser_connection(
+    state: &DaemonState,
+    browser_host: &str,
+    cdp: &Arc<cdpkit::CDP>,
+) -> Result<(), Response> {
+    let browser = state.browsers.get(browser_host).ok_or_else(|| {
+        Response::error_detail(
+            ErrorCode::ChromeDisconnected,
+            format!("browser is no longer connected: {browser_host}"),
+            None,
+        )
+    })?;
+    if !Arc::ptr_eq(&browser.cdp, cdp) || cdp.is_closed() {
+        return Err(Response::error_detail(
+            ErrorCode::ChromeDisconnected,
+            format!("browser connection was replaced or closed: {browser_host}"),
+            None,
+        ));
+    }
+    Ok(())
+}
+
 pub(crate) async fn bind_session_to_browser(
     state: &Arc<DaemonState>,
     session_name: &str,
     browser_host: &str,
     cdp: &Arc<cdpkit::CDP>,
 ) -> Result<SessionBindResult, Response> {
+    let _bind_guard = state.session_bind_lock.lock().await;
+    validate_current_browser_connection(state, browser_host, cdp)?;
     let backend = CdpReconnectBackend { cdp };
-    let result = bind_session_state(state, session_name, browser_host, &backend).await?;
+    let result = bind_session_state_unlocked(state, session_name, browser_host, &backend).await?;
 
     for (target_id, cdp_session_id) in &result.subscriptions {
         spawn_session_tab_subscriptions(
