@@ -54,7 +54,17 @@ fn select_attach_target(
 fn validate_attach_context(
     session: &Session,
     candidate: &AttachCandidate,
+    non_default_context_ids: &[String],
 ) -> Result<(), ErrorCode> {
+    if session.mode == SessionMode::Default {
+        return match candidate.browser_context_id.as_deref() {
+            Some(context_id) if non_default_context_ids.iter().any(|id| id == context_id) => {
+                Err(ErrorCode::InvalidArgument)
+            }
+            _ => Ok(()),
+        };
+    }
+
     if session.browser_context_id.as_deref() == candidate.browser_context_id.as_deref() {
         Ok(())
     } else {
@@ -166,7 +176,26 @@ pub async fn handle_attach(req: &Request, state: &Arc<DaemonState>) -> Response 
         }
     };
 
-    if let Err(code) = validate_attach_context(&session_snapshot, &candidate) {
+    let non_default_context_ids = if candidate.browser_context_id.is_some() {
+        match cdpkit::target::methods::GetBrowserContexts::new()
+            .send(cdp.as_ref())
+            .await
+        {
+            Ok(response) => response.browser_context_ids,
+            Err(error) => {
+                return error_response(
+                    ErrorCode::DaemonError,
+                    format!("failed to list browser contexts: {error}"),
+                )
+            }
+        }
+    } else {
+        Vec::new()
+    };
+
+    if let Err(code) =
+        validate_attach_context(&session_snapshot, &candidate, &non_default_context_ids)
+    {
         return error_response(
             code,
             format!(
@@ -328,6 +357,19 @@ mod tests {
     }
 
     #[test]
+    fn attach_default_session_accepts_implicit_default_context_id() {
+        let session = Session::new_default("localhost:9222".into());
+        let candidate = AttachCandidate {
+            target_id: "T1".into(),
+            url: "https://a.test".into(),
+            title: "A".into(),
+            browser_context_id: Some("DEFAULT_CTX".into()),
+        };
+
+        assert!(validate_attach_context(&session, &candidate, &[]).is_ok());
+    }
+
+    #[test]
     fn attach_rejects_target_from_another_browser_context() {
         let session = Session::new_default("localhost:9222".into());
         let candidate = AttachCandidate {
@@ -337,7 +379,7 @@ mod tests {
             browser_context_id: Some("CTX1".into()),
         };
         assert_eq!(
-            validate_attach_context(&session, &candidate).unwrap_err(),
+            validate_attach_context(&session, &candidate, &["CTX1".into()]).unwrap_err(),
             ErrorCode::InvalidArgument
         );
     }
@@ -352,7 +394,7 @@ mod tests {
             browser_context_id: Some("CTX1".into()),
         };
 
-        assert!(validate_attach_context(&session, &candidate).is_ok());
+        assert!(validate_attach_context(&session, &candidate, &[]).is_ok());
         assert_eq!(
             validate_attach_session_mode(&session).unwrap_err(),
             ErrorCode::InvalidArgument
