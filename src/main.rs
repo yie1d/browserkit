@@ -30,6 +30,7 @@ Primary:
   html        Get page HTML
   console     Show console log buffer
   network     Observe XHR/fetch responses
+  download    Trigger and wait for a download
   pdf         Generate PDF of current target
   session     Session management (close/list/cookies/storage)
   status      Connection status
@@ -312,6 +313,15 @@ pub enum Command {
     Network {
         #[command(subcommand)]
         action: NetworkAction,
+    },
+    /// Trigger a download by clicking an element and wait for completion
+    Download {
+        /// Element ref for the download trigger
+        #[arg(long = "ref")]
+        element_ref: i64,
+        /// Existing directory where Chrome should save the download
+        #[arg(long, value_name = "DIR")]
+        output_dir: String,
     },
     /// Generate PDF of current target
     Pdf {
@@ -797,6 +807,23 @@ fn build_network_watch_params(pattern: &str, count: usize, cli: &Cli) -> serde_j
     params
 }
 
+fn build_download_params(
+    element_ref: i64,
+    output_dir: &str,
+    cli: &Cli,
+) -> Result<serde_json::Value, String> {
+    let output_dir = canonical_directory(output_dir)?;
+    let mut params = json!({
+        "ref": element_ref,
+        "output_dir": output_dir.to_string_lossy(),
+    });
+    add_session_target_params(&mut params, cli);
+    if let Some(timeout) = cli.timeout {
+        params["timeout"] = json!(timeout);
+    }
+    Ok(params)
+}
+
 fn build_screenshot_params(
     output: Option<&str>,
     full_page: bool,
@@ -1075,6 +1102,15 @@ async fn dispatch(cli: &Cli, client: &mut DaemonClient) -> Result<(), String> {
                 print_response(&resp);
             }
         },
+
+        Command::Download {
+            element_ref,
+            output_dir,
+        } => {
+            let params = build_download_params(*element_ref, output_dir, cli)?;
+            let resp = send_cmd(client, "download", params).await?;
+            print_response(&resp);
+        }
 
         Command::ScreenshotV2 {
             output,
@@ -1425,6 +1461,15 @@ async fn send_cmd(
 /// Print a response as JSON to stdout.
 fn print_response(resp: &Response) {
     println!("{}", serde_json::to_string(resp).unwrap_or_default());
+}
+
+fn canonical_directory(path: &str) -> Result<std::path::PathBuf, String> {
+    let canonical = std::fs::canonicalize(path)
+        .map_err(|error| format!("failed to resolve output directory '{}': {error}", path))?;
+    if !canonical.is_dir() {
+        return Err(format!("output directory is not a directory: {path}"));
+    }
+    Ok(canonical)
 }
 
 /// Handle binary (base64) responses: save to file or print info.
@@ -1842,6 +1887,66 @@ mod tests {
         assert_eq!(params["timeout"], 5000);
         assert_eq!(params["pattern"], "/api/orders");
         assert_eq!(params["count"], 3);
+    }
+
+    #[test]
+    fn cli_parses_download_lifecycle_command() {
+        let cli = try_parse(&[
+            "bk",
+            "--session",
+            "agent-a",
+            "--target",
+            "TAB1",
+            "--timeout",
+            "15000",
+            "download",
+            "--ref",
+            "42",
+            "--output-dir",
+            "downloads",
+        ]);
+
+        let cli = cli.expect("download should be a public CLI command");
+        assert!(matches!(
+            cli.command,
+            Command::Download {
+                element_ref: 42,
+                ref output_dir,
+            } if output_dir == "downloads"
+        ));
+    }
+
+    #[test]
+    fn download_request_shape_uses_canonical_output_directory() {
+        let output_dir = tempfile::tempdir().unwrap();
+        let output_arg = output_dir.path().to_string_lossy().into_owned();
+        let cli = try_parse(&[
+            "bk",
+            "--session",
+            "agent-a",
+            "--target",
+            "TAB1",
+            "--timeout",
+            "15000",
+            "download",
+            "--ref",
+            "42",
+            "--output-dir",
+            &output_arg,
+        ])
+        .unwrap();
+
+        let params = build_download_params(42, &output_arg, &cli).unwrap();
+        assert_eq!(params["ref"], 42);
+        assert_eq!(
+            params["output_dir"],
+            json!(std::fs::canonicalize(output_dir.path())
+                .unwrap()
+                .to_string_lossy())
+        );
+        assert_eq!(params["session"], "agent-a");
+        assert_eq!(params["target"], "TAB1");
+        assert_eq!(params["timeout"], 15000);
     }
 
     #[test]

@@ -101,6 +101,7 @@ pub enum ErrorCode {
     InvalidArgument,
     DaemonError,
     FileNotFound,
+    DownloadFailed,
     SelectorNotFound,
     SessionLimitExceeded,
     TabLimitExceeded,
@@ -143,6 +144,7 @@ impl ErrorCode {
             Self::InvalidArgument => "check command syntax",
             Self::DaemonError => "restart daemon: bk daemon stop && bk daemon start",
             Self::FileNotFound => "check file path exists and is absolute",
+            Self::DownloadFailed => "retry the download or choose a different output directory",
             Self::SelectorNotFound => "selector matched no elements; check page state",
             Self::SessionLimitExceeded => {
                 "close unused sessions with 'bk session close --session <name>'"
@@ -218,5 +220,15 @@ mod error_code_tests {
             ErrorCode::TargetAlreadyAttached.suggestion(),
             "detach the target from its current session first"
         );
+    }
+
+    #[test]
+    fn download_failed_error_contract() {
+        assert_eq!(
+            serde_json::to_string(&ErrorCode::DownloadFailed).unwrap(),
+            "\"DOWNLOAD_FAILED\""
+        );
+        assert!(ErrorCode::DownloadFailed.recoverable());
+        assert!(ErrorCode::DownloadFailed.suggestion().contains("download"));
     }
 }

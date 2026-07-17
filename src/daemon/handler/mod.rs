@@ -9,6 +9,7 @@ mod daemon;
 #[allow(dead_code)]
 mod debug;
 mod dialog;
+mod download;
 mod evaluate;
 mod inspect;
 mod navigate;
@@ -68,6 +69,7 @@ pub async fn handle_request(
         "debug.block" => network::handle_debug_block(req, state).await,
         "debug.unblock" => network::handle_debug_unblock(req, state).await,
         "network.watch" => network::handle_network_watch(req, state).await,
+        "download" => download::handle_download(req, state).await,
         "debug.cdp" => debug::handle_debug_cdp(req, state).await,
         "dialog.list" => dialog::handle_dialog_list(req, state).await,
         "dialog.accept" => dialog::handle_dialog_accept(req, state).await,
@@ -121,6 +123,27 @@ mod tests {
                 "pattern": "/api/orders",
                 "count": 3,
                 "timeout": 5000
+            }),
+            token: None,
+        };
+
+        let resp = handle_request(&req, &state, &test_context()).await;
+        let json = serde_json::to_value(&resp).unwrap();
+
+        assert_eq!(json["ok"], false);
+        assert_eq!(json["error"]["code"], "SESSION_NOT_FOUND");
+    }
+
+    #[tokio::test]
+    async fn dispatch_download_uses_session_native_handler() {
+        let state = Arc::new(DaemonState::new());
+        let output_dir = tempfile::tempdir().unwrap();
+        let req = Request {
+            cmd: "download".into(),
+            params: serde_json::json!({
+                "ref": 42,
+                "output_dir": output_dir.path(),
+                "timeout": 15000
             }),
             token: None,
         };
