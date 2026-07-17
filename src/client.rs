@@ -37,8 +37,8 @@ impl DaemonClient {
         // Start daemon in background
         Self::start_daemon_background()?;
 
-        // Restore now completes before the daemon advertises its port. Allow
-        // enough time for a full CDP connection timeout plus tab reattachment.
+        // Persisted metadata is loaded before the daemon advertises its port;
+        // browser reconnection continues in the background after readiness.
         Self::wait_for_daemon_ready(DAEMON_START_TIMEOUT).await?;
 
         // Connect again
@@ -211,7 +211,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn daemon_start_timeout_covers_restore_connection_window() {
+    fn daemon_start_timeout_allows_metadata_restore_window() {
         assert!(DAEMON_START_TIMEOUT >= Duration::from_secs(20));
     }
 

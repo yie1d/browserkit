@@ -18,9 +18,7 @@ use crate::daemon::bk_home;
 use crate::daemon::session::{Session, SessionMode, SessionTab, TabOwnership};
 use crate::daemon::state::{Browser, DaemonState};
 use crate::daemon::target_close::detach_unregistered_target_session;
-use crate::daemon::target_lifecycle::{
-    enable_session_tab_domains, spawn_session_tab_subscriptions,
-};
+use crate::daemon::target_lifecycle::enable_session_tab_domains;
 
 pub mod migrate_v2;
 pub use migrate_v2::{
@@ -351,11 +349,12 @@ pub(crate) async fn reattach_session_tabs(
     subscriptions
 }
 
-/// Restore daemon state by reconnecting to persisted managed browsers and
-/// re-attaching known session targets.
-pub async fn restore_into_state(state: &Arc<DaemonState>) {
-    let loaded = load_persisted_state();
+pub(crate) struct RestorePlan {
+    browsers: Vec<PersistedBrowser>,
+    sessions_to_reconnect: HashSet<String>,
+}
 
+fn prepare_loaded_state(state: &Arc<DaemonState>, loaded: LoadStateResult) -> RestorePlan {
     if loaded.persist_disabled {
         state
             .persist_disabled
@@ -366,7 +365,35 @@ pub async fn restore_into_state(state: &Arc<DaemonState>) {
 
     cleanup_stale_chrome_dirs(&loaded.state.browsers);
 
-    for persisted_browser in &loaded.state.browsers {
+    let mut sessions_to_reconnect = HashSet::new();
+    for persisted_session in loaded.state.sessions {
+        let session_name = persisted_session.name.clone();
+        let should_reconnect = !persisted_session.disconnected;
+        let mut session = persisted_session.into_session();
+        session.mark_disconnected();
+        if should_reconnect {
+            sessions_to_reconnect.insert(session_name.clone());
+        }
+        state.sessions.insert(session_name.clone(), session);
+        tracing::info!(session = %session_name, "prepared persisted session for restore");
+    }
+
+    RestorePlan {
+        browsers: loaded.state.browsers,
+        sessions_to_reconnect,
+    }
+}
+
+/// Load persisted metadata without performing network I/O. Sessions are made
+/// visible as disconnected so the daemon can safely advertise readiness.
+pub(crate) fn prepare_restore_into_state(state: &Arc<DaemonState>) -> RestorePlan {
+    prepare_loaded_state(state, load_persisted_state())
+}
+
+/// Reconnect managed browsers and sessions after the daemon is ready. Session
+/// binding is serialized with live client connect/disconnect operations.
+pub(crate) async fn execute_restore_plan(state: &Arc<DaemonState>, plan: RestorePlan) {
+    for persisted_browser in &plan.browsers {
         if !persisted_browser.managed {
             tracing::info!(
                 host = %persisted_browser.host,
@@ -396,59 +423,48 @@ pub async fn restore_into_state(state: &Arc<DaemonState>) {
         }
     }
 
-    for persisted_session in loaded.state.sessions {
-        let browser_host = persisted_session.browser_host.clone();
-        let session_name = persisted_session.name.clone();
-        let mut session = persisted_session.into_session();
-        let mut subscriptions = Vec::new();
-        let mut cdp_for_subscriptions = None;
+    for session_name in plan.sessions_to_reconnect {
+        let Some(session) = state.sessions.get(&session_name) else {
+            continue;
+        };
+        let browser_host = session.browser_host.clone();
+        drop(session);
+        let Some(cdp) = state
+            .browsers
+            .get(&browser_host)
+            .map(|browser| Arc::clone(&browser.cdp))
+        else {
+            warn!(
+                session = %session_name,
+                host = %browser_host,
+                "restored session remains disconnected because browser is unavailable"
+            );
+            continue;
+        };
 
-        if !session.disconnected {
-            let cdp = state
-                .browsers
-                .get(&browser_host)
-                .map(|browser| Arc::clone(&browser.cdp));
-            match cdp {
-                Some(cdp) => {
-                    if browser_context_available(&session, &cdp).await {
-                        subscriptions = reattach_session_tabs(&mut session, &cdp).await;
-                        cdp_for_subscriptions = Some(cdp);
-                    } else {
-                        session.mark_disconnected();
-                        warn!(
-                            session = %session_name,
-                            host = %browser_host,
-                            "restored session is disconnected because BrowserContext is unavailable"
-                        );
-                    }
-                }
-                None => {
-                    session.mark_disconnected();
-                    warn!(
-                        session = %session_name,
-                        host = %browser_host,
-                        "restored session is disconnected because browser is unavailable"
-                    );
-                }
-            }
+        match crate::daemon::handler::connect::bind_session_to_browser(
+            state,
+            &session_name,
+            &browser_host,
+            &cdp,
+        )
+        .await
+        {
+            Ok(_) => tracing::info!(session = %session_name, "restored session connection"),
+            Err(response) => warn!(
+                session = %session_name,
+                host = %browser_host,
+                error = ?response.error,
+                "restored session remains disconnected"
+            ),
         }
-
-        state.sessions.insert(session_name.clone(), session);
-
-        if let Some(cdp) = cdp_for_subscriptions {
-            for (target_id, cdp_session_id) in subscriptions {
-                spawn_session_tab_subscriptions(
-                    Arc::clone(state),
-                    session_name.clone(),
-                    target_id,
-                    Arc::clone(&cdp),
-                    cdp_session_id,
-                );
-            }
-        }
-
-        tracing::info!(session = %session_name, "restored session");
     }
+}
+
+/// Legacy all-in-one entry point retained for direct callers and tests.
+pub async fn restore_into_state(state: &Arc<DaemonState>) {
+    let plan = prepare_restore_into_state(state);
+    execute_restore_plan(state, plan).await;
 }
 
 /// Legacy entry point kept for backward compatibility with tests.
@@ -600,5 +616,41 @@ mod tests {
 
         assert_eq!(json["migration"]["source_version"], 2);
         assert_eq!(json["migration"]["duplicate_targets_dropped"], 1);
+    }
+
+    #[test]
+    fn prepare_restore_makes_sessions_visible_and_disconnected_before_network() {
+        let state = Arc::new(DaemonState::new());
+        let loaded = LoadStateResult {
+            state: PersistedStateV3 {
+                version: PersistedStateV3::CURRENT_VERSION,
+                browsers: vec![PersistedBrowser {
+                    host: "localhost:9222".into(),
+                    managed: true,
+                    pid: Some(42),
+                }],
+                sessions: vec![PersistedSessionV3 {
+                    name: "default".into(),
+                    mode: SessionMode::Default,
+                    browser_host: "localhost:9222".into(),
+                    browser_context_id: None,
+                    tabs: Vec::new(),
+                    active_target: None,
+                    created_at: 1,
+                    last_active: 2,
+                    disconnected: false,
+                }],
+                migration: None,
+            },
+            persist_disabled: false,
+            persist_disabled_reason: None,
+            migration_report: None,
+        };
+
+        let plan = prepare_loaded_state(&state, loaded);
+
+        assert!(state.sessions.get("default").unwrap().disconnected);
+        assert_eq!(plan.browsers.len(), 1);
+        assert!(plan.sessions_to_reconnect.contains("default"));
     }
 }

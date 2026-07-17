@@ -50,6 +50,7 @@ pub async fn handle_daemon_status(state: &Arc<DaemonState>, ctx: &HandlerContext
 /// Trigger a graceful daemon shutdown.
 pub async fn handle_daemon_stop(state: &Arc<DaemonState>, _ctx: &HandlerContext) -> Response {
     info!("daemon.stop requested, closing all sessions...");
+    let _lifecycle_guard = state.session_bind_lock.lock().await;
 
     super::browser::cancel_all_browser_background_tasks(state);
 

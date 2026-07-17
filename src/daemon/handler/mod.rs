@@ -4,7 +4,7 @@ mod act;
 mod attach;
 mod browser;
 pub mod common;
-mod connect;
+pub(crate) mod connect;
 mod daemon;
 #[allow(dead_code)]
 mod debug;

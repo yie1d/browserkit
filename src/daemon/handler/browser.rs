@@ -398,6 +398,7 @@ async fn do_browser_disconnect(
         .and_then(|v| v.as_str())
         .ok_or_else(|| BkError::InvalidRequest("browser.disconnect requires 'host' param".into()))?
         .to_string();
+    let _lifecycle_guard = state.session_bind_lock.lock().await;
 
     let Some(cdp) = state
         .browsers

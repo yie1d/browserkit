@@ -844,4 +844,24 @@ mod tests {
         assert_eq!(backend.context_creations.load(Ordering::SeqCst), 1);
         assert_eq!(state.sessions.len(), 1);
     }
+
+    #[tokio::test]
+    async fn disconnect_waits_for_inflight_session_bind() {
+        let state = Arc::new(DaemonState::new());
+        let backend = CountingBindBackend {
+            context_creations: AtomicUsize::new(0),
+        };
+
+        let bind = bind_session_state(&state, "agent", "remote.example:9222", &backend);
+        let disconnect = async {
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            let _guard = state.session_bind_lock.lock().await;
+            state.disconnect_sessions_for_host("remote.example:9222");
+        };
+        let (bound, ()) = tokio::join!(bind, disconnect);
+
+        assert_eq!(bound.unwrap().status, SessionBindStatus::Connected);
+        assert!(state.sessions.get("agent").unwrap().disconnected);
+        assert_eq!(backend.context_creations.load(Ordering::SeqCst), 1);
+    }
 }

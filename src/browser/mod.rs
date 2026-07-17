@@ -164,6 +164,7 @@ pub fn spawn_disconnect_monitor(state: Arc<DaemonState>, host: String, cdp: Arc<
     tokio::spawn(async move {
         cdp.closed().await;
         tracing::warn!(host = %host, "CDP WebSocket closed, triggering disconnect cleanup");
+        let _lifecycle_guard = state.session_bind_lock.lock().await;
         state.handle_browser_disconnect(&host, &cdp);
     });
 }
