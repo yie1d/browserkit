@@ -836,7 +836,7 @@ fn build_download_params(
     element_ref: i64,
     output_dir: &str,
     cli: &Cli,
-) -> Result<serde_json::Value, String> {
+) -> Result<serde_json::Value, Response> {
     let output_dir = canonical_directory(output_dir)?;
     let mut params = json!({
         "ref": element_ref,
@@ -1132,7 +1132,13 @@ async fn dispatch(cli: &Cli, client: &mut DaemonClient) -> Result<(), String> {
             element_ref,
             output_dir,
         } => {
-            let params = build_download_params(*element_ref, output_dir, cli)?;
+            let params = match build_download_params(*element_ref, output_dir, cli) {
+                Ok(params) => params,
+                Err(response) => {
+                    print_response(&response);
+                    return Ok(());
+                }
+            };
             let resp = send_cmd(client, "download", params).await?;
             print_response(&resp);
         }
@@ -1488,18 +1494,87 @@ fn print_response(resp: &Response) {
     println!("{}", serde_json::to_string(resp).unwrap_or_default());
 }
 
-fn canonical_directory(path: &str) -> Result<std::path::PathBuf, String> {
-    let canonical = std::fs::canonicalize(path)
-        .map_err(|error| format!("failed to resolve output directory '{}': {error}", path))?;
+fn canonical_directory(path: &str) -> Result<std::path::PathBuf, Response> {
+    let canonical = std::fs::canonicalize(path).map_err(|error| {
+        Response::error_detail(
+            ErrorCode::InvalidArgument,
+            format!("failed to resolve output directory '{}': {error}", path),
+            Some("choose an existing download directory".into()),
+        )
+    })?;
     if !canonical.is_dir() {
-        return Err(format!("output directory is not a directory: {path}"));
+        return Err(Response::error_detail(
+            ErrorCode::InvalidArgument,
+            format!("output directory is not a directory: {path}"),
+            Some("choose an existing download directory".into()),
+        ));
     }
     Ok(canonical)
 }
 
-fn append_evaluate_result(resp: &Response, path: &str) -> Response {
-    use std::io::Write;
+#[derive(Debug)]
+struct AppendWriteFailure {
+    error: std::io::Error,
+    bytes_written: usize,
+}
 
+fn write_single_append<W: std::io::Write>(
+    writer: &mut W,
+    bytes: &[u8],
+) -> Result<usize, AppendWriteFailure> {
+    let bytes_written = writer.write(bytes).map_err(|error| AppendWriteFailure {
+        error,
+        bytes_written: 0,
+    })?;
+    if bytes_written != bytes.len() {
+        return Err(AppendWriteFailure {
+            error: std::io::Error::new(
+                std::io::ErrorKind::WriteZero,
+                format!(
+                    "single append wrote {bytes_written} of {} bytes",
+                    bytes.len()
+                ),
+            ),
+            bytes_written,
+        });
+    }
+    writer.flush().map_err(|error| AppendWriteFailure {
+        error,
+        bytes_written,
+    })?;
+    Ok(bytes_written)
+}
+
+fn append_write_failure_response(
+    destination: &std::path::Path,
+    requested_bytes: usize,
+    failure: &AppendWriteFailure,
+) -> Response {
+    let partial_write = failure.bytes_written > 0 && failure.bytes_written < requested_bytes;
+    let retry_safe = failure.bytes_written == 0;
+    let suggestion = if retry_safe {
+        "fix the destination and retry the append"
+    } else {
+        "do not retry automatically; inspect the destination to avoid duplicate bytes"
+    };
+    let mut response = Response::error_detail(
+        ErrorCode::FileWriteFailed,
+        format!(
+            "failed to append to '{}': {}",
+            destination.display(),
+            failure.error
+        ),
+        Some(suggestion.into()),
+    );
+    if let Some(serde_json::Value::Object(error)) = response.error.as_mut() {
+        error.insert("bytes_written".into(), json!(failure.bytes_written));
+        error.insert("partial_write".into(), json!(partial_write));
+        error.insert("retry_safe".into(), json!(retry_safe));
+    }
+    response
+}
+
+fn append_evaluate_result(resp: &Response, path: &str) -> Response {
     if !resp.ok {
         return resp.clone();
     }
@@ -1592,20 +1667,25 @@ fn append_evaluate_result(resp: &Response, path: &str) -> Response {
         }
     };
     let destination = parent.join(filename);
-    let write_result = (|| -> std::io::Result<()> {
-        let mut file = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&destination)?;
-        file.write_all(result.as_bytes())?;
-        file.flush()
-    })();
-    if let Err(error) = write_result {
-        return Response::error_detail(
-            ErrorCode::FileWriteFailed,
-            format!("failed to append to '{}': {error}", destination.display()),
-            None,
-        );
+    let mut file = match std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&destination)
+    {
+        Ok(file) => file,
+        Err(error) => {
+            return append_write_failure_response(
+                &destination,
+                result.len(),
+                &AppendWriteFailure {
+                    error,
+                    bytes_written: 0,
+                },
+            )
+        }
+    };
+    if let Err(failure) = write_single_append(&mut file, result.as_bytes()) {
+        return append_write_failure_response(&destination, result.len(), &failure);
     }
 
     let file = std::fs::canonicalize(&destination).unwrap_or(destination);
@@ -2217,6 +2297,59 @@ mod tests {
         assert_eq!(params["session"], "agent-a");
         assert_eq!(params["target"], "TAB1");
         assert_eq!(params["timeout"], 15000);
+    }
+
+    #[test]
+    fn download_directory_errors_are_structured_responses() {
+        let cli = try_parse(&[
+            "bk",
+            "download",
+            "--ref",
+            "42",
+            "--output-dir",
+            "missing-download-directory",
+        ])
+        .unwrap();
+
+        let response = build_download_params(42, "missing-download-directory", &cli)
+            .expect_err("missing directory must be rejected locally");
+        let value = serde_json::to_value(response).unwrap();
+        assert_eq!(value["ok"], false);
+        assert_eq!(value["error"]["code"], "INVALID_ARGUMENT");
+        assert!(value["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("failed to resolve output directory"));
+    }
+
+    struct PartialAppendWriter;
+
+    impl std::io::Write for PartialAppendWriter {
+        fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
+            Ok(buffer.len().min(3))
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn evaluate_append_partial_write_reports_non_retryable_progress() {
+        let failure = write_single_append(&mut PartialAppendWriter, b"abcdef")
+            .expect_err("a partial single write must fail");
+        assert_eq!(failure.bytes_written, 3);
+
+        let response =
+            append_write_failure_response(std::path::Path::new("results.txt"), 6, &failure);
+        let value = serde_json::to_value(response).unwrap();
+        assert_eq!(value["error"]["bytes_written"], 3);
+        assert_eq!(value["error"]["partial_write"], true);
+        assert_eq!(value["error"]["retry_safe"], false);
+        assert!(value["error"]["suggestion"]
+            .as_str()
+            .unwrap()
+            .contains("do not retry automatically"));
     }
 
     #[test]

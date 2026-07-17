@@ -77,7 +77,6 @@ fn download_failed(message: impl Into<String>) -> Response {
 fn resolve_download_path(
     output_dir: &Path,
     event_path: Option<&Path>,
-    suggested_filename: &str,
 ) -> Result<Option<PathBuf>, Response> {
     let output_dir = std::fs::canonicalize(output_dir).map_err(|error| {
         download_failed(format!(
@@ -85,22 +84,17 @@ fn resolve_download_path(
             output_dir.display()
         ))
     })?;
-    let candidate = if let Some(path) = event_path {
-        if !path.is_absolute() {
-            return Err(download_failed(format!(
-                "Chrome returned a non-absolute download path: {}",
-                path.display()
-            )));
-        }
-        path.to_path_buf()
-    } else {
-        let Some(filename) = Path::new(suggested_filename).file_name() else {
-            return Ok(None);
-        };
-        output_dir.join(filename)
+    let Some(candidate) = event_path else {
+        return Ok(None);
     };
+    if !candidate.is_absolute() {
+        return Err(download_failed(format!(
+            "Chrome returned a non-absolute download path: {}",
+            candidate.display()
+        )));
+    }
 
-    let canonical = match std::fs::canonicalize(&candidate) {
+    let canonical = match std::fs::canonicalize(candidate) {
         Ok(path) => path,
         Err(_) => return Ok(None),
     };
@@ -224,7 +218,12 @@ async fn observe_download(
         }),
         token: req.token.clone(),
     };
-    let trigger_response = super::act::handle_act(&trigger, state).await;
+    let trigger_response = super::act::handle_act_with_click_observation(
+        &trigger,
+        state,
+        download_click_observation(),
+    )
+    .await;
     if !trigger_response.ok {
         return trigger_response;
     }
@@ -273,7 +272,6 @@ async fn observe_download(
                             let path = match resolve_download_path(
                                 &params.output_dir,
                                 event.file_path.as_deref().map(Path::new),
-                                &started.suggested_filename,
                             ) {
                                 Ok(path) => path,
                                 Err(response) => return response,
@@ -314,6 +312,10 @@ async fn observe_download(
             }
         }
     }
+}
+
+fn download_click_observation() -> super::act::ClickObservation {
+    super::act::ClickObservation::Skip
 }
 
 pub async fn handle_download(req: &Request, state: &Arc<DaemonState>) -> Response {
@@ -456,27 +458,28 @@ mod tests {
         std::fs::write(&outside, b"secret").unwrap();
 
         assert_eq!(
-            resolve_download_path(output.path(), Some(inside.as_path()), "ignored.json").unwrap(),
+            resolve_download_path(output.path(), Some(inside.as_path())).unwrap(),
             Some(std::fs::canonicalize(&inside).unwrap())
         );
-        let error = resolve_download_path(output.path(), Some(outside.as_path()), "ignored.txt")
+        let error = resolve_download_path(output.path(), Some(outside.as_path()))
             .expect_err("outside file must be rejected");
         assert_eq!(error_code(error), "DOWNLOAD_FAILED");
     }
 
     #[test]
-    fn completed_download_fallback_uses_only_suggested_basename() {
+    fn completed_download_without_chrome_path_does_not_guess_existing_file() {
         let output = tempfile::tempdir().unwrap();
         let inside = output.path().join("report.json");
         std::fs::write(&inside, b"{}").unwrap();
 
+        assert_eq!(resolve_download_path(output.path(), None).unwrap(), None);
+    }
+
+    #[test]
+    fn download_click_explicitly_skips_new_tab_observation() {
         assert_eq!(
-            resolve_download_path(output.path(), None, "../report.json").unwrap(),
-            Some(std::fs::canonicalize(&inside).unwrap())
-        );
-        assert_eq!(
-            resolve_download_path(output.path(), None, "missing.json").unwrap(),
-            None
+            download_click_observation(),
+            super::super::act::ClickObservation::Skip
         );
     }
 

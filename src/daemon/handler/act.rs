@@ -34,6 +34,12 @@ pub enum ActKind {
     Drag,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ClickObservation {
+    WaitForNewTab,
+    Skip,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ActFillField {
     ref_id: i64,
@@ -637,6 +643,14 @@ async fn wait_for_click_new_tab(
 
 /// Handle the canonical `act` command.
 pub async fn handle_act(req: &Request, state: &Arc<DaemonState>) -> Response {
+    handle_act_with_click_observation(req, state, ClickObservation::WaitForNewTab).await
+}
+
+pub(super) async fn handle_act_with_click_observation(
+    req: &Request,
+    state: &Arc<DaemonState>,
+    click_observation: ClickObservation,
+) -> Response {
     let params = match parse_act_params(&req.params) {
         Ok(p) => p,
         Err(resp) => return resp,
@@ -699,7 +713,8 @@ pub async fn handle_act(req: &Request, state: &Arc<DaemonState>) -> Response {
 
     let cdp_session_id = &session_tab.cdp_session_id;
     let cdp_session = cdp.session(cdp_session_id);
-    let observes_new_tab = params.kind == ActKind::Click;
+    let observes_new_tab =
+        params.kind == ActKind::Click && click_observation == ClickObservation::WaitForNewTab;
 
     // Capture before-snapshot for state_diff (unless opted out)
     let before_snapshot = if !params.no_state_diff {

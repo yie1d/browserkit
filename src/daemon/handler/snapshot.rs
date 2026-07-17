@@ -4,8 +4,8 @@
 // configurable wait strategy. Reuses existing `page/state.rs` discovery logic.
 //
 // Modes:
-// - compact (default): max 50 elements, page_text max 2000 chars
-// - full (--full): all elements, page_text max 8000 chars
+// - compact (default): max 50 elements, page_text max 2000 bytes
+// - full (--full): all elements, page_text max 8000 bytes
 //
 // Wait strategies:
 // - dom-stable (default): DOMContentLoaded + 200ms DOM stability via MutationObserver
@@ -24,9 +24,9 @@ use super::common::{optional_string_param, session_name_param};
 
 /// Maximum elements in compact mode.
 const COMPACT_MAX_ELEMENTS: usize = 50;
-/// Maximum page_text characters in compact mode.
+/// Maximum page_text bytes in compact mode.
 const COMPACT_MAX_TEXT: usize = 2000;
-/// Maximum page_text characters in full mode.
+/// Maximum page_text bytes in full mode.
 const FULL_MAX_TEXT: usize = 8000;
 const MIN_TOKEN_BUDGET: usize = 16;
 const MAX_TOKEN_BUDGET: usize = 100_000;
@@ -113,13 +113,10 @@ fn truncate_page_text(text: &str, max: usize) -> &str {
     if text.len() <= max {
         return text;
     }
-    // Find the last valid char boundary at or before `max`
-    let boundary = text
-        .char_indices()
-        .take_while(|(i, _)| *i < max)
-        .last()
-        .map(|(i, c)| i + c.len_utf8())
-        .unwrap_or(0);
+    let mut boundary = max;
+    while !text.is_char_boundary(boundary) {
+        boundary -= 1;
+    }
     let slice = &text[..boundary];
     // Try paragraph boundary
     if let Some(pos) = slice.rfind('\n') {
@@ -754,23 +751,22 @@ mod tests {
     #[test]
     fn page_text_truncation_emoji_boundary() {
         // "hello" = 5 bytes, "😀" = 4 bytes, "world" = 5 bytes; total = 14
-        // max = 7: chars starting at byte < 7 are included: h(0),e(1),l(2),l(3),o(4),😀(5)
-        // boundary = 5 + 4 = 9; slice = "hello😀"
+        // max = 7: the emoji would end at byte 9, so it must be excluded.
         let text = "hello😀world";
         let truncated = truncate_page_text(text, 7);
-        assert_eq!(truncated, "hello\u{1f600}");
+        assert_eq!(truncated, "hello");
+        assert!(truncated.len() <= 7);
         assert!(truncated.is_char_boundary(truncated.len()));
     }
 
     #[test]
     fn page_text_truncation_mid_multibyte() {
         // "ab中文" = 2 + 3 + 3 = 8 bytes
-        // max = 4: chars starting at byte < 4 are included: 'a'(0), 'b'(1), '中'(2)
-        // '文' starts at byte 5 which is >= 4, excluded
-        // boundary = 2 + 3 = 5; slice = "ab中"
+        // max = 4: '中' would end at byte 5, so it must be excluded.
         let text = "ab中文";
         let truncated = truncate_page_text(text, 4);
-        assert_eq!(truncated, "ab中");
+        assert_eq!(truncated, "ab");
+        assert!(truncated.len() <= 4);
         assert!(truncated.is_char_boundary(truncated.len()));
     }
 
