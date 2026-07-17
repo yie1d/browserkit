@@ -122,6 +122,13 @@ is present, it connects directly to the browser WebSocket URL instead of
 requiring `/json/version`. If explicit `bk browser connect localhost:<port>`
 fails, prefer `bk browser discover` or pass the full WebSocket URL.
 
+Chrome may also wait for an in-browser remote-debugging authorization. If the
+debug port accepts TCP connections but the WebSocket upgrade times out, bring
+the Chrome window to the foreground, open `chrome://inspect/#remote-debugging`,
+and confirm the **Allow remote debugging** prompt. Then retry `bk connect`. A
+stale `DevToolsActivePort` file can produce similar symptoms after Chrome exits;
+restart Chrome or disable and re-enable remote debugging before retrying.
+
 ## Security Considerations
 
 - Attaching gives browserkit control over authenticated browser sessions,

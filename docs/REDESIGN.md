@@ -130,7 +130,7 @@ Session 是 v2 中 agent 与浏览器交互的隔离单元。它取代了 v1 中
 | 当前 active tab 被关闭 | 回退到上一个 tab |
 | `--target` 显式指定操作其他 tab | active tab **不变** |
 
-当前限制：click 触发的新 target 不会自动登记为 session tab，也不会自动成为 active tab；该能力需要 session-native target lifecycle tracking。
+click 触发可跟踪的新 target 时，session-native target watcher 会登记该 tab、将其设为 active，并让 `act click` 返回 `new_tab` target ID。
 
 **与 Chrome 焦点 tab 的区别**：session active tab 是 bk 内部的逻辑概念，不等于 Chrome UI 中用户看到的前台 tab。这允许 agent 在后台操作 tab 而不干扰用户。
 
@@ -1487,7 +1487,7 @@ bk act click --ref 89
 | 多 agent 隔离 | workspace 手动管理，有竞态 | session 自动隔离，BrowserContext 保证 |
 | Session 资源控制 | workspace_timeout 30分钟，无数量上限 | max_sessions/max_tabs 配额，72h 超时 |
 | 用户 tab 保护 | 无保护，可能误操作 | agent 不可见用户 tab |
-| 新 tab 归属 | 推断，有竞态 | `bk open` 创建的 tab 纳入 session；click 新 target 尚未接入生命周期追踪 |
+| 新 tab 归属 | 推断，有竞态 | `bk open` 和 click 产生的新 target 都由 session-native lifecycle tracking 登记 |
 | session 生命周期 | workspace 手动管理 | 自动创建，72h 超时，支持显式 close |
 | 操作后获知结果 | 需额外调 `info` | 自动附带 state_diff |
 | 输出格式 | text/json/tsv 三选一 | 永远 JSON |
@@ -1495,7 +1495,7 @@ bk act click --ref 89
 | 默认 type 行为 | 追加（append） | 替换（clear + type） |
 | 错误信息 | 纯文本 string | 结构化（code + message + suggestion + recoverable） |
 | workspace 概念 | 暴露给用户，需手动管理 | 删除，由 session 内部替代 |
-| dialog 处理 | 需手动 dialog accept/dismiss | 默认 auto-dismiss，阻塞时 act 返回报告 |
+| dialog 处理 | 需手动 dialog accept/dismiss | 默认 manual；可用 `bk dialog policy accept|dismiss` 配置自动策略 |
 | 浏览器启动 | 默认 auto-launch headless | 完全禁止 auto-launch |
 | daemon 访问控制 | 无鉴权 | daemon.token 随机 token |
 | agent 认知负担 | 高（需理解 ws/tab/browser/daemon 关系） | 低（只需理解 snapshot + act + session） |
