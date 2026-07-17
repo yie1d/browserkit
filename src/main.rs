@@ -1943,8 +1943,10 @@ mod tests {
         .unwrap();
         assert!(matches!(
             scroll.command,
-            Command::Act { ref kind, ref direction, amount: Some(250.0), .. }
-                if kind.as_deref() == Some("scroll") && direction.as_deref() == Some("down")
+            Command::Act { ref kind, ref direction, amount: Some(amount), .. }
+                if kind.as_deref() == Some("scroll")
+                    && direction.as_deref() == Some("down")
+                    && amount == 250.0
         ));
 
         let hover = try_parse(&["bk", "act", "hover", "--ref", "42"]).unwrap();
