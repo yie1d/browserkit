@@ -63,6 +63,8 @@ pub struct DaemonState {
     /// Set when a newer-version state.json is detected on disk to avoid
     /// clobbering data written by a newer binary.
     pub persist_disabled: AtomicBool,
+    /// Human-readable reason persistence was disabled for this daemon run.
+    pub persist_disabled_reason: Mutex<Option<String>>,
     /// Report from a v2 -> v3 startup migration, retained for status and future persists.
     pub migration_report: Mutex<Option<MigrationReport>>,
     /// Sessions: name -> Session.
@@ -97,6 +99,7 @@ impl DaemonState {
             console_subscription_tokens: DashMap::new(),
             dialog_state: DialogState::new(),
             persist_disabled: AtomicBool::new(false),
+            persist_disabled_reason: Mutex::new(None),
             migration_report: Mutex::new(None),
             sessions: DashMap::new(),
         }

@@ -50,6 +50,7 @@ impl MigrationReport {
 pub struct LoadStateResult {
     pub state: PersistedStateV3,
     pub persist_disabled: bool,
+    pub persist_disabled_reason: Option<String>,
     pub migration_report: Option<MigrationReport>,
 }
 
@@ -176,23 +177,30 @@ pub fn load_state_from_path(path: &Path) -> Result<LoadStateResult, MigrationErr
             return Ok(LoadStateResult {
                 state: PersistedStateV3::empty(),
                 persist_disabled: false,
+                persist_disabled_reason: None,
                 migration_report: None,
             });
         }
-        Err(_) => {
-            return Ok(disabled_empty_result());
+        Err(error) => {
+            return Ok(disabled_empty_result(format!(
+                "failed to read state.json: {error}"
+            )));
         }
     };
 
     let value: serde_json::Value = match serde_json::from_str(&content) {
         Ok(value) => value,
-        Err(_) => {
-            return Ok(disabled_empty_result());
+        Err(error) => {
+            return Ok(disabled_empty_result(format!(
+                "state.json contains invalid JSON: {error}"
+            )));
         }
     };
 
     let Some(version) = value.get("version").and_then(|version| version.as_u64()) else {
-        return Ok(disabled_empty_result());
+        return Ok(disabled_empty_result(
+            "state.json has no numeric version field".into(),
+        ));
     };
 
     match version {
@@ -207,6 +215,7 @@ pub fn load_state_from_path(path: &Path) -> Result<LoadStateResult, MigrationErr
             Ok(LoadStateResult {
                 state,
                 persist_disabled: false,
+                persist_disabled_reason: None,
                 migration_report: Some(report),
             })
         }
@@ -215,10 +224,15 @@ pub fn load_state_from_path(path: &Path) -> Result<LoadStateResult, MigrationErr
                 migration_report: state.migration.clone(),
                 state,
                 persist_disabled: false,
+                persist_disabled_reason: None,
             }),
-            Err(_) => Ok(disabled_empty_result()),
+            Err(error) => Ok(disabled_empty_result(format!(
+                "state.json is not valid schema v3: {error}"
+            ))),
         },
-        newer if newer > PersistedStateV3::CURRENT_VERSION as u64 => Ok(disabled_empty_result()),
+        newer if newer > PersistedStateV3::CURRENT_VERSION as u64 => Ok(disabled_empty_result(
+            format!("state.json uses newer state version {newer}"),
+        )),
         other => Err(MigrationError::InvalidState(format!(
             "unsupported state version {other}"
         ))),
@@ -256,10 +270,11 @@ fn create_v2_backup(path: &Path, content: &str) -> Result<PathBuf, std::io::Erro
     }
 }
 
-fn disabled_empty_result() -> LoadStateResult {
+fn disabled_empty_result(reason: String) -> LoadStateResult {
     LoadStateResult {
         state: PersistedStateV3::empty(),
         persist_disabled: true,
+        persist_disabled_reason: Some(reason),
         migration_report: None,
     }
 }
@@ -567,6 +582,10 @@ mod tests {
         let loaded = load_state_from_path(&state_path).unwrap();
 
         assert!(loaded.persist_disabled);
+        assert!(loaded
+            .persist_disabled_reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("invalid JSON")));
         assert_eq!(std::fs::read_to_string(state_path).unwrap(), "{not-json");
     }
 
@@ -584,6 +603,10 @@ mod tests {
         let loaded = load_state_from_path(&state_path).unwrap();
 
         assert!(loaded.persist_disabled);
+        assert!(loaded
+            .persist_disabled_reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("newer state version")));
         assert_eq!(
             serde_json::from_str::<serde_json::Value>(
                 &std::fs::read_to_string(state_path).unwrap()

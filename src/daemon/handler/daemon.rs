@@ -21,6 +21,10 @@ pub async fn handle_daemon_status(state: &Arc<DaemonState>, ctx: &HandlerContext
     let now = now_ts();
     let uptime_seconds = now.saturating_sub(state.started_at);
     let migration = state.migration_report.lock().clone();
+    let persistence_enabled = !state
+        .persist_disabled
+        .load(std::sync::atomic::Ordering::Relaxed);
+    let persistence_disabled_reason = state.persist_disabled_reason.lock().clone();
 
     Response::ok(json!({
         "pid": ctx.pid,
@@ -30,6 +34,10 @@ pub async fn handle_daemon_status(state: &Arc<DaemonState>, ctx: &HandlerContext
         "uptime_seconds": uptime_seconds,
         "request_count": state.request_count.load(std::sync::atomic::Ordering::Relaxed),
         "migration": migration,
+        "persistence": {
+            "enabled": persistence_enabled,
+            "disabled_reason": persistence_disabled_reason,
+        },
         "config": {
             "session_timeout_hours": state.config.limits.session_timeout_hours,
             "max_sessions": state.config.limits.max_sessions,
@@ -160,6 +168,25 @@ mod tests {
 
         assert_eq!(value["data"]["migration"]["source_version"], 2);
         assert_eq!(value["data"]["migration"]["duplicate_targets_dropped"], 1);
+    }
+
+    #[tokio::test]
+    async fn daemon_status_exposes_persistence_disabled_reason() {
+        let state = Arc::new(DaemonState::new());
+        state
+            .persist_disabled
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        *state.persist_disabled_reason.lock() =
+            Some("state.json uses newer state version 4".into());
+
+        let value =
+            serde_json::to_value(handle_daemon_status(&state, &test_context()).await).unwrap();
+
+        assert_eq!(value["data"]["persistence"]["enabled"], false);
+        assert_eq!(
+            value["data"]["persistence"]["disabled_reason"],
+            "state.json uses newer state version 4"
+        );
     }
 
     #[tokio::test]

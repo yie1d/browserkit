@@ -193,7 +193,11 @@ pub async fn start_daemon() -> Result<DaemonStartResult, crate::error::BkError> 
     let state = Arc::new(fresh_state);
     persist::spawn_persist_task_with_rx(Arc::clone(&state), persist_rx);
 
-    // Bind TCP listener + write port file FIRST so daemon is immediately reachable
+    // Restore all persisted runtime state before advertising readiness. This
+    // prevents the first client request from racing with session insertion.
+    persist::restore_into_state(&state).await;
+
+    // Bind TCP listener and write the port file only after restore completes.
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
     // Clone a receiver for the caller (run_daemon_start) to await shutdown signal
     let caller_shutdown_rx = shutdown_rx.clone();
@@ -216,13 +220,6 @@ pub async fn start_daemon() -> Result<DaemonStartResult, crate::error::BkError> 
 
     // Spawn background cleanup task for expired sessions.
     let _cleanup_handle = server::spawn_cleanup_task(state.clone(), cleanup_interval);
-
-    // Spawn background restore: reconnect managed browsers + re-attach tabs
-    // This does NOT block daemon readiness — clients can connect immediately.
-    let restore_state = Arc::clone(&state);
-    tokio::spawn(async move {
-        persist::restore_into_state(&restore_state).await;
-    });
 
     Ok(DaemonStartResult {
         server,

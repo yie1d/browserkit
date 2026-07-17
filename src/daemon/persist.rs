@@ -176,6 +176,7 @@ pub fn load_persisted_state() -> LoadStateResult {
             LoadStateResult {
                 state: PersistedStateV3::empty(),
                 persist_disabled: true,
+                persist_disabled_reason: Some(format!("failed to load persisted state: {error}")),
                 migration_report: None,
             }
         }
@@ -360,6 +361,7 @@ pub async fn restore_into_state(state: &Arc<DaemonState>) {
             .persist_disabled
             .store(true, std::sync::atomic::Ordering::Relaxed);
     }
+    *state.persist_disabled_reason.lock() = loaded.persist_disabled_reason.clone();
     *state.migration_report.lock() = loaded.migration_report.clone();
 
     cleanup_stale_chrome_dirs(&loaded.state.browsers);
