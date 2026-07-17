@@ -582,7 +582,7 @@ mod tests {
         assert_eq!(data["status"], "stopping");
         assert!(data.get("sessions_closed").is_some());
         assert!(data
-            .get(&[["work", "spaces"].concat(), "closed".into()].join("_"))
+            .get([["work", "spaces"].concat(), "closed".into()].join("_"))
             .is_none());
         drop(stream);
 
@@ -621,7 +621,7 @@ mod tests {
         assert!(data["pid"].as_u64().unwrap() > 0);
         assert_eq!(data["browsers"], 0);
         assert_eq!(data["sessions"], 0);
-        assert!(data.get(&["work", "spaces"].concat()).is_none());
+        assert!(data.get(["work", "spaces"].concat()).is_none());
     }
 
     use std::time::{SystemTime, UNIX_EPOCH};

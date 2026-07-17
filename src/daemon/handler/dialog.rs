@@ -286,8 +286,8 @@ mod tests {
         assert_eq!(value["ok"], true);
         assert_eq!(value["data"][0]["session"], "agent");
         assert_eq!(value["data"][0]["target"], "T1");
-        assert!(value["data"][0].get(&old_w_id_key()).is_none());
-        assert!(value["data"][0].get(&old_t_id_key()).is_none());
+        assert!(value["data"][0].get(old_w_id_key()).is_none());
+        assert!(value["data"][0].get(old_t_id_key()).is_none());
     }
 
     #[tokio::test]
@@ -309,7 +309,7 @@ mod tests {
         assert_eq!(value["ok"], true);
         assert_eq!(value["data"]["session"], "agent");
         assert_eq!(value["data"]["policy"], "accept");
-        assert!(value["data"].get(&old_w_id_key()).is_none());
+        assert!(value["data"].get(old_w_id_key()).is_none());
         assert_eq!(state.dialog_state.get_policy("agent"), DialogPolicy::Accept);
     }
 

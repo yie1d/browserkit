@@ -246,6 +246,7 @@ pub fn stop_daemon_cleanup() {
 }
 
 #[cfg(test)]
+#[allow(clippy::await_holding_lock)]
 mod tests {
     use super::*;
 
@@ -514,7 +515,7 @@ mod tests {
             changed.is_ok(),
             "shutdown_rx.changed() should resolve after daemon.stop"
         );
-        assert_eq!(*shutdown_rx.borrow(), true);
+        assert!(*shutdown_rx.borrow());
 
         // The TCP server accept loop should have stopped — new connections should fail
         let mut failed = false;

@@ -137,7 +137,7 @@ bk session cookies                  # Cookie operations
 | `navigate` | Navigate to URL or back/forward/reload |
 | `wait` | Wait for a page condition |
 | `evaluate` | Execute JavaScript |
-| `network watch` | Observe a bounded number of XHR/fetch responses |
+| `network watch` | Observe bounded XHR/fetch response metadata without bodies |
 | `download` | Click an element and track its download lifecycle |
 | `html` | Get page HTML |
 | `console` | Show the console log buffer |
@@ -295,8 +295,12 @@ bk network watch --pattern "/api/orders" --count 3 --timeout 10000
 `network watch` observes only XHR/fetch responses whose URL contains the
 pattern. It returns JSON after `count` matching responses complete or the
 timeout expires, with `stop_reason` and `timed_out`; it is not an infinite
-stream. JSON response bodies are returned as structured values, while non-JSON
-or base64 bodies remain JSON strings.
+stream. Responses are metadata-only: status, headers, MIME type, encoded size,
+and failure metadata are returned, while `body` is always `null` with
+`body_omitted=true` and `body_omission_reason="metadata_only"`. The three CDP
+event streams and the out-of-order terminal-event buffer each have an explicit
+capacity of 256. Overflow or stream closure stops observation with structured
+`stop_reason`, `event_streams`, and `terminal_buffer` metadata.
 
 ### download
 

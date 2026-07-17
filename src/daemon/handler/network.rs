@@ -1,6 +1,6 @@
 // Network developer handlers: request block and unblock.
 
-use std::{collections::HashMap, sync::Arc, time::Duration};
+use std::{collections::HashMap, num::NonZeroUsize, sync::Arc, time::Duration};
 
 use futures::{Stream, StreamExt};
 use serde_json::json;
@@ -11,8 +11,8 @@ use crate::daemon::protocol::{Request, Response};
 use crate::daemon::state::DaemonState;
 use crate::error::BkError;
 
-const MAX_RESPONSE_BODY_BYTES: usize = 1024 * 1024;
-const MAX_TOTAL_BODY_BYTES: usize = 4 * 1024 * 1024;
+const NETWORK_EVENT_CAPACITY: usize = 256;
+const TERMINAL_EVENT_CAPACITY: usize = 256;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct NetworkWatchParams {
@@ -80,103 +80,134 @@ fn response_matches(
     ) && url.contains(pattern)
 }
 
-fn decode_response_body(body: &str, base64_encoded: bool) -> serde_json::Value {
-    if base64_encoded {
-        return json!(body);
-    }
-    serde_json::from_str(body).unwrap_or_else(|_| json!(body))
-}
-
 fn can_track_matching_response(response_count: usize, pending_count: usize, count: usize) -> bool {
     response_count.saturating_add(pending_count) < count
 }
 
-#[derive(Debug, PartialEq)]
-struct BoundedResponseBody {
-    body: serde_json::Value,
-    original_bytes: usize,
-    included_bytes: usize,
-    truncated: bool,
-    omitted: bool,
-    limit_reason: Option<String>,
+#[derive(Debug)]
+enum TerminalEvent {
+    Finished { encoded_data_length: f64 },
+    Failed { error_text: String, canceled: bool },
 }
 
-fn utf8_prefix_at_most(value: &str, max_bytes: usize) -> &str {
-    if value.len() <= max_bytes {
-        return value;
-    }
-    let mut boundary = max_bytes;
-    while !value.is_char_boundary(boundary) {
-        boundary -= 1;
-    }
-    &value[..boundary]
+struct TerminalBuffer {
+    events: HashMap<String, TerminalEvent>,
+    capacity: usize,
+    dropped: usize,
 }
 
-fn bounded_response_body(
-    body: &str,
-    base64_encoded: bool,
-    single_limit: usize,
-    remaining_total: &mut usize,
-) -> BoundedResponseBody {
-    let original_bytes = body.len();
-    if *remaining_total == 0 {
-        return BoundedResponseBody {
-            body: serde_json::Value::Null,
-            original_bytes,
-            included_bytes: 0,
-            truncated: original_bytes > 0,
-            omitted: true,
-            limit_reason: Some("total_body_limit".into()),
-        };
-    }
-
-    let allowed = single_limit.min(*remaining_total);
-    let included = utf8_prefix_at_most(body, allowed);
-    let included_bytes = included.len();
-    *remaining_total = remaining_total.saturating_sub(included_bytes);
-    let truncated = included_bytes < original_bytes;
-    let limit_reason = truncated.then(|| {
-        if allowed < single_limit {
-            "total_body_limit".to_string()
-        } else {
-            "single_body_limit".to_string()
+impl TerminalBuffer {
+    fn new(capacity: usize) -> Self {
+        assert!(capacity > 0, "terminal buffer capacity must be positive");
+        Self {
+            events: HashMap::with_capacity(capacity),
+            capacity,
+            dropped: 0,
         }
-    });
-    let body = if truncated || base64_encoded {
-        json!(included)
-    } else {
-        decode_response_body(included, false)
-    };
+    }
 
-    BoundedResponseBody {
-        body,
-        original_bytes,
-        included_bytes,
-        truncated,
-        omitted: false,
-        limit_reason,
+    fn insert(&mut self, request_id: String, event: TerminalEvent) -> bool {
+        let is_full = self.events.len() >= self.capacity;
+        match self.events.entry(request_id) {
+            std::collections::hash_map::Entry::Occupied(mut entry) => {
+                entry.insert(event);
+                true
+            }
+            std::collections::hash_map::Entry::Vacant(_) if is_full => {
+                self.dropped += 1;
+                false
+            }
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                entry.insert(event);
+                true
+            }
+        }
+    }
+
+    fn take(&mut self, request_id: &str) -> Option<TerminalEvent> {
+        self.events.remove(request_id)
+    }
+
+    fn len(&self) -> usize {
+        self.events.len()
+    }
+
+    fn dropped(&self) -> usize {
+        self.dropped
+    }
+
+    fn overflowed(&self) -> bool {
+        self.dropped > 0
+    }
+
+    fn metadata(&self) -> serde_json::Value {
+        json!({
+            "capacity": self.capacity,
+            "pending": self.len(),
+            "dropped_events": self.dropped(),
+            "overflowed": self.overflowed(),
+        })
     }
 }
 
-enum ResponseBodyFetch {
-    Loaded(Result<cdpkit::network::responses::GetResponseBodyResponse, cdpkit::CdpError>),
-    Skipped(&'static str),
+struct EventStreamStop {
+    reason: &'static str,
+    stream: &'static str,
+    error: Option<String>,
+    overflow: Option<serde_json::Value>,
 }
 
-fn body_fetch_skip_reason(
-    encoded_data_length: f64,
-    remaining_total: usize,
-) -> Option<&'static str> {
-    if remaining_total == 0 {
-        return Some("total_body_limit");
+impl EventStreamStop {
+    fn closed(stream: &'static str) -> Self {
+        Self {
+            reason: "event_stream_closed",
+            stream,
+            error: None,
+            overflow: None,
+        }
     }
-    if encoded_data_length.is_finite() && encoded_data_length > MAX_RESPONSE_BODY_BYTES as f64 {
-        return Some("single_body_limit");
+
+    fn from_error(stream: &'static str, error: cdpkit::CdpError) -> Self {
+        match error {
+            cdpkit::CdpError::EventStreamOverflow {
+                event,
+                capacity,
+                dropped,
+            } => Self {
+                reason: "event_stream_overflow",
+                stream,
+                error: None,
+                overflow: Some(json!({
+                    "event": event,
+                    "capacity": capacity,
+                    "dropped_events": dropped,
+                })),
+            },
+            error => Self {
+                reason: "event_stream_error",
+                stream,
+                error: Some(error.to_string()),
+                overflow: None,
+            },
+        }
     }
-    if encoded_data_length.is_finite() && encoded_data_length > remaining_total as f64 {
-        return Some("total_body_limit");
+
+    fn observed_overflow(dropped_events: serde_json::Value) -> Self {
+        Self {
+            reason: "event_stream_overflow",
+            stream: "multiple",
+            error: None,
+            overflow: Some(json!({"dropped_events": dropped_events})),
+        }
     }
-    None
+
+    fn metadata(&self) -> serde_json::Value {
+        json!({
+            "stream": self.stream,
+            "error": self.error,
+            "overflow": self.overflow,
+        })
+    }
 }
 
 enum SelectedNetworkEvent<R, F, L> {
@@ -184,7 +215,7 @@ enum SelectedNetworkEvent<R, F, L> {
     Finished(F),
     Failed(L),
     Timeout,
-    StreamClosed,
+    StreamClosed(&'static str),
 }
 
 async fn select_network_event<R, F, L, RS, FS, LS>(
@@ -202,13 +233,13 @@ where
         _ = tokio::time::sleep_until(deadline) => SelectedNetworkEvent::Timeout,
         event = response_events.next() => event
             .map(SelectedNetworkEvent::Response)
-            .unwrap_or(SelectedNetworkEvent::StreamClosed),
+            .unwrap_or(SelectedNetworkEvent::StreamClosed("response_received")),
         event = finished_events.next() => event
             .map(SelectedNetworkEvent::Finished)
-            .unwrap_or(SelectedNetworkEvent::StreamClosed),
+            .unwrap_or(SelectedNetworkEvent::StreamClosed("loading_finished")),
         event = failed_events.next() => event
             .map(SelectedNetworkEvent::Failed)
-            .unwrap_or(SelectedNetworkEvent::StreamClosed),
+            .unwrap_or(SelectedNetworkEvent::StreamClosed("loading_failed")),
     }
 }
 
@@ -235,63 +266,7 @@ impl PendingResponse {
         }
     }
 
-    fn completed(
-        self,
-        encoded_data_length: f64,
-        body_fetch: ResponseBodyFetch,
-        remaining_total: &mut usize,
-    ) -> serde_json::Value {
-        let (
-            body,
-            base64_encoded,
-            body_error,
-            original_bytes,
-            included_bytes,
-            truncated,
-            omitted,
-            limit_reason,
-        ) = match body_fetch {
-            ResponseBodyFetch::Loaded(Ok(body)) => {
-                let base64_encoded = body.base64_encoded;
-                let bounded = bounded_response_body(
-                    &body.body,
-                    base64_encoded,
-                    MAX_RESPONSE_BODY_BYTES,
-                    remaining_total,
-                );
-                (
-                    bounded.body,
-                    base64_encoded,
-                    None,
-                    Some(bounded.original_bytes),
-                    bounded.included_bytes,
-                    bounded.truncated,
-                    bounded.omitted,
-                    bounded.limit_reason,
-                )
-            }
-            ResponseBodyFetch::Loaded(Err(error)) => (
-                serde_json::Value::Null,
-                false,
-                Some(error.to_string()),
-                None,
-                0,
-                false,
-                true,
-                None,
-            ),
-            ResponseBodyFetch::Skipped(reason) => (
-                serde_json::Value::Null,
-                false,
-                None,
-                None,
-                0,
-                false,
-                true,
-                Some(reason.to_string()),
-            ),
-        };
-
+    fn completed(self, encoded_data_length: f64) -> serde_json::Value {
         json!({
             "request_id": self.request_id,
             "url": self.url,
@@ -301,19 +276,14 @@ impl PendingResponse {
             "resource_type": self.resource_type,
             "headers": self.headers,
             "encoded_data_length": encoded_data_length,
-            "body": body,
-            "base64_encoded": base64_encoded,
-            "body_error": body_error,
-            "body_original_bytes": original_bytes,
-            "body_included_bytes": included_bytes,
-            "body_truncated": truncated,
-            "body_omitted": omitted,
-            "body_limit_reason": limit_reason,
+            "body": null,
+            "body_omitted": true,
+            "body_omission_reason": "metadata_only",
             "failed": false,
         })
     }
 
-    fn failed(self, event: cdpkit::network::events::LoadingFailed) -> serde_json::Value {
+    fn failed(self, error_text: String, canceled: bool) -> serde_json::Value {
         json!({
             "request_id": self.request_id,
             "url": self.url,
@@ -323,18 +293,50 @@ impl PendingResponse {
             "resource_type": self.resource_type,
             "headers": self.headers,
             "body": null,
-            "base64_encoded": false,
-            "body_error": null,
-            "body_original_bytes": null,
-            "body_included_bytes": 0,
-            "body_truncated": false,
             "body_omitted": true,
-            "body_limit_reason": null,
+            "body_omission_reason": "metadata_only",
             "failed": true,
-            "error_text": event.error_text,
-            "canceled": event.canceled.unwrap_or(false),
+            "error_text": error_text,
+            "canceled": canceled,
         })
     }
+
+    fn terminal(self, event: TerminalEvent) -> serde_json::Value {
+        match event {
+            TerminalEvent::Finished {
+                encoded_data_length,
+            } => self.completed(encoded_data_length),
+            TerminalEvent::Failed {
+                error_text,
+                canceled,
+            } => self.failed(error_text, canceled),
+        }
+    }
+}
+
+fn record_response(
+    pending: &mut HashMap<String, PendingResponse>,
+    terminals: &mut TerminalBuffer,
+    response: PendingResponse,
+) -> Option<serde_json::Value> {
+    if let Some(event) = terminals.take(&response.request_id) {
+        return Some(response.terminal(event));
+    }
+    pending.insert(response.request_id.clone(), response);
+    None
+}
+
+fn record_terminal(
+    pending: &mut HashMap<String, PendingResponse>,
+    terminals: &mut TerminalBuffer,
+    request_id: String,
+    event: TerminalEvent,
+) -> Option<serde_json::Value> {
+    if let Some(response) = pending.remove(&request_id) {
+        return Some(response.terminal(event));
+    }
+    terminals.insert(request_id, event);
+    None
 }
 
 pub async fn handle_network_watch(req: &Request, state: &Arc<DaemonState>) -> Response {
@@ -348,9 +350,27 @@ pub async fn handle_network_watch(req: &Request, state: &Arc<DaemonState>) -> Re
     };
 
     let session = ctx.cdp.session(&ctx.cdp_session_id);
-    let mut response_events = cdpkit::network::events::ResponseReceived::subscribe(&session);
-    let mut finished_events = cdpkit::network::events::LoadingFinished::subscribe(&session);
-    let mut failed_events = cdpkit::network::events::LoadingFailed::subscribe(&session);
+    let event_policy = cdpkit::EventStreamPolicy::Bounded {
+        capacity: NonZeroUsize::new(NETWORK_EVENT_CAPACITY).expect("positive event capacity"),
+        overflow: cdpkit::EventOverflowStrategy::CloseStream,
+    };
+    let mut response_events =
+        cdpkit::network::events::ResponseReceived::subscribe_result_with_policy(
+            &session,
+            event_policy,
+        );
+    let mut finished_events =
+        cdpkit::network::events::LoadingFinished::subscribe_result_with_policy(
+            &session,
+            event_policy,
+        );
+    let mut failed_events = cdpkit::network::events::LoadingFailed::subscribe_result_with_policy(
+        &session,
+        event_policy,
+    );
+    let response_event_stats = response_events.stats();
+    let finished_event_stats = finished_events.stats();
+    let failed_event_stats = failed_events.stats();
 
     if let Err(error) = cdpkit::network::methods::Enable::new().send(&session).await {
         return Response::error_detail(
@@ -362,9 +382,10 @@ pub async fn handle_network_watch(req: &Request, state: &Arc<DaemonState>) -> Re
 
     let deadline = tokio::time::Instant::now() + Duration::from_millis(params.timeout);
     let mut pending = HashMap::<String, PendingResponse>::new();
+    let mut terminals = TerminalBuffer::new(TERMINAL_EVENT_CAPACITY);
     let mut responses = Vec::with_capacity(params.count);
     let mut dropped_matching_responses = 0usize;
-    let mut remaining_body_bytes = MAX_TOTAL_BODY_BYTES;
+    let mut event_stream_stop = None;
     let stop_reason = loop {
         if responses.len() >= params.count {
             break "count";
@@ -379,51 +400,95 @@ pub async fn handle_network_watch(req: &Request, state: &Arc<DaemonState>) -> Re
         .await
         {
             SelectedNetworkEvent::Timeout => break "timeout",
-            SelectedNetworkEvent::StreamClosed => break "stream_closed",
-            SelectedNetworkEvent::Response(event) => {
+            SelectedNetworkEvent::StreamClosed(stream) => {
+                event_stream_stop = Some(EventStreamStop::closed(stream));
+                break "event_stream_closed";
+            }
+            SelectedNetworkEvent::Response(Err(error)) => {
+                let stop = EventStreamStop::from_error("response_received", error);
+                let reason = stop.reason;
+                event_stream_stop = Some(stop);
+                break reason;
+            }
+            SelectedNetworkEvent::Finished(Err(error)) => {
+                let stop = EventStreamStop::from_error("loading_finished", error);
+                let reason = stop.reason;
+                event_stream_stop = Some(stop);
+                break reason;
+            }
+            SelectedNetworkEvent::Failed(Err(error)) => {
+                let stop = EventStreamStop::from_error("loading_failed", error);
+                let reason = stop.reason;
+                event_stream_stop = Some(stop);
+                break reason;
+            }
+            SelectedNetworkEvent::Response(Ok(event)) => {
                 if response_matches(&event.type_, &event.response.url, &params.pattern) {
                     if pending.contains_key(&event.request_id)
                         || can_track_matching_response(responses.len(), pending.len(), params.count)
                     {
-                        pending
-                            .insert(event.request_id.clone(), PendingResponse::from_event(event));
+                        if let Some(response) = record_response(
+                            &mut pending,
+                            &mut terminals,
+                            PendingResponse::from_event(event),
+                        ) {
+                            responses.push(response);
+                        }
                     } else {
+                        terminals.take(&event.request_id);
                         dropped_matching_responses += 1;
                     }
+                } else {
+                    terminals.take(&event.request_id);
                 }
             }
-            SelectedNetworkEvent::Finished(event) => {
-                if let Some(response) = pending.remove(&event.request_id) {
-                    let body_fetch = match body_fetch_skip_reason(
-                        event.encoded_data_length,
-                        remaining_body_bytes,
-                    ) {
-                        Some(reason) => ResponseBodyFetch::Skipped(reason),
-                        None => match tokio::time::timeout_at(
-                            deadline,
-                            cdpkit::network::methods::GetResponseBody::new(event.request_id)
-                                .send(&session),
-                        )
-                        .await
-                        {
-                            Ok(result) => ResponseBodyFetch::Loaded(result),
-                            Err(_) => break "timeout",
-                        },
-                    };
-                    responses.push(response.completed(
-                        event.encoded_data_length,
-                        body_fetch,
-                        &mut remaining_body_bytes,
-                    ));
+            SelectedNetworkEvent::Finished(Ok(event)) => {
+                if let Some(response) = record_terminal(
+                    &mut pending,
+                    &mut terminals,
+                    event.request_id,
+                    TerminalEvent::Finished {
+                        encoded_data_length: event.encoded_data_length,
+                    },
+                ) {
+                    responses.push(response);
                 }
             }
-            SelectedNetworkEvent::Failed(event) => {
-                if let Some(response) = pending.remove(&event.request_id) {
-                    responses.push(response.failed(event));
+            SelectedNetworkEvent::Failed(Ok(event)) => {
+                if let Some(response) = record_terminal(
+                    &mut pending,
+                    &mut terminals,
+                    event.request_id,
+                    TerminalEvent::Failed {
+                        error_text: event.error_text,
+                        canceled: event.canceled.unwrap_or(false),
+                    },
+                ) {
+                    responses.push(response);
                 }
             }
         }
     };
+
+    let response_events_dropped = response_event_stats.dropped_events();
+    let finished_events_dropped = finished_event_stats.dropped_events();
+    let failed_events_dropped = failed_event_stats.dropped_events();
+    let dropped_events = json!({
+        "response_received": response_events_dropped,
+        "loading_finished": finished_events_dropped,
+        "loading_failed": failed_events_dropped,
+    });
+    if event_stream_stop.is_none()
+        && response_events_dropped
+            .saturating_add(finished_events_dropped)
+            .saturating_add(failed_events_dropped)
+            > 0
+    {
+        event_stream_stop = Some(EventStreamStop::observed_overflow(dropped_events.clone()));
+    }
+    let stop_reason = event_stream_stop
+        .as_ref()
+        .map_or(stop_reason, |stop| stop.reason);
 
     touch_session(state, &ctx.session_name);
     Response::ok(json!({
@@ -436,11 +501,18 @@ pub async fn handle_network_watch(req: &Request, state: &Arc<DaemonState>) -> Re
         "pending_limit": params.count,
         "pending_count": pending.len(),
         "dropped_matching_responses": dropped_matching_responses,
-        "body_limits": {
-            "single_body_bytes": MAX_RESPONSE_BODY_BYTES,
-            "total_body_bytes": MAX_TOTAL_BODY_BYTES,
-            "included_body_bytes": MAX_TOTAL_BODY_BYTES - remaining_body_bytes,
+        "body_policy": {
+            "mode": "metadata_only",
+            "body_omitted": true,
+            "reason": "bounded_memory",
         },
+        "event_streams": {
+            "capacity_each": NETWORK_EVENT_CAPACITY,
+            "overflow_strategy": "close_stream",
+            "dropped_events": dropped_events,
+            "stop": event_stream_stop.as_ref().map(EventStreamStop::metadata),
+        },
+        "terminal_buffer": terminals.metadata(),
         "stop_reason": stop_reason,
         "timed_out": stop_reason == "timeout",
     }))
@@ -531,6 +603,18 @@ fn touch_session(state: &Arc<DaemonState>, session_name: &str) {
 mod tests {
     use super::*;
 
+    fn pending_response(request_id: &str) -> PendingResponse {
+        PendingResponse {
+            request_id: request_id.into(),
+            url: "https://example.test/api".into(),
+            status: 200,
+            status_text: "OK".into(),
+            mime_type: "application/json".into(),
+            resource_type: "XHR".into(),
+            headers: json!({}),
+        }
+    }
+
     fn request(params: serde_json::Value) -> Request {
         Request {
             cmd: "network.watch".into(),
@@ -594,19 +678,6 @@ mod tests {
     }
 
     #[test]
-    fn network_watch_body_is_always_json_serializable() {
-        assert_eq!(
-            decode_response_body(r#"{"ok":true}"#, false),
-            serde_json::json!({"ok": true})
-        );
-        assert_eq!(
-            decode_response_body("plain text", false),
-            serde_json::json!("plain text")
-        );
-        assert_eq!(decode_response_body("123", true), serde_json::json!("123"));
-    }
-
-    #[test]
     fn network_watch_pending_slots_never_exceed_requested_count() {
         assert!(can_track_matching_response(0, 0, 3));
         assert!(can_track_matching_response(1, 1, 3));
@@ -615,80 +686,33 @@ mod tests {
     }
 
     #[test]
-    fn network_watch_caps_single_and_total_body_bytes_with_metadata() {
-        let mut remaining_total = 6;
-        let first = bounded_response_body("abcdefgh", false, 4, &mut remaining_total);
-        assert_eq!(first.body, serde_json::json!("abcd"));
-        assert_eq!(first.original_bytes, 8);
-        assert_eq!(first.included_bytes, 4);
-        assert!(first.truncated);
-        assert!(!first.omitted);
-        assert_eq!(first.limit_reason.as_deref(), Some("single_body_limit"));
-        assert_eq!(remaining_total, 2);
+    fn network_watch_completed_response_is_metadata_only() {
+        let response = pending_response("REQ1").completed(8.0);
 
-        let second = bounded_response_body("wxyz", false, 4, &mut remaining_total);
-        assert_eq!(second.body, serde_json::json!("wx"));
-        assert_eq!(second.original_bytes, 4);
-        assert_eq!(second.included_bytes, 2);
-        assert!(second.truncated);
-        assert_eq!(second.limit_reason.as_deref(), Some("total_body_limit"));
-        assert_eq!(remaining_total, 0);
-
-        let third = bounded_response_body("ignored", false, 4, &mut remaining_total);
-        assert_eq!(third.body, serde_json::Value::Null);
-        assert!(third.omitted);
-        assert_eq!(third.limit_reason.as_deref(), Some("total_body_limit"));
+        assert_eq!(response["body"], serde_json::Value::Null);
+        assert_eq!(response["body_omitted"], true);
+        assert_eq!(response["body_omission_reason"], "metadata_only");
+        assert!(response.get("body_truncated").is_none());
+        assert!(response.get("body_original_bytes").is_none());
+        assert_eq!(NETWORK_EVENT_CAPACITY, 256);
+        assert_eq!(TERMINAL_EVENT_CAPACITY, 256);
     }
 
     #[test]
-    fn network_watch_body_truncation_respects_utf8_byte_limit() {
-        let mut remaining_total = 4;
-        let body = bounded_response_body("ab中文", false, 4, &mut remaining_total);
-        assert_eq!(body.body, serde_json::json!("ab"));
-        assert_eq!(body.included_bytes, 2);
-        assert!(body.truncated);
-    }
-
-    #[test]
-    fn network_watch_limits_are_fixed_and_reportable() {
-        assert_eq!(MAX_RESPONSE_BODY_BYTES, 1024 * 1024);
-        assert_eq!(MAX_TOTAL_BODY_BYTES, 4 * 1024 * 1024);
-    }
-
-    #[test]
-    fn network_watch_completed_response_reports_body_limit_metadata() {
-        let pending = PendingResponse {
-            request_id: "REQ1".into(),
-            url: "https://example.test/api".into(),
-            status: 200,
-            status_text: "OK".into(),
-            mime_type: "application/json".into(),
-            resource_type: "XHR".into(),
-            headers: json!({}),
-        };
-        let mut remaining_total = 4;
-        let response = pending.completed(
-            8.0,
-            ResponseBodyFetch::Loaded(Ok(cdpkit::network::responses::GetResponseBodyResponse {
-                body: "abcdefgh".into(),
-                base64_encoded: false,
-            })),
-            &mut remaining_total,
+    fn network_watch_event_overflow_is_structured() {
+        let stop = EventStreamStop::from_error(
+            "loading_finished",
+            cdpkit::CdpError::EventStreamOverflow {
+                event: "Network.loadingFinished".into(),
+                capacity: 256,
+                dropped: 1,
+            },
         );
 
-        assert_eq!(response["body"], "abcd");
-        assert_eq!(response["body_original_bytes"], 8);
-        assert_eq!(response["body_included_bytes"], 4);
-        assert_eq!(response["body_truncated"], true);
-        assert_eq!(response["body_omitted"], false);
-        assert_eq!(response["body_limit_reason"], "total_body_limit");
-        assert_eq!(remaining_total, 0);
-
-        assert_eq!(body_fetch_skip_reason(5.0, 4), Some("total_body_limit"));
-        assert_eq!(
-            body_fetch_skip_reason((MAX_RESPONSE_BODY_BYTES + 1) as f64, MAX_TOTAL_BODY_BYTES),
-            Some("single_body_limit")
-        );
+        assert_eq!(stop.reason, "event_stream_overflow");
+        assert_eq!(stop.metadata()["stream"], "loading_finished");
+        assert_eq!(stop.metadata()["overflow"]["capacity"], 256);
+        assert_eq!(stop.metadata()["overflow"]["dropped_events"], 1);
     }
 
     #[tokio::test]
@@ -704,10 +728,70 @@ mod tests {
                 SelectedNetworkEvent::Response(_) => seen[0] = true,
                 SelectedNetworkEvent::Finished(_) => seen[1] = true,
                 SelectedNetworkEvent::Failed(_) => seen[2] = true,
-                SelectedNetworkEvent::Timeout | SelectedNetworkEvent::StreamClosed => break,
+                SelectedNetworkEvent::Timeout | SelectedNetworkEvent::StreamClosed(_) => break,
             }
         }
 
         assert_eq!(seen, [true, true, true]);
+    }
+
+    #[test]
+    fn network_watch_reconciles_terminal_events_that_arrive_before_response() {
+        let mut pending = HashMap::new();
+        let mut terminals = TerminalBuffer::new(2);
+
+        assert!(terminals.insert(
+            "FINISHED".into(),
+            TerminalEvent::Finished {
+                encoded_data_length: 42.0,
+            },
+        ));
+        let finished = record_response(&mut pending, &mut terminals, pending_response("FINISHED"))
+            .expect("finished terminal must complete immediately");
+        assert_eq!(finished["request_id"], "FINISHED");
+        assert_eq!(finished["encoded_data_length"], 42.0);
+        assert_eq!(finished["body"], serde_json::Value::Null);
+        assert_eq!(finished["body_omitted"], true);
+        assert_eq!(finished["body_omission_reason"], "metadata_only");
+
+        assert!(terminals.insert(
+            "FAILED".into(),
+            TerminalEvent::Failed {
+                error_text: "net::ERR_ABORTED".into(),
+                canceled: true,
+            },
+        ));
+        let failed = record_response(&mut pending, &mut terminals, pending_response("FAILED"))
+            .expect("failed terminal must complete immediately");
+        assert_eq!(failed["request_id"], "FAILED");
+        assert_eq!(failed["failed"], true);
+        assert_eq!(failed["error_text"], "net::ERR_ABORTED");
+        assert_eq!(failed["canceled"], true);
+        assert!(pending.is_empty());
+        assert_eq!(terminals.len(), 0);
+    }
+
+    #[test]
+    fn network_watch_terminal_buffer_is_bounded_and_reports_overflow() {
+        let mut terminals = TerminalBuffer::new(1);
+
+        assert!(terminals.insert(
+            "REQ1".into(),
+            TerminalEvent::Finished {
+                encoded_data_length: 1.0,
+            },
+        ));
+        assert!(!terminals.insert(
+            "REQ2".into(),
+            TerminalEvent::Finished {
+                encoded_data_length: 2.0,
+            },
+        ));
+
+        assert_eq!(terminals.len(), 1);
+        assert_eq!(terminals.dropped(), 1);
+        assert!(terminals.overflowed());
+        assert!(terminals.take("REQ1").is_some());
+        assert!(terminals.take("REQ2").is_none());
     }
 }

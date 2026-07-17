@@ -1213,7 +1213,7 @@ mod tests {
     #[test]
     fn backend_ids_individual_failure_produces_none_not_zero() {
         // Simulates individual DescribeNode failures: should produce None, not Some(0)
-        let mut elements = vec![
+        let mut elements = [
             ElementInfo {
                 index: 0,
                 tag: "a".into(),
@@ -1253,7 +1253,7 @@ mod tests {
         ];
 
         // Simulate: first element resolved, second failed (None)
-        let ids: Vec<Option<i64>> = vec![Some(42), None];
+        let ids = [Some(42), None];
 
         for (el, id) in elements.iter_mut().zip(ids.iter()) {
             el.backend_node_id = *id;

@@ -166,7 +166,7 @@ bk evaluate "await fetch('/api').then(r=>r.json())"
 bk evaluate --file script.js
 bk evaluate "extractLongText()" --append-to results.txt
 
-# 网络响应与下载（都有 timeout/count 边界，不是无限流）
+# 网络 metadata 与下载（都有 timeout/count 边界，不是无限流）
 bk network watch --pattern "/api/orders" --count 3 --timeout 10000
 bk download --ref <N> --output-dir ./downloads --timeout 30000
 
@@ -258,7 +258,7 @@ bk evaluate "JSON.stringify(Array.from(document.querySelectorAll('.item-title'))
 bk network watch --pattern "/api/orders" --count 2 --timeout 10000
 ```
 
-只观察当前 session/target 的 XHR/fetch，达到 count 或 timeout 后一次性返回 JSON。检查 `stop_reason` / `timed_out`，不要把它当成 streaming command。
+只观察当前 session/target 的 XHR/fetch，达到 count 或 timeout 后一次性返回 JSON。结果仅含响应 metadata；`body` 固定为 `null`，检查 `body_omitted` / `body_omission_reason`，需要内容时另用 `evaluate`。三个事件流与乱序 terminal 暂存容量均为 256；必须检查 `stop_reason`、`event_streams`、`terminal_buffer` 的 overflow/close/drop 信息，不要把它当成 streaming command。
 
 ### 下载文件
 

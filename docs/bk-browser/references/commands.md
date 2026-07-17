@@ -57,7 +57,7 @@ Use these for normal browser work.
 | `bk evaluate <EXPR>` | Evaluate JavaScript |
 | `bk evaluate --file <PATH>` | Evaluate JavaScript from a file |
 | `bk evaluate <EXPR> --append-to <FILE>` | Append an exact string result locally without echoing it |
-| `bk network watch --pattern <SUBSTRING> [--count <1..100>]` | Observe bounded XHR/fetch responses |
+| `bk network watch --pattern <SUBSTRING> [--count <1..100>]` | Observe bounded XHR/fetch response metadata without bodies |
 | `bk download --ref <N> --output-dir <DIR>` | Click and track one download to terminal state |
 | `bk html [--selector <CSS>]` | Get page or element HTML |
 | `bk console [--level <LEVEL>] [--limit <N>]` | Show console buffer |
@@ -81,9 +81,12 @@ the flag preserves compact/`--full` content limits.
 
 `evaluate --append-to` is CLI-local and accepts only string results. It appends
 exact UTF-8 bytes with no implicit newline. `network watch` stops at count or
-timeout and reports `stop_reason`; it is not a stream. `download` requires an
-existing output directory, validates the final path, and restores Browser
-download behavior after the lifecycle.
+timeout and reports `stop_reason`; it is not a stream. Network bodies are never
+read: `body` is `null` with omission metadata. Its three event streams and
+out-of-order terminal buffer each have capacity 256; inspect `event_streams`
+and `terminal_buffer` for overflow, close, and dropped-event metadata.
+`download` requires an existing output directory, validates the final path,
+and restores Browser download behavior after the lifecycle.
 
 ## Session storage commands
 

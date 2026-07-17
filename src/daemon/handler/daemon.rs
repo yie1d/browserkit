@@ -134,9 +134,9 @@ mod tests {
             serde_json::to_value(handle_daemon_status(&state, &test_context()).await).unwrap();
 
         assert_eq!(value["data"]["sessions"], 1);
-        assert!(value["data"].get(&["work", "spaces"].concat()).is_none());
+        assert!(value["data"].get(["work", "spaces"].concat()).is_none());
         assert!(value["data"]
-            .get(&["default", "w", "id"].join("_"))
+            .get(["default", "w", "id"].join("_"))
             .is_none());
     }
 
@@ -208,7 +208,7 @@ mod tests {
         assert_eq!(value["data"]["status"], "stopping");
         assert_eq!(value["data"]["sessions_closed"], 1);
         assert!(value["data"]
-            .get(&[["work", "spaces"].concat(), "closed".into()].join("_"))
+            .get([["work", "spaces"].concat(), "closed".into()].join("_"))
             .is_none());
         assert!(watcher.is_cancelled());
         assert!(!state.target_watchers.contains_key("localhost:9222"));

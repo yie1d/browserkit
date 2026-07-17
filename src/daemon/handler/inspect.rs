@@ -393,11 +393,11 @@ mod tests {
         assert_eq!(value["session"], "agent-a");
         assert_eq!(value["target"], "TARGET-1");
         assert!(
-            value.get(&old_w_id_key()).is_none(),
+            value.get(old_w_id_key()).is_none(),
             "payload must not expose old owner field"
         );
         assert!(
-            value.get(&old_t_id_key()).is_none(),
+            value.get(old_t_id_key()).is_none(),
             "payload must not expose old target field"
         );
         assert_eq!(value["count"], 0);

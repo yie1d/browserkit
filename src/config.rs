@@ -127,7 +127,7 @@ max_sessions = 12
 max_tabs_per_session = 7
 session_timeout_hours = 96
 "#;
-        let c: Config = toml::from_str(&toml).unwrap();
+        let c: Config = toml::from_str(toml).unwrap();
         assert_eq!(c.daemon.cleanup_interval_seconds, 120);
         assert_eq!(c.daemon.chrome_path.as_deref(), Some("/usr/bin/chromium"));
         assert!(!c.daemon.disable_security);
@@ -144,7 +144,7 @@ session_timeout_hours = 96
 [daemon]
 cleanup_interval_seconds = 45
 "#;
-        let c: Config = toml::from_str(&toml).unwrap();
+        let c: Config = toml::from_str(toml).unwrap();
         assert_eq!(c.daemon.cleanup_interval_seconds, 45);
         assert_eq!(c.limits.max_sessions, 10); // default
     }
