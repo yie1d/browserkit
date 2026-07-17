@@ -67,6 +67,7 @@ pub async fn handle_request(
         "browser.disconnect" => browser::handle_browser_disconnect(req, state).await,
         "debug.block" => network::handle_debug_block(req, state).await,
         "debug.unblock" => network::handle_debug_unblock(req, state).await,
+        "network.watch" => network::handle_network_watch(req, state).await,
         "debug.cdp" => debug::handle_debug_cdp(req, state).await,
         "dialog.list" => dialog::handle_dialog_list(req, state).await,
         "dialog.accept" => dialog::handle_dialog_accept(req, state).await,
@@ -101,6 +102,26 @@ mod tests {
         let req = Request {
             cmd: "wait".into(),
             params: serde_json::json!({"selector": "#app"}),
+            token: None,
+        };
+
+        let resp = handle_request(&req, &state, &test_context()).await;
+        let json = serde_json::to_value(&resp).unwrap();
+
+        assert_eq!(json["ok"], false);
+        assert_eq!(json["error"]["code"], "SESSION_NOT_FOUND");
+    }
+
+    #[tokio::test]
+    async fn dispatch_network_watch_uses_session_native_handler() {
+        let state = Arc::new(DaemonState::new());
+        let req = Request {
+            cmd: "network.watch".into(),
+            params: serde_json::json!({
+                "pattern": "/api/orders",
+                "count": 3,
+                "timeout": 5000
+            }),
             token: None,
         };
 

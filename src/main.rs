@@ -29,6 +29,7 @@ Primary:
   search      Search text in page
   html        Get page HTML
   console     Show console log buffer
+  network     Observe XHR/fetch responses
   pdf         Generate PDF of current target
   session     Session management (close/list/cookies/storage)
   status      Connection status
@@ -307,6 +308,11 @@ pub enum Command {
         #[arg(long)]
         limit: Option<usize>,
     },
+    /// Observe network responses
+    Network {
+        #[command(subcommand)]
+        action: NetworkAction,
+    },
     /// Generate PDF of current target
     Pdf {
         #[arg(short, long)]
@@ -402,6 +408,19 @@ pub enum SessionLocalStorageAction {
         key: String,
         /// Value
         value: String,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum NetworkAction {
+    /// Observe a bounded number of XHR/fetch responses
+    Watch {
+        /// URL substring to match
+        #[arg(long)]
+        pattern: String,
+        /// Maximum number of matching responses to collect
+        #[arg(long, default_value_t = 1)]
+        count: usize,
     },
 }
 
@@ -769,6 +788,15 @@ fn build_navigate_params(
     params
 }
 
+fn build_network_watch_params(pattern: &str, count: usize, cli: &Cli) -> serde_json::Value {
+    let mut params = json!({"pattern": pattern, "count": count});
+    add_session_target_params(&mut params, cli);
+    if let Some(timeout) = cli.timeout {
+        params["timeout"] = json!(timeout);
+    }
+    params
+}
+
 fn build_screenshot_params(
     output: Option<&str>,
     full_page: bool,
@@ -1039,6 +1067,14 @@ async fn dispatch(cli: &Cli, client: &mut DaemonClient) -> Result<(), String> {
             let resp = send_cmd(client, "evaluate", params).await?;
             print_response(&resp);
         }
+
+        Command::Network { action } => match action {
+            NetworkAction::Watch { pattern, count } => {
+                let params = build_network_watch_params(pattern, *count, cli);
+                let resp = send_cmd(client, "network.watch", params).await?;
+                print_response(&resp);
+            }
+        },
 
         Command::ScreenshotV2 {
             output,
@@ -1773,6 +1809,39 @@ mod tests {
         } else {
             panic!("wrong variant");
         }
+    }
+
+    #[test]
+    fn cli_parses_bounded_network_watch() {
+        let cli = try_parse(&[
+            "bk",
+            "--session",
+            "agent-a",
+            "--target",
+            "TAB1",
+            "--timeout",
+            "5000",
+            "network",
+            "watch",
+            "--pattern",
+            "/api/orders",
+            "--count",
+            "3",
+        ])
+        .expect("network watch should be a public CLI command");
+
+        let Command::Network {
+            action: NetworkAction::Watch { pattern, count },
+        } = &cli.command
+        else {
+            panic!("wrong variant");
+        };
+        let params = build_network_watch_params(pattern, *count, &cli);
+        assert_eq!(params["session"], "agent-a");
+        assert_eq!(params["target"], "TAB1");
+        assert_eq!(params["timeout"], 5000);
+        assert_eq!(params["pattern"], "/api/orders");
+        assert_eq!(params["count"], 3);
     }
 
     #[test]
