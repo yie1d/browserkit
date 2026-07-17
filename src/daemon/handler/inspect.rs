@@ -3,7 +3,7 @@ use std::sync::Arc;
 use serde_json::json;
 use tracing::info;
 
-use super::common::resolve_session_target;
+use super::common::{optional_string_param, resolve_session_target};
 use crate::daemon::protocol::{Request, Response};
 use crate::daemon::state::DaemonState;
 use crate::error::{BkError, ErrorCode};
@@ -175,8 +175,8 @@ async fn do_search(req: &Request, state: &Arc<DaemonState>) -> Result<Response, 
 }
 
 async fn do_html(req: &Request, state: &Arc<DaemonState>) -> Result<Response, Response> {
+    let selector = optional_string_param(&req.params, "selector")?;
     let ctx = resolve_session_target(state, &req.params)?;
-    let selector = req.params.get("selector").and_then(|v| v.as_str());
     let html = crate::page::capture::get_html(&ctx.cdp, &ctx.cdp_session_id, selector)
         .await
         .map_err(Response::from)?;

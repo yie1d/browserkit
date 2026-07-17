@@ -150,8 +150,10 @@ status
 dialog
 ```
 
-`attach` adopts an existing target into a session after explicit target or
-pattern selection. A target already tracked by another session is rejected.
+`attach` adopts an existing user target into the default session after explicit
+target or pattern selection. Isolated sessions create targets with `open`
+inside their own BrowserContext. A target already tracked by another session is
+rejected.
 
 `find` and `search` remain because they provide capabilities not equivalent to
 snapshot: arbitrary CSS queries, selected attributes, regular expressions,
@@ -219,7 +221,7 @@ responses remain JSON-only.
 
 ### 6.2 Attaching a user tab
 
-1. Resolve the destination session and browser.
+1. Resolve the default session and browser.
 2. Discover page targets and resolve an exact target or an unambiguous pattern.
 3. Reject targets already tracked by another session.
 4. Attach with flattened CDP sessions.

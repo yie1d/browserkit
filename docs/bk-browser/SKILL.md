@@ -106,7 +106,7 @@ bk connect
 ## 核心工作流
 
 1. **连接**：`bk connect`（自动发现并连接用户 Chrome，幂等）
-2. **选择目标**：操作现有用户 tab 时用 `bk attach <唯一 URL/title 片段>`；创建新 tab 时用 `bk open <url>`
+2. **选择目标**：在 default session 操作现有用户 tab 时用 `bk attach <唯一 URL/title 片段>`；隔离 session 或新 tab 用 `bk open <url>`
 3. **观察**：`bk snapshot` —— 返回带 ref 的可交互元素 + 页面文本（**每次操作前必须先 snapshot**）
 4. **交互**：用 ref 操作（`bk act click --ref 42`、`bk act type --ref 42 --text "文本"`）
 5. **验证**：再次 `bk snapshot` 或 `bk wait` + `bk snapshot` 确认结果

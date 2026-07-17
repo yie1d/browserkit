@@ -515,7 +515,7 @@ fn validate_attach_context(
 ) -> Result<(), ErrorCode>;
 ```
 
-Build params containing `session`, `target`, and `pattern`. The handler resolves the session without requiring an existing tab, lists page targets from the same browser, excludes internal pages using the existing target filter logic, requires exactly one match, rejects targets owned by another session, and rejects targets outside the destination session's BrowserContext. It then attaches with flatten enabled, creates `SessionTab::new_attached`, registers it, starts subscriptions, and returns `{session, target, ownership: "attached"}`.
+Build params containing `session`, `target`, and `pattern`. The handler requires the default session, lists page targets from the same browser, excludes internal pages using the existing target filter logic, requires exactly one match, and rejects targets owned by another session or outside the default BrowserContext. Isolated sessions use `open` instead. It then attaches with flatten enabled, creates `SessionTab::new_attached`, registers it, starts subscriptions, and returns `{session, target, ownership: "attached"}`.
 
 - [ ] **Step 4: Write and implement ownership-aware close tests**
 

@@ -129,7 +129,7 @@ bk session cookies                  # Cookie operations
 | `setup` | One-time Chrome remote debugging setup (interactive) |
 | `connect` | Connect to browser (idempotent) |
 | `open` | Open URL in a new tab |
-| `attach` | Attach an existing browser tab to the current session |
+| `attach` | Attach an existing user tab to the default session |
 | `snapshot` | Get page state: elements + text + viewport info |
 | `find` | Find elements by CSS selector |
 | `search` | Search page text |
@@ -164,8 +164,8 @@ bk session cookies                  # Cookie operations
 
 | Command | Description |
 |---------|-------------|
-| `browser discover` | Discover the user's Chrome via `DevToolsActivePort` |
-| `browser connect` | Connect to an existing browser endpoint |
+| `browser discover` | Discover Chrome and bind the selected session |
+| `browser connect` | Connect an endpoint and bind the selected session |
 | `browser list` | List connected browsers |
 | `browser disconnect` | Disconnect a browser |
 | `daemon start` | Start the local daemon |
@@ -288,6 +288,10 @@ bk close --target <targetId>        # Close specific tab
 bk tabs                             # List all tabs in session
 ```
 
+`bk attach` is limited to the default session because user-opened tabs belong
+to the browser's default context. Use `bk --session <name> open <url>` for an
+isolated session.
+
 ## Global Options
 
 | Option | Description |
@@ -316,7 +320,7 @@ browserkit now exposes one session runtime. The old workspace surface was remove
 - removed environment and flags: `BK_WS`, `--ws`;
 - removed daemon routes: `ws.*`, `tab.*`, `nav.*`, `page.*`, old `storage.*`, and `v2.*` aliases.
 
-On startup, schema v2 state is backed up as `state.v2.backup.json` (or a numbered variant) before being converted to schema v3. `bk status` exposes migration metadata so migrated or dropped state is visible instead of silent. Cleanup commands such as `browser disconnect` and `daemon stop` return structured `cleanup_errors` when cleanup is partial.
+On startup, schema v2 state is backed up as `state.v2.backup.json` (or a numbered variant) before being converted to schema v3. `bk status` exposes migration metadata so migrated or dropped state is visible instead of silent. If malformed or newer state disables writes, `persistence.enabled` is false and `persistence.disabled_reason` explains why. Cleanup commands such as `browser disconnect` and `daemon stop` return structured `cleanup_errors` when cleanup is partial.
 
 ## Configuration
 

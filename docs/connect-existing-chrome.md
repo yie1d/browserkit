@@ -45,9 +45,13 @@ bk browser connect "ws://127.0.0.1:<port>/devtools/browser/<guid>"
 `bk connect` and `bk browser discover` use the dynamic endpoint exposed by the
 user's browser. They should be preferred over fixed ports.
 
+All three connection commands bind the selected session. Add
+`--session <name>` before the command to create or reconnect an isolated
+session on that endpoint.
+
 ## Attach an Existing User Tab
 
-`bk attach` adopts an existing page target into the current session. It never
+`bk attach` adopts an existing page target into the default session. It never
 creates a new target and it must resolve to one unambiguous tab.
 
 ```bash
@@ -59,6 +63,9 @@ bk --target <targetId> attach
 The match string is a URL, title, or target ID substring. Avoid broad patterns
 that could match multiple user tabs. If you need a fresh tab that browserkit
 owns, use `bk open <url>` instead.
+
+User-opened tabs belong to Chrome's default BrowserContext, so isolated
+sessions do not accept `bk attach`; use `bk --session <name> open <url>` there.
 
 ## Ownership and Close Semantics
 

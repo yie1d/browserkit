@@ -154,7 +154,7 @@ Agent 对用户 tab 的默认可见性和操作权限：
 - **不可见**：`bk tabs` 不返回用户自己的 tab
 - **不可操作**：agent 无法对用户 tab 执行 snapshot/act/navigate
 - **继承登录态**：agent 用 `bk open` 开新 tab 时，自动继承用户 cookie（因为 default session 共享默认 BrowserContext）
-- **显式接管**：`bk attach <pattern>` 或 `bk --target <targetId> attach` 可以把用户现有 tab 登记到当前 session
+- **显式接管**：`bk attach <pattern>` 或 `bk --target <targetId> attach` 可以把用户现有 tab 登记到 default session；隔离 session 使用 `bk open`
 
 **为什么这样设计：**
 

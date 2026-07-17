@@ -125,10 +125,11 @@ async fn do_dialog_dismiss(req: &Request, state: &Arc<DaemonState>) -> Result<Re
 }
 
 async fn do_dialog_policy(req: &Request, state: &Arc<DaemonState>) -> Result<Response, Response> {
+    let policy_param = optional_string_param(&req.params, "policy")?;
     let session_name = resolve_dialog_session(state, &req.params)?;
 
     // If a policy value is provided, set it; otherwise return current
-    if let Some(policy_str) = req.params.get("policy").and_then(|v| v.as_str()) {
+    if let Some(policy_str) = policy_param {
         let policy = DialogPolicy::from_str_opt(policy_str).ok_or_else(|| {
             request_error(format!(
                 "invalid dialog policy '{}', expected: manual, accept, dismiss",

@@ -407,6 +407,21 @@ mod tests {
                     .unwrap();
             assert_eq!(value["error"]["code"], "INVALID_ARGUMENT", "{cmd}");
         }
+
+        for (cmd, params) in [
+            ("html", serde_json::json!({"selector": false})),
+            ("dialog.policy", serde_json::json!({"policy": false})),
+        ] {
+            let request = Request {
+                cmd: cmd.into(),
+                params,
+                token: None,
+            };
+            let value =
+                serde_json::to_value(handle_request(&request, &state, &test_context()).await)
+                    .unwrap();
+            assert_eq!(value["error"]["code"], "INVALID_ARGUMENT", "{cmd}");
+        }
     }
 
     #[tokio::test]

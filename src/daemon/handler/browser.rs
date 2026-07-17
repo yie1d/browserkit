@@ -18,7 +18,7 @@ use crate::daemon::target_close::{
 use crate::daemon::target_lifecycle::remove_session_tab;
 use crate::error::{BkError, ErrorCode};
 
-use super::common::{handler, session_name_param};
+use super::common::{handler, optional_string_param, session_name_param};
 use super::connect::bind_session_to_browser;
 
 pub async fn handle_browser_connect(req: &Request, state: &Arc<DaemonState>) -> Response {
@@ -83,7 +83,7 @@ async fn do_browser_discover(
     req: &Request,
     state: &Arc<DaemonState>,
 ) -> Result<Response, Response> {
-    let custom_path = req.params.get("path").and_then(|v| v.as_str());
+    let custom_path = optional_string_param(&req.params, "path")?;
     let session_name = session_name_param(&req.params)?;
 
     let discovered =

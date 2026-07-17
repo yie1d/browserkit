@@ -38,32 +38,26 @@ struct NavigateParams {
 /// Exactly one of url/back/forward/reload must be specified.
 /// Returns `Err(Response)` with structured error on validation failure.
 fn validate_navigate_params(params: &serde_json::Value) -> Result<NavigateParams, Response> {
-    let action = if let Some(url) = params.get("url").and_then(|v| v.as_str()) {
-        NavAction::Goto(url.to_string())
-    } else if params
-        .get("back")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false)
-    {
-        NavAction::Back
-    } else if params
-        .get("forward")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false)
-    {
-        NavAction::Forward
-    } else if params
-        .get("reload")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false)
-    {
-        NavAction::Reload
-    } else {
+    let url = optional_string_param(params, "url")?;
+    let back = optional_bool_param(params, "back")?.unwrap_or(false);
+    let forward = optional_bool_param(params, "forward")?.unwrap_or(false);
+    let reload = optional_bool_param(params, "reload")?.unwrap_or(false);
+    let action_count =
+        usize::from(url.is_some()) + usize::from(back) + usize::from(forward) + usize::from(reload);
+    if action_count != 1 {
         return Err(Response::error_detail(
             ErrorCode::InvalidArgument,
-            "navigate requires url, --back, --forward, or --reload".into(),
+            "navigate requires exactly one of url, --back, --forward, or --reload".into(),
             None,
         ));
+    }
+
+    let action = match (url, back, forward, reload) {
+        (Some(url), false, false, false) => NavAction::Goto(url.to_string()),
+        (None, true, false, false) => NavAction::Back,
+        (None, false, true, false) => NavAction::Forward,
+        (None, false, false, true) => NavAction::Reload,
+        _ => unreachable!("action count is exactly one"),
     };
 
     Ok(NavigateParams {
@@ -75,6 +69,18 @@ fn validate_navigate_params(params: &serde_json::Value) -> Result<NavigateParams
             .and_then(|v| v.as_u64())
             .unwrap_or(30000),
     })
+}
+
+fn optional_bool_param(params: &serde_json::Value, field: &str) -> Result<Option<bool>, Response> {
+    match params.get(field) {
+        None => Ok(None),
+        Some(serde_json::Value::Bool(value)) => Ok(Some(*value)),
+        Some(_) => Err(Response::error_detail(
+            ErrorCode::InvalidArgument,
+            format!("'{field}' must be a boolean when provided"),
+            None,
+        )),
+    }
 }
 
 /// Validate that a URL does not use a dangerous scheme.
@@ -396,11 +402,12 @@ mod tests {
     }
 
     #[test]
-    fn validate_navigate_params_url_takes_priority() {
-        // If both url and back are provided, url wins (parsed first)
+    fn validate_navigate_params_rejects_multiple_actions() {
         let params = serde_json::json!({"url": "https://example.com", "back": true});
-        let p = validate_navigate_params(&params).unwrap();
-        assert_eq!(p.action, NavAction::Goto("https://example.com".into()));
+        let response = validate_navigate_params(&params).unwrap_err();
+        let value = serde_json::to_value(response).unwrap();
+
+        assert_eq!(value["error"]["code"], "INVALID_ARGUMENT");
     }
 
     #[test]

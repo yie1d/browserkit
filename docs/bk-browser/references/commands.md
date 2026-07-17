@@ -25,7 +25,7 @@ Use these for normal browser work.
 | `bk setup` | One-time Chrome remote debugging setup |
 | `bk connect` | Connect to the user's Chrome, idempotent |
 | `bk open <URL>` | Open a browserkit-owned tab |
-| `bk attach [PATTERN]` | Attach an existing user tab by URL/title/target substring |
+| `bk attach [PATTERN]` | Attach an existing user tab to the default session |
 | `bk snapshot [--full] [--no-page-text] [--wait dom-stable|networkidle|none]` | Get elements, page text, and viewport state |
 | `bk find <SELECTOR> [--attributes <NAMES>] [--include-text] [--max <N>]` | Find elements by CSS selector |
 | `bk search <TEXT> [--regex] [--scope <SCOPE>] [--context <N>] [--max <N>]` | Search text in the page |
@@ -100,8 +100,8 @@ Use these to manage browser and daemon connections.
 
 | Command | Purpose |
 |---|---|
-| `bk browser discover [--path <DevToolsActivePort>]` | Discover Chrome dynamically |
-| `bk browser connect <HOST_OR_WS_URL>` | Connect to an existing browser endpoint |
+| `bk browser discover [--path <DevToolsActivePort>]` | Discover Chrome and bind the selected session |
+| `bk browser connect <HOST_OR_WS_URL>` | Connect an endpoint and bind the selected session |
 | `bk browser list` | List connected browsers |
 | `bk browser disconnect <HOST>` | Disconnect a browser |
 | `bk daemon start` | Start daemon |
@@ -134,6 +134,7 @@ document compatibility aliases for these surfaces:
 - debug streams: `debug monitor`, `debug har`, and `debug events`.
 
 Schema v2 state is backed up before migration to schema v3. `bk status` reports
-migration metadata. Cleanup commands return structured `cleanup_errors` when
+migration metadata. If writes are disabled, `persistence.enabled` is false and
+`persistence.disabled_reason` explains the preserved-state error. Cleanup commands return structured `cleanup_errors` when
 cleanup is partial. Schema v3 state contains browser metadata, sessions, tab
 ownership, and optional migration metadata, but no workspace fields.
