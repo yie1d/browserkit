@@ -1,468 +1,139 @@
-# bk v2 命令速查表
+# bk command reference
 
-> 基于 `bk --help` 实际输出，所有命令均经过验证。输出永远为 JSON。
+> Current contract from `bk --help`, `bk session --help`, and `bk debug --help`.
+> All command output is JSON. `bk` is the thin CLI client for the local
+> browserkit daemon.
 
----
+## Global options
 
-## 全局选项
+| Option | Meaning |
+|---|---|
+| `--session <NAME>` | Target session, or set `BK_SESSION` |
+| `--target <ID>` | Target tab ID |
+| `--timeout <MS>` | Timeout in milliseconds |
+| `--no-state-diff` | Skip `state_diff` in act responses |
+| `--focus` | Bring the target tab to the foreground |
+| `--help` | Print help |
+| `--version` | Print version |
 
-每条命令都可以加：
+## Agent commands
 
-| 选项 | 类型 | 默认值 | 说明 |
-|------|------|--------|------|
-| `--session <NAME>` | string | — | 指定 session 名称（或设 `BK_SESSION` 环境变量） |
-| `--target <ID>` | string | — | 指定目标 tab（targetId） |
-| `--timeout <MS>` | integer | `30000` | 超时毫秒数 |
-| `--no-state-diff` | flag | — | 跳过 act 响应中的 state_diff |
-| `--focus` | flag | — | 将目标 tab 带到前台 |
-| `-h` | flag | — | 简短帮助 |
-| `--help` | flag | — | 完整帮助 |
-| `--version` | flag | — | 打印版本号 |
+Use these for normal browser work.
 
-```bash
-# 指定 session
-bk --session my-session snapshot
+| Command | Purpose |
+|---|---|
+| `bk setup` | One-time Chrome remote debugging setup |
+| `bk connect` | Connect to the user's Chrome, idempotent |
+| `bk open <URL>` | Open a browserkit-owned tab |
+| `bk attach [PATTERN]` | Attach an existing user tab by URL/title/target substring |
+| `bk snapshot [--full] [--no-page-text] [--wait dom-stable|networkidle|none]` | Get elements, page text, and viewport state |
+| `bk find <SELECTOR> [--attributes <NAMES>] [--include-text] [--max <N>]` | Find elements by CSS selector |
+| `bk search <TEXT> [--regex] [--scope <SCOPE>] [--context <N>] [--max <N>]` | Search text in the page |
+| `bk act click --ref <N>` | Click by snapshot ref |
+| `bk act click --x <X> --y <Y>` | Click by coordinates |
+| `bk act type --ref <N> --text <TEXT> [--append]` | Type text, replacing by default |
+| `bk act fill --set ref:<N>=<VALUE>` | Fill one or more fields |
+| `bk act press --keys <KEYS>...` | Press keys such as `Enter` or `Control+a` |
+| `bk act scroll [--direction <DIR>] [--amount <PX>] [--ref <N>] [--selector <CSS>]` | Scroll page or element |
+| `bk act hover --ref <N>` | Hover an element |
+| `bk act focus --ref <N>` | Focus an element |
+| `bk act select --ref <N> --value <VALUE>` | Select an option |
+| `bk act options --ref <N>` | Inspect select options |
+| `bk act upload --ref <N> <FILES...>` | Upload files |
+| `bk act upload --selector <CSS> <FILES...>` | Upload with a CSS selector |
+| `bk act drag --from-ref <N> --to-ref <N>` | Drag between refs |
+| `bk act drag --from-selector <CSS> --to-selector <CSS>` | Drag between selectors |
+| `bk navigate <URL>` | Navigate current target |
+| `bk navigate --back` | Go back |
+| `bk navigate --forward` | Go forward |
+| `bk navigate --reload` | Reload |
+| `bk wait --selector <CSS>` | Wait for an element |
+| `bk wait --text <TEXT>` | Wait for text |
+| `bk wait --text-gone <TEXT>` | Wait for text to disappear |
+| `bk wait --url <PATTERN>` | Wait for URL match |
+| `bk wait --idle` | Wait for network idle |
+| `bk wait --fn <EXPR>` | Wait for JavaScript truthy |
+| `bk wait --time <MS>` | Fixed wait |
+| `bk evaluate <EXPR>` | Evaluate JavaScript |
+| `bk evaluate --file <PATH>` | Evaluate JavaScript from a file |
+| `bk html [--selector <CSS>]` | Get page or element HTML |
+| `bk console [--level <LEVEL>] [--limit <N>]` | Show console buffer |
+| `bk pdf [-o <FILE>]` | Generate PDF of current target |
+| `bk screenshot [--output <FILE>] [--full-page] [--selector <CSS>] [--labels]` | Capture screenshot |
+| `bk tabs` | List tabs tracked by the current session |
+| `bk close` | Close owned tab or detach attached tab |
+| `bk status` | Show daemon/browser/session status |
+| `bk dialog list` | List pending dialogs |
+| `bk dialog accept` | Accept a pending dialog |
+| `bk dialog dismiss` | Dismiss a pending dialog |
+| `bk dialog policy [manual|accept|dismiss]` | View or set dialog policy |
 
-# 指定 tab
-bk --target <targetId> snapshot
+`bk act click` reports `new_tab` when the action opens a new target. Use the
+reported target ID or run `bk tabs` before operating on the new page.
 
-# 环境变量
-export BK_SESSION=my-session
-bk snapshot
-```
+## Session storage commands
 
----
+| Command | Purpose |
+|---|---|
+| `bk session close` | Close current session |
+| `bk session list` | List sessions |
+| `bk session cookies get` | Get cookies |
+| `bk session cookies set --file <FILE>` | Set cookies from JSON file |
+| `bk session cookies clear` | Clear cookies |
+| `bk session storage local get <KEY>` | Get a localStorage value |
+| `bk session storage local set <KEY> <VALUE>` | Set a localStorage value |
+| `bk session storage export` | Export all storage state |
+| `bk session storage import <FILE>` | Import storage state |
 
-## setup
-
-一次性设置 Chrome 远程调试（交互式引导）。
-
-```
-Usage: bk setup
-```
-
-无特有参数。运行后交互式引导用户开启 Chrome 远程调试。
-
-```bash
-bk setup
-```
-
----
-
-## connect
-
-连接到浏览器（幂等，多次调用安全）。
-
-```
-Usage: bk connect [OPTIONS]
-```
-
-无特有参数，使用全局选项。自动发现并连接本地 Chrome。
-
-```bash
-bk connect
-bk connect --session work
-```
-
----
-
-## snapshot
-
-获取页面状态：可交互元素列表 + 页面文本 + viewport 信息。
-
-```
-Usage: bk snapshot [OPTIONS]
-```
-
-| 参数 | 类型 | 默认值 | 说明 |
-|------|------|--------|------|
-| `--full` | flag | — | 包含所有元素（不截断） |
-| `--no-page-text` | flag | — | 不返回页面文本（只要元素列表，更快） |
-| `--wait <STRATEGY>` | string | `dom-stable` | 等待策略：`dom-stable` \| `networkidle` \| `none` |
-
-```bash
-bk snapshot
-bk snapshot --full
-bk snapshot --no-page-text
-bk snapshot --wait networkidle
-bk snapshot --wait none
-```
-
-> 每次操作前必须先 `bk snapshot` 获取元素 ref。元素 ref 在节点未被移除时始终稳定。
-
----
-
-## act
-
-执行交互动作：click、type、fill、press、scroll、hover、focus、select、options、upload、drag。
-
-```
-Usage: bk act [OPTIONS] [KIND] [FILES]...
-```
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `[KIND]` | positional | 动作类型：`click` \| `type` \| `fill` \| `press` \| `scroll` \| `hover` \| `focus` \| `select` \| `options` \| `upload` \| `drag` |
-| `--ref <ELEMENT_REF>` | string | 元素 ref（backendNodeId，从 snapshot 获取） |
-| `--set <REF:VALUE>` | string[] | fill 动作的字段赋值，格式必须是 `ref:<id>=<value>` |
-| `--text <TEXT>` | string | type 动作的输入文本 |
-| `--value <VALUE>` | string | select 动作的目标 option 值或可见文本 |
-| `--append` | flag | type 追加模式（默认为替换） |
-| `--keys <KEYS>...` | string[] | press 动作的按键序列 |
-| `--x <X>` | integer | click 的 X 坐标（与 --ref 互斥） |
-| `--y <Y>` | integer | click 的 Y 坐标（与 --ref 互斥） |
-| `--direction <DIR>` | string | scroll 方向：`up` \| `down` \| `left` \| `right` \| `top` \| `bottom` |
-| `--amount <PX>` | number | scroll 像素量；仅页面滚动生效，必须大于 0 |
-| `--selector <CSS>` | string | scroll 时表示滚动到元素；upload 时表示目标 file input；与 `--ref` 一样表示元素目标 |
-| `[FILES]...` | positional | upload 动作的文件路径列表，至少一个 |
-| `--from-ref <ELEMENT_REF>` | string | drag 源元素 ref |
-| `--from-selector <CSS>` | string | drag 源元素 selector |
-| `--to-ref <ELEMENT_REF>` | string | drag 目标元素 ref |
-| `--to-selector <CSS>` | string | drag 目标元素 selector |
-
-### click
+Default session shares the user's Chrome context. Named sessions use isolated
+BrowserContext storage:
 
 ```bash
-bk act click --ref 42
-bk act click --x 300 --y 200
+bk --session agent-a connect
+bk --session agent-a open https://example.com
+bk --session agent-a session cookies get
 ```
 
-> 旧的 `bk click` 已移除，统一使用 `bk act click`。当前返回包含 action result 和 `state_diff`，但在 browserkit 具备 session-native target lifecycle tracking 前，不会报告 `new_tab`。
-
-### type
-
-```bash
-bk act type --ref 42 --text "hello world"
-bk act type --ref 42 --text "追加内容" --append
-```
-
-> type 默认为**替换**模式（清空后输入）。需要追加时加 `--append`。
-> 旧的 `bk type` 已移除，统一使用 `bk act type`。
-
-### fill
-
-```bash
-bk act fill --set ref:42=alpha --set ref:55=beta
-bk act fill --set ref:42=
-```
-
-> fill 只接受来自 `bk snapshot` 的稳定 `ref:<id>=<value>`；不支持 selector 或 legacy index。
-
-### press
-
-```bash
-bk act press --keys Enter
-bk act press --keys Tab
-bk act press --keys Control+a
-bk act press --keys Shift+Enter
-bk act press --keys ArrowDown
-```
-
-### scroll
-
-```bash
-bk act scroll --direction down
-bk act scroll --direction top
-bk act scroll --amount 250
-bk act scroll --ref 42
-bk act scroll --selector "#main"
-```
-
-> 未提供 `--ref` 或 `--selector` 时，scroll 默认为页面向下滚动。提供 `--ref` 或 `--selector` 时会滚动到对应元素。
-
-### hover
-
-```bash
-bk act hover --ref 42
-```
-
-### focus
-
-```bash
-bk act focus --ref 42
-```
-
-### select
-
-```bash
-bk act select --ref 77 --value "option-value"
-bk act select --ref 77 --value "Visible Label"
-```
-
-### options
-
-```bash
-bk act options --ref 77
-```
-
-> `select` 和 `options` 只接受来自 `bk snapshot` 的稳定 `--ref`；不支持 selector 或 legacy index。
-
-### upload
-
-```bash
-bk act upload --ref 3 /path/to/file.pdf
-bk act upload --selector "input[type=file]" /path/to/a.pdf /path/to/b.pdf
-```
-
-> `upload` 必须且只能提供一个 `--ref` 或 `--selector`，并且 `FILES` 至少一个；不支持 legacy index。
-
-### drag
-
-```bash
-bk act drag --from-ref 10 --to-ref 20
-bk act drag --from-selector "#card-a" --to-selector "#drop-zone"
-bk act drag --from-ref 10 --to-selector "#drop-zone"
-```
-
-> `drag` 必须且只能提供一个源目标（`--from-ref` 或 `--from-selector`）和一个目标位置（`--to-ref` 或 `--to-selector`）；不支持 legacy index。
-
----
-
-## navigate
-
-导航到 URL，或前进/后退/刷新。
-
-```
-Usage: bk navigate [OPTIONS] [URL]
-```
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `[URL]` | positional | 目标 URL（与 --back/--forward/--reload 互斥） |
-| `--back` | flag | 后退 |
-| `--forward` | flag | 前进 |
-| `--reload` | flag | 刷新 |
-
-```bash
-bk navigate https://example.com
-bk navigate file:///tmp/test.html
-bk navigate --back
-bk navigate --forward
-bk navigate --reload
-```
-
----
-
-## open
-
-在新标签页中打开 URL。
-
-```
-Usage: bk open <URL>
-```
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `<URL>` | positional（必填） | 要打开的 URL |
-
-```bash
-bk open https://example.com
-bk open https://github.com
-```
-
----
-
-## close
-
-关闭当前 tab（或用 `--target` 指定的 tab）。
-
-```
-Usage: bk close [OPTIONS]
-```
-
-无特有参数。通过全局 `--target` 指定要关闭的 tab。
-
-```bash
-bk close
-bk close --target <targetId>
-```
-
----
-
-## tabs
-
-列出当前 session 的所有标签页。
-
-```
-Usage: bk tabs [OPTIONS]
-```
-
-无特有参数。返回所有 tab 的 targetId、URL、title。
-
-```bash
-bk tabs
-bk tabs --session work
-```
-
----
-
-## wait
-
-等待页面条件满足。
-
-```
-Usage: bk wait [OPTIONS]
-```
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `--selector <CSS>` | string | 等待元素可见 |
-| `--text <TEXT>` | string | 等待文本出现 |
-| `--text-gone <TEXT>` | string | 等待文本消失 |
-| `--url <PATTERN>` | string | 等待 URL 匹配 |
-| `--idle` | flag | 等待网络空闲 |
-| `--fn <EXPR>` | string | 等待 JS 表达式返回 truthy |
-| `--time <MS>` | integer | 固定等待 N 毫秒 |
-
-```bash
-bk wait --selector ".modal"
-bk wait --text "提交成功"
-bk wait --text-gone "Loading..."
-bk wait --idle
-bk wait --url "/dashboard"
-bk wait --fn "document.querySelectorAll('li').length > 5"
-bk wait --time 2000
-bk wait --selector "#btn" --timeout 10000
-```
-
----
-
-## evaluate
-
-执行 JavaScript 表达式。
-
-```
-Usage: bk evaluate [OPTIONS] [EXPRESSION]
-```
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `[EXPRESSION]` | positional | JS 表达式（内联） |
-| `--file <PATH>` | string | 从文件加载 JS 执行 |
-
-```bash
-bk evaluate "document.title"
-bk evaluate "await fetch('/api').then(r => r.json())"
-bk evaluate "document.querySelectorAll('a').length"
-bk evaluate --file script.js
-```
-
----
-
-## screenshot
-
-截取页面截图。
-
-```
-Usage: bk screenshot [OPTIONS]
-```
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `--output <FILE>` | string | 保存路径（不给则输出 base64） |
-| `--full-page` | flag | 整页截图 |
-
-```bash
-bk screenshot --output page.png
-bk screenshot --full-page --output full.png
-bk screenshot
-```
-
-> 整页截图 token 消耗极大，优先用 `bk snapshot` 文本方式。
-
----
-
-## session
-
-Session 管理（关闭/列表/cookie）。
-
-```
-Usage: bk session <COMMAND>
-```
-
-### session close
-
-关闭当前 session。
-
-```bash
-bk session close
-bk session close --session work
-```
-
-### session list
-
-列出所有 session。
-
-```bash
-bk session list
-```
-
-### session cookies
-
-Cookie 操作。
-
-```
-Usage: bk session cookies <COMMAND>
-```
-
-| 子命令 | 说明 |
-|--------|------|
-| `get` | 获取 cookies |
-| `set` | 从 JSON 文件设置 cookies |
-| `clear` | 清除所有 cookies |
-
-```bash
-bk session cookies get
-bk session cookies set cookies.json
-bk session cookies clear
-```
-
----
-
-## status
-
-查看连接状态（daemon + 浏览器 + session 概览）。
-
-```
-Usage: bk status [OPTIONS]
-```
-
-无特有参数。
-
-```bash
-bk status
-```
-
----
-
-## Removed Aliases
-
-以下 v1 别名已移除，直接使用对应 v2 命令：
-
-| 已移除命令 | 使用 |
-|---------|------|
-| `bk goto <url>` | `bk navigate <url>` |
-| `bk info` | `bk snapshot` |
-| `bk eval <expr>` | `bk evaluate <expr>` |
-| `bk shot` | `bk screenshot` |
-| `bk click --ref <N>` | `bk act click --ref <N>` |
-| `bk type --ref <N> <TEXT>` | `bk act type --ref <N> --text <TEXT>` |
-| `bk fill --set ref:<N>=<VALUE>` | `bk act fill --set ref:<N>=<VALUE>` |
-| `bk back` | `bk navigate --back` |
-| `bk forward` | `bk navigate --forward` |
-| `bk reload` | `bk navigate --reload` |
-| `bk new` | `bk ws new` (legacy) |
-| `bk ls` | `bk ws list` (legacy) |
-| `bk rm <wid>` | `bk ws close <wid>` (legacy) |
-| `bk url` | `bk evaluate "location.href"` |
-| `bk title` | `bk evaluate "document.title"` |
-| `bk keys Enter` | `bk act press --keys Enter` |
-| `bk scroll ...` | `bk act scroll ...` |
-| `bk hover --ref <N>` | `bk act hover --ref <N>` |
-| `bk focus --ref <N>` | `bk act focus --ref <N>` |
-| `bk select --ref <N> <VALUE>` | `bk act select --ref <N> --value <VALUE>` |
-| `bk options --ref <N>` | `bk act options --ref <N>` |
-| `bk upload --ref <N> <FILES...>` | `bk act upload --ref <N> <FILES...>` |
-| `bk drag --from-ref <N> --to-ref <N>` | `bk act drag --from-ref <N> --to-ref <N>` |
-
-其余 v1 legacy 命令（ws/tab/browser/daemon/storage/dialog/debug/find/search/html/console/pdf/open/fetch）仍可用但将在 Phase 3 移除。
+## Admin commands
+
+Use these to manage browser and daemon connections.
+
+| Command | Purpose |
+|---|---|
+| `bk browser discover [--path <DevToolsActivePort>]` | Discover Chrome dynamically |
+| `bk browser connect <HOST_OR_WS_URL>` | Connect to an existing browser endpoint |
+| `bk browser list` | List connected browsers |
+| `bk browser disconnect <HOST>` | Disconnect a browser |
+| `bk daemon start` | Start daemon |
+| `bk daemon status` | Show daemon status |
+| `bk daemon stop` | Stop daemon gracefully |
+
+Prefer `bk connect` for normal use. Do not assume port 9222; Chrome's
+`DevToolsActivePort` file is the source of truth for user-browser endpoints.
+
+## Developer commands
+
+Use these only for diagnostics or controlled debugging.
+
+| Command | Purpose |
+|---|---|
+| `bk debug block <PATTERN>` | Block matching requests |
+| `bk debug unblock` | Remove request blocking |
+| `bk debug cdp <METHOD> [PARAMS]` | Send a raw CDP command |
+
+## Breaking migration notes
+
+The workspace runtime was removed in a breaking migration. Do not use or
+document compatibility aliases for these surfaces:
+
+- CLI: `ws`, `tab`, `fetch`, old top-level action/navigation aliases, and
+  top-level `storage`;
+- environment and flags: `BK_WS`, `--ws`;
+- daemon routes: `ws.*`, `tab.*`, `nav.*`, `page.*`, old `storage.*`, and
+  `v2.*` aliases;
+- debug streams: `debug monitor`, `debug har`, and `debug events`.
+
+Schema v2 state is backed up before migration to schema v3. `bk status` reports
+migration metadata. Cleanup commands return structured `cleanup_errors` when
+cleanup is partial. Schema v3 state contains browser metadata, sessions, tab
+ownership, and optional migration metadata, but no workspace fields.

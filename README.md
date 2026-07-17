@@ -122,23 +122,63 @@ bk session cookies                  # Cookie operations
 
 ## Command Reference
 
-### Primary Commands
+### Agent Commands
 
 | Command | Description |
 |---------|-------------|
 | `setup` | One-time Chrome remote debugging setup (interactive) |
 | `connect` | Connect to browser (idempotent) |
+| `open` | Open URL in a new tab |
+| `attach` | Attach an existing browser tab to the current session |
 | `snapshot` | Get page state: elements + text + viewport info |
+| `find` | Find elements by CSS selector |
+| `search` | Search page text |
 | `act` | Execute interaction (click, type, fill, press, scroll, hover, focus, select, options, upload, drag) |
 | `navigate` | Navigate to URL or back/forward/reload |
-| `open` | Open URL in a new tab |
-| `close` | Close the current tab |
-| `tabs` | List tabs in the session |
 | `wait` | Wait for a page condition |
 | `evaluate` | Execute JavaScript |
+| `html` | Get page HTML |
+| `console` | Show the console log buffer |
+| `pdf` | Generate a PDF of the current target |
 | `screenshot` | Take a screenshot |
-| `session` | Session management (close/list/cookies) |
+| `tabs` | List tabs in the session |
+| `close` | Close or detach the current tab |
 | `status` | Connection status |
+| `dialog` | List, accept, dismiss, or configure dialogs for the current session |
+
+### Session Storage Commands
+
+| Command | Description |
+|---------|-------------|
+| `session close` | Close the current session |
+| `session list` | List all sessions |
+| `session cookies get` | Get cookies for the current session |
+| `session cookies set --file <FILE>` | Set cookies from a JSON file |
+| `session cookies clear` | Clear cookies for the current session |
+| `session storage local get <KEY>` | Get a localStorage value |
+| `session storage local set <KEY> <VALUE>` | Set a localStorage value |
+| `session storage export` | Export cookies and localStorage |
+| `session storage import <FILE>` | Import storage state |
+
+### Admin Commands
+
+| Command | Description |
+|---------|-------------|
+| `browser discover` | Discover the user's Chrome via `DevToolsActivePort` |
+| `browser connect` | Connect to an existing browser endpoint |
+| `browser list` | List connected browsers |
+| `browser disconnect` | Disconnect a browser |
+| `daemon start` | Start the local daemon |
+| `daemon status` | Show daemon status |
+| `daemon stop` | Stop the daemon gracefully |
+
+### Developer Commands
+
+| Command | Description |
+|---------|-------------|
+| `debug block` | Block requests matching a pattern |
+| `debug unblock` | Remove request blocking |
+| `debug cdp` | Send a raw CDP command |
 
 ### act
 
@@ -185,7 +225,7 @@ bk act drag --from-selector "#card-a" --to-selector "#drop-zone"
 
 `bk act fill`, `bk act select`, and `bk act options` accept only stable element refs from `bk snapshot`.
 Legacy top-level `bk click` and `bk type` are removed; use `bk act click` and `bk act type`.
-`bk act click` returns the action result plus `state_diff`. It does not report `new_tab` until browserkit has session-native target lifecycle tracking.
+`bk act click` returns the action result plus `state_diff`; when a click opens a new tab, the response reports `new_tab`.
 
 | Action | Command |
 |--------|---------|
@@ -238,10 +278,11 @@ bk screenshot --output page.png     # Save to file
 bk screenshot --full-page           # Full scrollable page
 ```
 
-### open / close / tabs
+### open / attach / close / tabs
 
 ```sh
 bk open https://example.com         # Open URL in new tab
+bk attach github.com                # Attach an existing user tab by URL/title/target substring
 bk close                            # Close active tab
 bk close --target <targetId>        # Close specific tab
 bk tabs                             # List all tabs in session
@@ -265,36 +306,48 @@ bk tabs                             # List all tabs in session
 |----------|-------------|
 | `BK_SESSION` | Default session name (equivalent to `--session`) |
 
+`BK_WS` and `--ws` were removed in the session-only migration. Use `BK_SESSION` or `--session`.
+
+## Breaking Migration From Workspace Runtime
+
+browserkit now exposes one session runtime. The old workspace surface was removed rather than forwarded through compatibility aliases:
+
+- removed CLI surfaces: `ws`, `tab`, `fetch`, legacy top-level action/navigation aliases, `storage`, and streaming `debug monitor|har|events`;
+- removed environment and flags: `BK_WS`, `--ws`;
+- removed daemon routes: `ws.*`, `tab.*`, `nav.*`, `page.*`, old `storage.*`, and `v2.*` aliases.
+
+On startup, schema v2 state is backed up as `state.v2.backup.json` (or a numbered variant) before being converted to schema v3. `bk status` exposes migration metadata so migrated or dropped state is visible instead of silent. Cleanup commands such as `browser disconnect` and `daemon stop` return structured `cleanup_errors` when cleanup is partial.
+
 ## Configuration
 
 Optional config at `~/.bk/config.toml`:
 
 ```toml
 [daemon]
-workspace_timeout_minutes = 30   # auto-cleanup idle workspaces (0 = disabled)
-cleanup_interval_seconds = 60    # how often to check for expired workspaces
+cleanup_interval_seconds = 60    # how often to check for expired sessions
 chrome_path = "/usr/bin/chromium" # override Chrome auto-discovery
 disable_security = true          # pass --ignore-certificate-errors to Chrome
 headless = true                  # set to false to show browser window
 
 [limits]
-max_workspaces = 0               # 0 = unlimited
-max_tabs_per_workspace = 0       # 0 = unlimited
 max_sessions = 10                # isolated sessions; default session does not count
 max_tabs_per_session = 5         # tabs per isolated session
 session_timeout_hours = 72       # idle session timeout
 js_timeout_seconds = 0           # 0 = no timeout
 ```
 
-`session` is the agent-facing isolation model. Some config and persisted fields still use `workspace` for legacy/internal state while the v2 CLI migrates toward sessions.
+Historical workspace config keys are ignored by current binaries. Session limits are controlled by `max_sessions`, `max_tabs_per_session`, and `session_timeout_hours`.
 
 ## State Persistence
 
-All daemon state is stored in a single `~/.bk/state.json` file:
+All daemon state is stored in a single schema v3 `~/.bk/state.json` file:
 
-- Browser connections (host, managed flag, PID)
-- Session metadata (tabs, active tab, mode)
-- Default session ID
+- browser metadata for restorable managed browser connections;
+- session metadata: mode, browser host, BrowserContext ID, tabs, active target, timestamps, disconnected flag;
+- per-tab ownership (`Owned` or `Attached`);
+- migration metadata when a v2 state file was converted.
+
+The runtime never writes workspace fields to schema v3. Attached user tabs are detached from browserkit on close; browserkit-owned tabs are closed in Chrome.
 
 Additional runtime files in `~/.bk/`:
 - `daemon.port` — current daemon TCP port

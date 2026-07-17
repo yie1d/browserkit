@@ -20,37 +20,37 @@ Status: in progress
 
 ## Phase 1: browserkit v2 Session Runtime Closure
 
-Status: in progress
+Status: complete
 
 - [x] Make `connect --session <name>` create a real isolated BrowserContext.
 - [x] Keep default session attached to the user's existing browser context.
-- [ ] Route `open`, `snapshot`, `act`, `navigate`, `tabs`, `close`, `evaluate`, `screenshot`, and `session cookies` through the session model.
+- [x] Route `open`, `snapshot`, `act`, `navigate`, `tabs`, `close`, `evaluate`, `screenshot`, and `session cookies` through the session model.
 - [x] Move `wait` off the legacy workspace path and onto session targets.
 - [x] Enforce `max_sessions` and `max_tabs_per_session`.
 - [x] Implement session idle timeout and cleanup.
-- [ ] Ensure Chrome disconnect handling marks affected sessions and returns structured errors.
+- [x] Ensure Chrome disconnect handling marks affected sessions and returns structured errors.
 
 ## Phase 2: browserkit Session Persistence
 
-Status: in progress
+Status: complete
 
 - [x] Extend `state.json` to persist sessions.
 - [x] Persist session mode, browser host, BrowserContext id, tabs, active target, and timestamps.
 - [x] Restore sessions after daemon restart, or mark them disconnected with explicit restore warnings.
 - [x] Mark non-restorable sessions or tabs as disconnected instead of pretending they are usable.
-- [ ] Add one-way migration from legacy workspace state into session state with explicit drop warnings for non-restorable tabs.
+- [x] Add one-way migration from legacy workspace state into session state with explicit drop warnings for non-restorable tabs.
 - [x] Document state schema versioning and forward-compatibility rules.
 
 ## Phase 3: browserkit Legacy Removal
 
-Status: pending
+Status: complete
 
-- [ ] Deprecate or remove public `ws.*` commands.
-- [ ] Deprecate or remove legacy `tab.*`, `nav.*`, `page.*`, and `act.*` handlers after v2 equivalents are complete.
-- [ ] Remove `BK_WS`, `--ws`, and workspace-first documentation.
-- [ ] Move workspace code out of the runtime path, keeping only migration code until it can be deleted.
-- [ ] Remove legacy tests after equivalent v2 tests exist.
-- [ ] Keep CLI output JSON-only.
+- [x] Deprecate or remove public `ws.*` commands.
+- [x] Deprecate or remove legacy `tab.*`, `nav.*`, `page.*`, and `act.*` handlers after v2 equivalents are complete.
+- [x] Remove `BK_WS`, `--ws`, and workspace-first documentation.
+- [x] Move workspace code out of the runtime path, keeping only migration code until it can be deleted.
+- [x] Remove legacy tests after equivalent v2 tests exist.
+- [x] Keep CLI output JSON-only.
 
 ## Phase 4: cdpkit-rs Protocol-Layer Improvements
 
@@ -110,5 +110,5 @@ Status: pending
 - [x] Complete v2 act parity Batch D by moving `upload` and `drag` onto `bk act` and removing the legacy CLI commands plus `act.upload` / `act.drag` daemon routes.
 - [x] Complete v2 act parity Batch E by moving legacy `keys` onto `bk act press --keys` and removing the `act.keys` daemon route.
 - [x] Complete v2 act parity Batch F by moving legacy `click` and `type` onto `bk act` and removing the legacy CLI commands plus `act.click` / `act.type` daemon routes.
-- [ ] Add session-native target lifecycle tracking so `bk act click` can report `new_tab` again.
-- [ ] Start deleting legacy workspace-facing surfaces after v2 parity is verified.
+- [x] Add session-native target lifecycle tracking so `bk act click` can report `new_tab` again.
+- [x] Start deleting legacy workspace-facing surfaces after v2 parity is verified.

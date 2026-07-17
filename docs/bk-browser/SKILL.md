@@ -61,7 +61,7 @@ bk connect
   > "需要在 Chrome 中开启远程调试，只需设置一次，重启后保留。请在 Chrome 地址栏打开 `chrome://inspect/#remote-debugging`，勾选"开启远程调试"，完成后告诉我。"
   用户开启后再执行 `bk connect`。
 
-- **文件存在但 connect 仍失败** → 直接用文件内容连接（v1 fallback）：
+- **文件存在但 connect 仍失败** → 用 admin command 直接连接文件中的 endpoint：
   ```bash
   # 文件第一行=端口，第二行=ws路径
   bk browser connect "ws://127.0.0.1:<端口><ws路径>"
@@ -80,7 +80,7 @@ bk connect
 | macOS | `~/Library/Application Support/Microsoft Edge/DevToolsActivePort` |
 | Linux | `~/.config/microsoft-edge/DevToolsActivePort` |
 
-- 文件存在 → 读取端口和 ws 路径，用 v1 fallback 连接：
+- 文件存在 → 读取端口和 ws 路径，用 admin command 连接：
   ```bash
   bk browser connect "ws://127.0.0.1:<端口><ws路径>"
   ```
@@ -106,12 +106,11 @@ bk connect
 ## 核心工作流
 
 1. **连接**：`bk connect`（自动发现并连接用户 Chrome，幂等）
-2. **确认 tab**：`bk tabs` 查看所有 tab → 用 `--target <targetId>` 或 `--focus` 指定目标 tab
-3. **导航**：`bk navigate <url>`
-4. **观察**：`bk snapshot` —— 返回带 ref 的可交互元素 + 页面文本（**每次操作前必须先 snapshot**）
-5. **交互**：用 ref 操作（`bk act click --ref 42`、`bk act type --ref 42 --text "文本"`）
-6. **验证**：再次 `bk snapshot` 确认结果
-7. **结束**：`bk session close` 关闭 session
+2. **选择目标**：操作现有用户 tab 时用 `bk attach <唯一 URL/title 片段>`；创建新 tab 时用 `bk open <url>`
+3. **观察**：`bk snapshot` —— 返回带 ref 的可交互元素 + 页面文本（**每次操作前必须先 snapshot**）
+4. **交互**：用 ref 操作（`bk act click --ref 42`、`bk act type --ref 42 --text "文本"`）
+5. **验证**：再次 `bk snapshot` 或 `bk wait` + `bk snapshot` 确认结果
+6. **结束**：`bk close` detach/关闭当前 tab，或 `bk session close` 清理当前 session
 
 daemon 在命令之间保持连接，无需重复 connect。
 
@@ -123,7 +122,8 @@ daemon 在命令之间保持连接，无需重复 connect。
 # 连接与状态
 bk connect                            # 连接浏览器（幂等）
 bk status                             # 查看连接状态
-bk tabs                               # 列出所有 tab
+bk tabs                               # 列出当前 session 追踪的 tab
+bk attach <unique-url-or-title>        # 接管现有用户 tab（close 时只 detach）
 
 # 导航
 bk navigate <url>                     # 打开 URL
@@ -192,7 +192,7 @@ bk session cookies clear              # 清除 cookies
 
 ## 注意事项（重要）
 
-1. **确认操作的是用户可见的 tab**：`bk connect` 后用 `bk tabs` 确认当前 tab，需要时加 `--target <targetId>` 或 `--focus` 指定。否则 bk 可能在后台 tab 操作，用户看不到任何动作。
+1. **确认操作目标**：要操作用户已经打开的 tab，先用唯一 URL/title 片段 `bk attach <pattern>`；`bk tabs` 只列出当前 session 已追踪的 tab。
 
 2. **永远先 `bk snapshot`**：每次操作前先拿到元素 ref，不要猜 ref
 
@@ -202,7 +202,7 @@ bk session cookies clear              # 清除 cookies
 
 5. **ref 是稳定的**：ref（backendNodeId）在节点未被移除时不会变化，多步操作无需重复 snapshot（除非页面导航或大量 DOM 变化）
 
-6. **接管模式不关 Chrome**：`bk session close` 只 detach session，用户的 Chrome 窗口和标签页不受影响
+6. **接管模式不关用户 tab**：attached tab 的 `bk close` / `bk session close` 只 detach；`bk open` 创建的 owned tab 会被关闭
 
 7. **screenshot 消耗 token**：整页截图 token 消耗极大，优先用 `bk snapshot` 文本方式
 
@@ -259,7 +259,7 @@ bk snapshot --target <targetId-b>
 
 ```bash
 bk connect
-bk tabs
+bk attach "唯一的标题或 URL 片段"
 bk snapshot
 bk navigate https://app.example.com/dashboard
 ```
@@ -283,11 +283,13 @@ bk act press --keys Shift+Enter
 | 找不到元素 | 页面可能未完全加载，先 `bk wait --idle` 再 `bk snapshot` |
 | daemon 异常 | `bk session close`，再重新 `bk connect` |
 | ref 对不上 | 页面发生了导航或大量 DOM 变化，重新 `bk snapshot` |
+| attach 匹配多个 tab | 换更唯一的 URL/title 片段，或显式 `--target <targetId>` |
 
 ## 清理
 
 ```bash
-bk session close         # 关闭当前 session（用户 tab 只 detach，不会关闭）
+bk close                 # attached 用户 tab 只 detach；owned tab 会关闭
+bk session close         # 清理当前 session
 ```
 
 ---

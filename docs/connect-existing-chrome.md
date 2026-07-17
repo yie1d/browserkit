@@ -1,182 +1,131 @@
 # Connecting to an Existing Chrome Instance
 
-browserkit is a persistent browser runtime for AI agents. Its default
-client, `bk`, can connect to your already-running Chrome browser, operate
-in your visible window, and reuse your logged-in sessions.
+browserkit is a persistent browser runtime for AI agents. Its default client,
+`bk`, connects to the user's already-running Chrome, reuses the user's logged-in
+browser context, and keeps session/tab state in the local daemon.
 
-This document describes the lower-level attached-browser and legacy
-workspace commands. The current agent-facing API is session-oriented
-(`bk connect`, `bk open`, `bk snapshot`, `bk act`).
+This document covers the current session-oriented attach flow. Historical
+workspace commands are removed; use `connect`, `attach`, `open`, `tabs`, and
+`close`.
 
 ## Prerequisites
 
-**One-time Chrome setup** (persists across restarts):
+One-time Chrome setup persists across restarts:
 
-1. Open `chrome://inspect/#remote-debugging` in your Chrome
-2. Enable "Allow remote debugging"
+1. Open `chrome://inspect/#remote-debugging` in Chrome.
+2. Enable remote debugging.
+3. Leave Chrome running.
 
-Chrome will write a `DevToolsActivePort` file to your profile directory
-containing the dynamic debug port. Do NOT hardcode port 9222.
+Chrome writes a `DevToolsActivePort` file to the profile directory containing
+the dynamic debug port and, on newer Chrome versions, the browser WebSocket
+path. Do not hardcode port 9222.
 
-## File locations
+## File Locations
 
 - Windows: `%LOCALAPPDATA%\Google\Chrome\User Data\DevToolsActivePort`
 - macOS: `~/Library/Application Support/Google/Chrome/DevToolsActivePort`
 - Linux: `~/.config/google-chrome/DevToolsActivePort`
 
-## Usage
+## Connect
 
-### Auto-discover and connect
+Use the high-level command first:
 
 ```bash
-# Discover Chrome via DevToolsActivePort (recommended)
-bk browser discover
+bk connect
+```
 
-# With custom DevToolsActivePort path (non-default profile)
+For diagnostics or non-default profiles, use the admin commands:
+
+```bash
+bk browser discover
 bk browser discover --path /path/to/DevToolsActivePort
+bk browser connect "ws://127.0.0.1:<port>/devtools/browser/<guid>"
 ```
 
-### Connect with explicit port
+`bk connect` and `bk browser discover` use the dynamic endpoint exposed by the
+user's browser. They should be preferred over fixed ports.
+
+## Attach an Existing User Tab
+
+`bk attach` adopts an existing page target into the current session. It never
+creates a new target and it must resolve to one unambiguous tab.
 
 ```bash
-# If you know the port (e.g. from DevToolsActivePort first line)
-bk browser connect localhost:41753
+bk attach "github.com"
+bk attach "Issue 123"
+bk --target <targetId> attach
 ```
 
-### Create an attached workspace
+The match string is a URL, title, or target ID substring. Avoid broad patterns
+that could match multiple user tabs. If you need a fresh tab that browserkit
+owns, use `bk open <url>` instead.
 
-Attached workspaces share the user's default browser context -- no cookie
-isolation. They discover and attach to your existing tabs.
+## Ownership and Close Semantics
 
-**Important:** attached mode requires a pre-existing browser connection.
-It will never auto-launch Chrome. You must run `bk browser discover` or
-`bk browser connect` first, otherwise the command will error out.
-Attached workspaces should target user-connected (unmanaged) browsers --
-if only bk-launched browsers exist, you must specify `--host` explicitly.
+browserkit tracks tab ownership per session tab:
+
+- `Owned`: created by `bk open`; `bk close` closes the Chrome target.
+- `Attached`: adopted by `bk attach`; `bk close` only detaches browserkit from
+  the target and leaves the user's tab open in Chrome.
+
+The same rule applies to `bk session close`, idle cleanup, `bk daemon stop`, and
+browser disconnect cleanup. browserkit must not close a user-owned target as a
+side effect of cleanup.
+
+## Common Session Workflow
 
 ```bash
-# Step 1: connect to your running Chrome (required before attached mode)
-bk browser discover
-# or: bk browser connect localhost:<port>
-
-# Step 2: create attached workspace (discovers and attaches existing tabs)
-bk ws new --attached                    # attach ALL open page tabs
-bk ws new --attached --pattern github   # attach only tabs matching "github"
-
-# Equivalent (ws attach is the same operation):
-bk ws attach --pattern "github.com"
-bk ws attach                            # attach all open page tabs
+bk connect
+bk attach "unique title or URL fragment"
+bk snapshot --full
+bk act click --ref 42
+bk close
 ```
 
-### Managing tabs in attached workspaces
+For a new browserkit-owned tab:
 
 ```bash
-# Create a NEW tab in user's visible Chrome window (managed by bk)
-bk tab new https://example.com
-
-# Attach an EXISTING user tab into the workspace (not managed by bk)
-bk tab attach "github.com"
+bk connect
+bk open https://example.com
+bk snapshot
+bk close
 ```
 
-Key difference:
-- `tab new` creates a tab that bk owns (managed=true). On close, the tab
-  is actually closed via CloseTarget. This is intentional even in attached
-  workspaces -- bk created it, so bk owns its lifecycle.
-- `tab attach` attaches to an existing user tab (managed=false). On close,
-  bk only detaches its CDP session -- the tab remains open in Chrome.
-
-### Working with attached workspaces
-
-Current session-oriented commands work against attached browser tabs:
-`bk navigate`, `bk snapshot`, `bk act`, `bk evaluate`, etc.
+For isolated work:
 
 ```bash
-# Navigate in the user's visible tab
-bk navigate https://example.com
-
-# Take screenshot of the user's actual browser state
-bk screenshot --output current.png
+bk --session agent-a connect
+bk --session agent-a open https://example.com
+bk --session agent-a session cookies get
+bk --session agent-a session close
 ```
 
-### Close semantics (per-tab managed model)
+## State and Migration
 
-Close behavior is determined per-tab by the `managed` flag, not by
-workspace mode:
+The daemon stores schema v3 session-only state in `~/.bk/state.json`. The file
+contains browser metadata, sessions, session tabs, ownership, and optional
+migration metadata. It does not write workspace fields.
 
-- **managed=true** tabs (created by `tab new` or isolated `ws new`):
-  `CloseTarget` -- the tab is closed.
-- **managed=false** tabs (attached via `ws attach`, `ws new --attached`,
-  or `tab attach`): `DetachFromTarget` -- the tab stays open in Chrome.
+When a schema v2 state file is found, browserkit creates `state.v2.backup.json`
+or a numbered variant before writing schema v3. `bk status` reports migration
+metadata, including converted counts, dropped duplicate/conflicting targets, and
+warnings.
 
-Workspace-level close:
-- `bk ws close <wid>` iterates all tabs: closes managed ones, detaches
-  unmanaged ones. Isolated workspaces also dispose their BrowserContext.
-- `bk tab close <tid>` does the same for a single tab.
-
-Browser-level safety:
-- Daemon shutdown (`bk daemon stop`) will not kill user-connected browsers.
-  Only bk-launched browsers (managed=true, child process tracked) are killed.
-- Workspace timeout expiry follows the same rules.
-
-### Isolated vs Attached comparison
-
-| Aspect            | Isolated (default)          | Attached (`--attached`)       |
-|-------------------|-----------------------------|-----------------------------|
-| BrowserContext    | Own (isolated cookies)      | Shared (user's real state)  |
-| Cookie/session    | Fresh, empty                | User's logged-in sessions   |
-| Tab visibility    | Only if `--no-headless`     | Always in user's window     |
-| On ws close       | Closes tabs + disposes ctx  | Detach unmanaged, close managed |
-| On tab close      | CloseTarget (always)        | Per-tab: managed closes, unmanaged detaches |
-| Use case          | Scraping, testing           | RPA on logged-in sites      |
-
-## Chrome 136+ and `/json` endpoint restrictions
+## Chrome 136+ and `/json` Endpoint Restrictions
 
 Starting with Chrome 136, when remote debugging is enabled via the
-`chrome://inspect` toggle (as opposed to the `--remote-debugging-port` flag),
-Chrome **disables the HTTP `/json/*` discovery endpoints** (they return 404).
+`chrome://inspect` toggle instead of the `--remote-debugging-port` flag, Chrome
+may disable the HTTP `/json/*` discovery endpoints.
 
-This means the traditional flow of querying `http://host:port/json/version`
-to discover the WebSocket URL no longer works for toggle-enabled Chrome.
+browserkit handles this by reading `DevToolsActivePort`. When the WebSocket path
+is present, it connects directly to the browser WebSocket URL instead of
+requiring `/json/version`. If explicit `bk browser connect localhost:<port>`
+fails, prefer `bk browser discover` or pass the full WebSocket URL.
 
-**How bk handles this:**
+## Security Considerations
 
-- `bk browser discover` reads the `DevToolsActivePort` file, which contains
-  both the port (line 1) and the browser WebSocket path (line 2, e.g.
-  `/devtools/browser/<guid>`).
-- When the ws path is present, bk constructs a direct `ws://` URL and
-  connects without hitting `/json/version`.
-- When the ws path is absent (older Chrome, or port-only file), bk falls
-  back to the traditional `/json/version` discovery via the host.
-
-If you encounter connection failures with `bk browser connect localhost:<port>`,
-use `bk browser discover` instead -- it will use the ws path automatically.
-Alternatively, pass the full WebSocket URL directly:
-
-```bash
-bk browser connect "ws://localhost:<port>/devtools/browser/<guid>"
-```
-
-## Connection timeout
-
-All CDP connection attempts (both `discover` and `connect`) are wrapped in
-a 10-second timeout. If the endpoint is unreachable or the DevToolsActivePort
-file is stale (Chrome exited without cleaning it up), bk will fail fast with
-a clear error message instead of hanging indefinitely.
-
-Common causes of timeout:
-- Chrome has exited but `DevToolsActivePort` was not deleted
-- The debug port is blocked by a firewall
-- A different process is listening on that port
-
-Resolution: restart Chrome, or delete the stale DevToolsActivePort file and
-re-enable debugging via `chrome://inspect/#remote-debugging`.
-
-## Security considerations
-
-- Attached mode gives bk full control over the user's authenticated
-  browser sessions (cookies, localStorage, page content). Treat the
-  daemon's TCP socket as a privileged interface.
-- The daemon listens on `127.0.0.1` only (localhost). No new network
-  ports are exposed by this feature.
-- No authentication is added to the daemon protocol -- this is unchanged
-  from the existing architecture. Access is gated by local TCP only.
+- Attaching gives browserkit control over authenticated browser sessions,
+  cookies, localStorage, and page content.
+- The daemon listens on localhost only and speaks JSON over local TCP.
+- Treat the daemon as privileged local automation. Do not expose its port to a
+  network.

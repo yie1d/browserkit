@@ -2,11 +2,13 @@
 
 > 生成时间：2026-03-23
 >
-> 状态：历史 v1 架构快照。本文保留 workspace/text-json-tsv 等旧口径用于考古，不代表当前 v2 对外定位。当前定位以 README 和 docs/REDESIGN.md 为准：browserkit 是面向 AI agent 的持久浏览器运行时，`bk` 是默认 CLI client。
+> 状态：历史 v1 架构快照，已被 session-only runtime 迁移取代。本文保留 workspace/text-json-tsv 等旧口径用于考古，不代表当前 CLI、daemon route、配置或持久化 schema。当前定位以 README、docs/REDESIGN.md、docs/ROADMAP.md 和 `bk --help` 为准：browserkit 是构建在 cdpkit-rs 之上的 persistent browser runtime，`bk` 和 daemon 是入口。
+>
+> 当前破坏性迁移结论：workspace 命令、变量、字段和 daemon route 已移除；schema v2 state 会先备份再迁移到 schema v3；`bk status` 暴露 migration metadata，清理命令响应暴露 `cleanup_errors`。
 
 ## 1. 项目概述
 
-browserkit 当前定位是基于 [cdpkit](https://crates.io/crates/cdpkit) 构建的持久浏览器运行时。daemon 负责持久连接、tab/session/workspace 状态和本地协议；`bk` 是默认 CLI client。
+本节是 2026-03-23 的历史快照。快照当时描述的 workspace 状态、text/json/tsv 输出和旧 route 已不再是当前产品 contract。当前实现由 daemon 维护 browser/session/tab 状态和本地 JSON 协议，底层 CDP 能力来自 cdpkit-rs。
 
 | 属性 | 值 |
 |------|-----|
