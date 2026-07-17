@@ -252,7 +252,7 @@ fn cleanup_stale_chrome_dirs(persisted_browsers: &[PersistedBrowser]) {
     }
 }
 
-async fn browser_context_available(session: &Session, cdp: &Arc<cdpkit::CDP>) -> bool {
+pub(crate) async fn browser_context_available(session: &Session, cdp: &Arc<cdpkit::CDP>) -> bool {
     if session.mode == SessionMode::Default {
         return true;
     }
@@ -284,7 +284,7 @@ async fn browser_context_available(session: &Session, cdp: &Arc<cdpkit::CDP>) ->
     }
 }
 
-async fn reattach_session_tabs(
+pub(crate) async fn reattach_session_tabs(
     session: &mut Session,
     cdp: &Arc<cdpkit::CDP>,
 ) -> Vec<(String, String)> {

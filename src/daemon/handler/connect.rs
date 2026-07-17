@@ -11,9 +11,9 @@ use serde_json::json;
 use crate::browser::finder;
 use crate::browser::spawn_disconnect_monitor;
 use crate::daemon::protocol::{Request, Response};
-use crate::daemon::session::Session;
+use crate::daemon::session::{Session, SessionMode};
 use crate::daemon::state::{Browser, DaemonState};
-use crate::daemon::target_lifecycle::ensure_target_watcher;
+use crate::daemon::target_lifecycle::{ensure_target_watcher, spawn_session_tab_subscriptions};
 use crate::error::ErrorCode;
 
 use super::session::check_session_limit;
@@ -108,6 +108,94 @@ fn build_new_session_for_connect(
     ))
 }
 
+#[derive(Debug, PartialEq, Eq)]
+struct ReconnectResult {
+    tab_count: usize,
+    subscriptions: Vec<(String, String)>,
+}
+
+trait SessionReconnectBackend {
+    async fn browser_context_available(&self, session: &Session) -> bool;
+    async fn create_browser_context(&self, session_name: &str) -> Result<String, Response>;
+    async fn reattach_tabs(&self, session: &mut Session) -> Vec<(String, String)>;
+}
+
+struct CdpReconnectBackend<'a> {
+    cdp: &'a Arc<cdpkit::CDP>,
+}
+
+impl SessionReconnectBackend for CdpReconnectBackend<'_> {
+    async fn browser_context_available(&self, session: &Session) -> bool {
+        crate::daemon::persist::browser_context_available(session, self.cdp).await
+    }
+
+    async fn create_browser_context(&self, session_name: &str) -> Result<String, Response> {
+        create_browser_context_for_session(self.cdp, session_name)
+            .await?
+            .ok_or_else(|| {
+                Response::error_detail(
+                    ErrorCode::DaemonError,
+                    format!(
+                        "missing BrowserContext id while reconnecting isolated session '{}'",
+                        session_name
+                    ),
+                    None,
+                )
+            })
+    }
+
+    async fn reattach_tabs(&self, session: &mut Session) -> Vec<(String, String)> {
+        crate::daemon::persist::reattach_session_tabs(session, self.cdp).await
+    }
+}
+
+async fn reconnect_existing_session<B: SessionReconnectBackend>(
+    state: &Arc<DaemonState>,
+    session_name: &str,
+    browser_host: &str,
+    backend: &B,
+) -> Result<ReconnectResult, Response> {
+    let mut session = state
+        .sessions
+        .get(session_name)
+        .ok_or_else(|| {
+            Response::error_detail(
+                ErrorCode::SessionNotFound,
+                format!("session not found: {session_name}"),
+                None,
+            )
+        })?
+        .clone();
+
+    let subscriptions = match session.mode {
+        SessionMode::Default => backend.reattach_tabs(&mut session).await,
+        SessionMode::Isolated => {
+            let can_reuse_context = session.browser_host == browser_host
+                && backend.browser_context_available(&session).await;
+            if can_reuse_context {
+                backend.reattach_tabs(&mut session).await
+            } else {
+                let browser_context_id = backend.create_browser_context(session_name).await?;
+                session.browser_context_id = Some(browser_context_id);
+                session.tabs.clear();
+                session.active_target = None;
+                Vec::new()
+            }
+        }
+    };
+
+    session.browser_host = browser_host.to_string();
+    session.disconnected = false;
+    session.touch();
+    let tab_count = session.tab_count();
+    state.sessions.insert(session_name.to_string(), session);
+
+    Ok(ReconnectResult {
+        tab_count,
+        subscriptions,
+    })
+}
+
 /// Determine which error code best describes why connection failed.
 fn determine_connection_error(
     is_running: bool,
@@ -174,21 +262,21 @@ async fn discover_and_connect(
         },
     );
 
-    let browser_context_id = if state.sessions.contains_key(session_name) {
-        None
+    let tab_count = if state.sessions.contains_key(session_name) {
+        let backend = CdpReconnectBackend { cdp: &cdp };
+        let reconnect = reconnect_existing_session(state, session_name, &host, &backend).await?;
+        for (target_id, cdp_session_id) in reconnect.subscriptions {
+            spawn_session_tab_subscriptions(
+                Arc::clone(state),
+                session_name.to_string(),
+                target_id,
+                Arc::clone(&cdp),
+                cdp_session_id,
+            );
+        }
+        reconnect.tab_count
     } else {
-        create_browser_context_for_session(&cdp, session_name).await?
-    };
-
-    // Create or update session — preserve existing tabs on reconnect
-    let tab_count = if let Some(mut existing) = state.sessions.get_mut(session_name) {
-        existing.browser_host = host.clone();
-        existing.disconnected = false;
-        existing.touch();
-        let count = existing.tab_count();
-        drop(existing);
-        count
-    } else {
+        let browser_context_id = create_browser_context_for_session(&cdp, session_name).await?;
         let session =
             build_new_session_for_connect(session_name, host.clone(), browser_context_id)?;
         let count = session.tab_count();
@@ -305,7 +393,66 @@ async fn is_browser_process_running() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::daemon::session::SessionTab;
+    use std::collections::HashMap;
     use std::sync::Arc;
+
+    struct FakeReconnectBackend {
+        context_available: bool,
+        replacement_context: Option<String>,
+        reattached_sessions: HashMap<String, String>,
+    }
+
+    impl FakeReconnectBackend {
+        fn with_reattached_session(target_id: &str, cdp_session_id: &str) -> Self {
+            Self {
+                context_available: true,
+                replacement_context: None,
+                reattached_sessions: HashMap::from([(
+                    target_id.to_string(),
+                    cdp_session_id.to_string(),
+                )]),
+            }
+        }
+
+        fn with_replacement_context(browser_context_id: &str) -> Self {
+            Self {
+                context_available: false,
+                replacement_context: Some(browser_context_id.to_string()),
+                reattached_sessions: HashMap::new(),
+            }
+        }
+    }
+
+    impl SessionReconnectBackend for FakeReconnectBackend {
+        async fn browser_context_available(&self, _session: &Session) -> bool {
+            self.context_available
+        }
+
+        async fn create_browser_context(&self, _session_name: &str) -> Result<String, Response> {
+            self.replacement_context.clone().ok_or_else(|| {
+                Response::error_detail(
+                    ErrorCode::DaemonError,
+                    "replacement context was not configured".into(),
+                    None,
+                )
+            })
+        }
+
+        async fn reattach_tabs(&self, session: &mut Session) -> Vec<(String, String)> {
+            let mut subscriptions = Vec::new();
+            session.tabs.retain(|target_id, tab| {
+                let Some(cdp_session_id) = self.reattached_sessions.get(target_id) else {
+                    return false;
+                };
+                tab.cdp_session_id = cdp_session_id.clone();
+                subscriptions.push((target_id.clone(), cdp_session_id.clone()));
+                true
+            });
+            subscriptions.sort();
+            subscriptions
+        }
+    }
 
     #[test]
     fn connect_result_already_connected() {
@@ -465,5 +612,62 @@ mod tests {
         }));
 
         assert!(check_new_session_limit_for_connect(&state, "default").is_ok());
+    }
+
+    #[tokio::test]
+    async fn reconnect_default_session_reattaches_persisted_tabs_before_connecting() {
+        let state = Arc::new(DaemonState::new());
+        let mut session = Session::new_default("127.0.0.1:9222".into());
+        session.mark_disconnected();
+        session.tabs.insert(
+            "T1".into(),
+            SessionTab::new_attached(
+                "T1".into(),
+                "https://example.test".into(),
+                "Example".into(),
+                String::new(),
+            ),
+        );
+        session.active_target = Some("T1".into());
+        state.sessions.insert("default".into(), session);
+
+        let backend = FakeReconnectBackend::with_reattached_session("T1", "S1");
+        let result = reconnect_existing_session(&state, "default", "127.0.0.1:9222", &backend)
+            .await
+            .unwrap();
+
+        let restored = state.sessions.get("default").unwrap();
+        assert!(!restored.disconnected);
+        assert_eq!(restored.tabs["T1"].cdp_session_id, "S1");
+        assert_eq!(result.subscriptions, vec![("T1".into(), "S1".into())]);
+    }
+
+    #[tokio::test]
+    async fn reconnect_isolated_session_replaces_missing_context_and_stale_tabs() {
+        let state = Arc::new(DaemonState::new());
+        let mut session = Session::new_isolated(
+            "agent-a".into(),
+            "127.0.0.1:9222".into(),
+            "STALE-CONTEXT".into(),
+        );
+        session.mark_disconnected();
+        session.add_tab(
+            "STALE-TARGET".into(),
+            "https://stale.test".into(),
+            "Stale".into(),
+        );
+        state.sessions.insert("agent-a".into(), session);
+
+        let backend = FakeReconnectBackend::with_replacement_context("NEW-CONTEXT");
+        let result = reconnect_existing_session(&state, "agent-a", "127.0.0.1:9222", &backend)
+            .await
+            .unwrap();
+
+        let restored = state.sessions.get("agent-a").unwrap();
+        assert!(!restored.disconnected);
+        assert_eq!(restored.browser_context_id.as_deref(), Some("NEW-CONTEXT"));
+        assert!(restored.tabs.is_empty());
+        assert!(restored.active_target.is_none());
+        assert!(result.subscriptions.is_empty());
     }
 }
