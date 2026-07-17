@@ -12,6 +12,8 @@ use crate::daemon::state::DaemonState;
 use crate::error::ErrorCode;
 use crate::page::exception_message;
 
+use super::common::{optional_string_param, session_name_param};
+
 /// Validated parameters for the evaluate command.
 #[derive(Debug)]
 struct EvaluateParams {
@@ -37,15 +39,8 @@ fn validate_evaluate_params(params: &serde_json::Value) -> Result<EvaluateParams
         .to_string();
 
     Ok(EvaluateParams {
-        session_name: params
-            .get("session")
-            .and_then(|v| v.as_str())
-            .unwrap_or("default")
-            .into(),
-        target: params
-            .get("target")
-            .and_then(|v| v.as_str())
-            .map(|s| s.into()),
+        session_name: session_name_param(params)?.into(),
+        target: optional_string_param(params, "target")?.map(str::to_string),
         expression,
         timeout: params
             .get("timeout")

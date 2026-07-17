@@ -10,6 +10,8 @@ use crate::daemon::protocol::{Request, Response};
 use crate::daemon::state::DaemonState;
 use crate::error::{BkError, ErrorCode};
 
+use super::common::{optional_string_param, session_name_param};
+
 #[derive(Debug)]
 struct WaitParams {
     session_name: String,
@@ -22,15 +24,8 @@ fn validate_wait_params(params: &serde_json::Value) -> Result<WaitParams, Respon
         .map_err(|e| Response::error_detail(ErrorCode::InvalidArgument, e.to_string(), None))?;
 
     Ok(WaitParams {
-        session_name: params
-            .get("session")
-            .and_then(|v| v.as_str())
-            .unwrap_or("default")
-            .into(),
-        target: params
-            .get("target")
-            .and_then(|v| v.as_str())
-            .map(|s| s.into()),
+        session_name: session_name_param(params)?.into(),
+        target: optional_string_param(params, "target")?.map(str::to_string),
         conditions,
     })
 }

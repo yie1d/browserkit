@@ -13,6 +13,8 @@ use crate::daemon::target_lifecycle::{
 };
 use crate::error::ErrorCode;
 
+use super::common::{optional_string_param, session_name_param};
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct AttachCandidate {
     target_id: String,
@@ -110,13 +112,18 @@ fn attach_candidate_from_target_info(
 }
 
 pub async fn handle_attach(req: &Request, state: &Arc<DaemonState>) -> Response {
-    let session_name = req
-        .params
-        .get("session")
-        .and_then(|value| value.as_str())
-        .unwrap_or("default");
-    let target_id = req.params.get("target").and_then(|value| value.as_str());
-    let pattern = req.params.get("pattern").and_then(|value| value.as_str());
+    let session_name = match session_name_param(&req.params) {
+        Ok(session_name) => session_name,
+        Err(response) => return response,
+    };
+    let target_id = match optional_string_param(&req.params, "target") {
+        Ok(target_id) => target_id,
+        Err(response) => return response,
+    };
+    let pattern = match optional_string_param(&req.params, "pattern") {
+        Ok(pattern) => pattern,
+        Err(response) => return response,
+    };
 
     let session = match state.sessions.get(session_name) {
         Some(session) => session,

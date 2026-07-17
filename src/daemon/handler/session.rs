@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use serde_json::{json, Map, Value};
 
-use super::common::resolve_session_target;
+use super::common::{resolve_session_target, session_name_param};
 use crate::daemon::protocol::{Request, Response};
 use crate::daemon::session::{Session, SessionMode};
 use crate::daemon::state::DaemonState;
@@ -329,11 +329,10 @@ pub async fn handle_session_list(_req: &Request, state: &Arc<DaemonState>) -> Re
 /// For isolated sessions: closes owned tabs, detaches attached tabs, then disposes the BrowserContext.
 /// For the default session: applies the same per-tab close/detach policy but keeps the session alive.
 pub async fn handle_session_close(req: &Request, state: &Arc<DaemonState>) -> Response {
-    let session_name = req
-        .params
-        .get("session")
-        .and_then(|v| v.as_str())
-        .unwrap_or("default");
+    let session_name = match session_name_param(&req.params) {
+        Ok(session_name) => session_name,
+        Err(response) => return response,
+    };
 
     let Some(plan) = (match build_session_close_plan(state, session_name) {
         Ok(plan) => plan,
@@ -399,11 +398,10 @@ pub async fn handle_session_close(req: &Request, state: &Arc<DaemonState>) -> Re
 
 /// Handle `bk session cookies get` — retrieve cookies via CDP Storage.getCookies.
 pub async fn handle_session_cookies_get(req: &Request, state: &Arc<DaemonState>) -> Response {
-    let session_name = req
-        .params
-        .get("session")
-        .and_then(|v| v.as_str())
-        .unwrap_or("default");
+    let session_name = match session_name_param(&req.params) {
+        Ok(session_name) => session_name,
+        Err(response) => return response,
+    };
 
     let session = match state.sessions.get(session_name) {
         Some(s) => s,
@@ -457,11 +455,10 @@ pub async fn handle_session_cookies_get(req: &Request, state: &Arc<DaemonState>)
 ///
 /// Accepts a `cookies` array in params or reads from a file path.
 pub async fn handle_session_cookies_set(req: &Request, state: &Arc<DaemonState>) -> Response {
-    let session_name = req
-        .params
-        .get("session")
-        .and_then(|v| v.as_str())
-        .unwrap_or("default");
+    let session_name = match session_name_param(&req.params) {
+        Ok(session_name) => session_name,
+        Err(response) => return response,
+    };
 
     // Get cookies from params — either inline array or file path
     let cookies_value = if let Some(file_path) = req.params.get("file").and_then(|v| v.as_str()) {
@@ -577,11 +574,10 @@ pub async fn handle_session_cookies_set(req: &Request, state: &Arc<DaemonState>)
 
 /// Handle `bk session cookies clear` — clear all cookies via CDP Storage.clearCookies.
 pub async fn handle_session_cookies_clear(req: &Request, state: &Arc<DaemonState>) -> Response {
-    let session_name = req
-        .params
-        .get("session")
-        .and_then(|v| v.as_str())
-        .unwrap_or("default");
+    let session_name = match session_name_param(&req.params) {
+        Ok(session_name) => session_name,
+        Err(response) => return response,
+    };
 
     let session = match state.sessions.get(session_name) {
         Some(s) => s,

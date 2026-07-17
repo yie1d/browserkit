@@ -5,7 +5,7 @@ use std::sync::Arc;
 use serde_json::json;
 use tracing::info;
 
-use super::common::{resolve_session_selection, resolve_session_target};
+use super::common::{optional_string_param, resolve_session_selection, resolve_session_target};
 use crate::daemon::dialog::{build_handle_params, DialogPolicy};
 use crate::daemon::protocol::{Request, Response};
 use crate::daemon::state::DaemonState;
@@ -56,9 +56,10 @@ async fn do_dialog_list(req: &Request, state: &Arc<DaemonState>) -> Result<Respo
 }
 
 async fn do_dialog_accept(req: &Request, state: &Arc<DaemonState>) -> Result<Response, Response> {
-    let session_name = resolve_dialog_session(state, &req.params)?;
-    let target_param = optional_string_field(&req.params, "target")?;
-    let prompt_text = optional_string_field(&req.params, "text")?;
+    let session_param = optional_string_param(&req.params, "session")?;
+    let target_param = optional_string_param(&req.params, "target")?;
+    let prompt_text = optional_string_param(&req.params, "text")?;
+    let session_name = resolve_session_selection(state, session_param)?;
     let target_id = resolve_dialog_target_for_action(state, &session_name, target_param)?;
     let dialog = pending_dialog_for_target(state, &session_name, &target_id)?;
     let ctx = resolve_dialog_action_context(state, &session_name, &target_id)?;
@@ -90,8 +91,9 @@ async fn do_dialog_accept(req: &Request, state: &Arc<DaemonState>) -> Result<Res
 }
 
 async fn do_dialog_dismiss(req: &Request, state: &Arc<DaemonState>) -> Result<Response, Response> {
-    let session_name = resolve_dialog_session(state, &req.params)?;
-    let target_param = optional_string_field(&req.params, "target")?;
+    let session_param = optional_string_param(&req.params, "session")?;
+    let target_param = optional_string_param(&req.params, "target")?;
+    let session_name = resolve_session_selection(state, session_param)?;
     let target_id = resolve_dialog_target_for_action(state, &session_name, target_param)?;
     let dialog = pending_dialog_for_target(state, &session_name, &target_id)?;
     let ctx = resolve_dialog_action_context(state, &session_name, &target_id)?;
@@ -159,24 +161,11 @@ fn invalid_argument(message: impl Into<String>) -> Response {
     Response::error_detail(ErrorCode::InvalidArgument, message.into(), None)
 }
 
-fn optional_string_field<'a>(
-    params: &'a serde_json::Value,
-    field: &str,
-) -> Result<Option<&'a str>, Response> {
-    match params.get(field) {
-        None => Ok(None),
-        Some(serde_json::Value::String(value)) => Ok(Some(value.as_str())),
-        Some(_) => Err(invalid_argument(format!(
-            "'{field}' must be a string when provided"
-        ))),
-    }
-}
-
 fn resolve_dialog_session(
     state: &DaemonState,
     params: &serde_json::Value,
 ) -> Result<String, Response> {
-    let session_param = optional_string_field(params, "session")?;
+    let session_param = optional_string_param(params, "session")?;
     resolve_session_selection(state, session_param)
 }
 
@@ -422,5 +411,26 @@ mod tests {
         assert_eq!(value["ok"], false);
         assert_eq!(value["error"]["code"], "CHROME_DISCONNECTED");
         assert!(state.dialog_state.get_pending("agent", "T1").is_some());
+    }
+
+    #[tokio::test]
+    async fn dialog_actions_validate_non_string_target_before_session_lookup() {
+        let state = Arc::new(DaemonState::new());
+
+        for command in ["dialog.accept", "dialog.dismiss"] {
+            let request = Request {
+                cmd: command.into(),
+                params: json!({"session": "missing", "target": false}),
+                token: None,
+            };
+            let response = match command {
+                "dialog.accept" => handle_dialog_accept(&request, &state).await,
+                "dialog.dismiss" => handle_dialog_dismiss(&request, &state).await,
+                _ => unreachable!(),
+            };
+            let value = serde_json::to_value(response).unwrap();
+
+            assert_eq!(value["error"]["code"], "INVALID_ARGUMENT", "{command}");
+        }
     }
 }

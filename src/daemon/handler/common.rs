@@ -105,7 +105,7 @@ pub fn resolve_target_selection(
     }
 }
 
-fn optional_string_field<'a>(
+pub fn optional_string_param<'a>(
     params: &'a serde_json::Value,
     field: &str,
 ) -> Result<Option<&'a str>, Response> {
@@ -120,12 +120,16 @@ fn optional_string_field<'a>(
     }
 }
 
+pub fn session_name_param(params: &serde_json::Value) -> Result<&str, Response> {
+    Ok(optional_string_param(params, "session")?.unwrap_or("default"))
+}
+
 pub fn resolve_session_target(
     state: &DaemonState,
     params: &serde_json::Value,
 ) -> Result<SessionTargetContext, Response> {
-    let session_param = optional_string_field(params, "session")?;
-    let target_param = optional_string_field(params, "target")?;
+    let session_param = optional_string_param(params, "session")?;
+    let target_param = optional_string_param(params, "target")?;
     let session_name = resolve_session_selection(state, session_param)?;
     let target_id = resolve_target_selection(state, &session_name, target_param)?;
 

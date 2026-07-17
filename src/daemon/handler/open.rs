@@ -18,6 +18,8 @@ use crate::daemon::target_lifecycle::{
 };
 use crate::error::ErrorCode;
 
+use super::common::session_name_param;
+
 /// Validated parameters for the `open` command.
 #[derive(Debug)]
 struct OpenParams {
@@ -61,11 +63,7 @@ fn validate_open_params(params: &serde_json::Value) -> Result<OpenParams, Respon
         })?
         .to_string();
 
-    let session_name = params
-        .get("session")
-        .and_then(|v| v.as_str())
-        .unwrap_or("default")
-        .to_string();
+    let session_name = session_name_param(params)?.to_string();
 
     Ok(OpenParams { url, session_name })
 }

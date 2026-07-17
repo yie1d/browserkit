@@ -13,6 +13,8 @@ use crate::daemon::target_close::{close_session_target, SessionTargetCloseReques
 use crate::daemon::target_lifecycle::remove_session_tab;
 use crate::error::ErrorCode;
 
+use super::common::{optional_string_param, session_name_param};
+
 /// Build a `tabs` response for the given session.
 ///
 /// Returns `Err(Response)` when the session is not found or disconnected.
@@ -66,11 +68,10 @@ fn close_tab_in_session(state: &Arc<DaemonState>, session_name: &str, target_id:
 
 /// Handle `bk tabs` — list all tabs in the specified (or default) session.
 pub async fn handle_tabs(req: &Request, state: &Arc<DaemonState>) -> Response {
-    let session_name = req
-        .params
-        .get("session")
-        .and_then(|v| v.as_str())
-        .unwrap_or("default");
+    let session_name = match session_name_param(&req.params) {
+        Ok(session_name) => session_name,
+        Err(response) => return response,
+    };
 
     match build_tabs_response(state, session_name) {
         Ok(resp) => resp,
@@ -85,11 +86,14 @@ pub async fn handle_tabs(req: &Request, state: &Arc<DaemonState>) -> Response {
 /// `Target.detachFromTarget`. Successful actions remove local state and update
 /// `active_target` to fallback.
 pub async fn handle_close(req: &Request, state: &Arc<DaemonState>) -> Response {
-    let session_name = req
-        .params
-        .get("session")
-        .and_then(|v| v.as_str())
-        .unwrap_or("default");
+    let session_name = match session_name_param(&req.params) {
+        Ok(session_name) => session_name,
+        Err(response) => return response,
+    };
+    let requested_target = match optional_string_param(&req.params, "target") {
+        Ok(target) => target,
+        Err(response) => return response,
+    };
 
     let session = match state.sessions.get(session_name) {
         Some(s) => s,
@@ -107,11 +111,8 @@ pub async fn handle_close(req: &Request, state: &Arc<DaemonState>) -> Response {
     }
 
     // Determine target to close
-    let target_id = req
-        .params
-        .get("target")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string())
+    let target_id = requested_target
+        .map(str::to_string)
         .or_else(|| session.active_target.clone());
 
     let target_id = match target_id {
@@ -283,5 +284,41 @@ mod tests {
             let is_t3 = tab["target"].as_str().unwrap() == "T3";
             assert_eq!(tab["active"], is_t3);
         }
+    }
+
+    #[tokio::test]
+    async fn close_rejects_non_string_target_without_touching_active_tab() {
+        let state = Arc::new(DaemonState::new());
+        let mut session = Session::new_default("localhost:9222".into());
+        session.add_tab("T1".into(), "https://a.com".into(), "A".into());
+        state.sessions.insert("default".into(), session);
+        let request = Request {
+            cmd: "close".into(),
+            params: serde_json::json!({"target": false}),
+            token: None,
+        };
+
+        let response = handle_close(&request, &state).await;
+        let value = serde_json::to_value(response).unwrap();
+
+        assert_eq!(value["error"]["code"], "INVALID_ARGUMENT");
+        let session = state.sessions.get("default").unwrap();
+        assert!(session.tabs.contains_key("T1"));
+        assert_eq!(session.active_target.as_deref(), Some("T1"));
+    }
+
+    #[tokio::test]
+    async fn close_validates_non_string_target_before_session_lookup() {
+        let state = Arc::new(DaemonState::new());
+        let request = Request {
+            cmd: "close".into(),
+            params: serde_json::json!({"session": "missing", "target": false}),
+            token: None,
+        };
+
+        let response = handle_close(&request, &state).await;
+        let value = serde_json::to_value(response).unwrap();
+
+        assert_eq!(value["error"]["code"], "INVALID_ARGUMENT");
     }
 }

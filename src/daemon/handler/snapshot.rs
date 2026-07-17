@@ -20,6 +20,8 @@ use crate::daemon::protocol::{Request, Response};
 use crate::daemon::state::DaemonState;
 use crate::error::ErrorCode;
 
+use super::common::{optional_string_param, session_name_param};
+
 /// Maximum elements in compact mode.
 const COMPACT_MAX_ELEMENTS: usize = 50;
 /// Maximum page_text characters in compact mode.
@@ -62,17 +64,10 @@ struct SnapshotParams {
 }
 
 /// Validate and extract snapshot parameters from request.
-fn validate_snapshot_params(params: &serde_json::Value) -> SnapshotParams {
-    SnapshotParams {
-        session_name: params
-            .get("session")
-            .and_then(|v| v.as_str())
-            .unwrap_or("default")
-            .into(),
-        target: params
-            .get("target")
-            .and_then(|v| v.as_str())
-            .map(|s| s.into()),
+fn validate_snapshot_params(params: &serde_json::Value) -> Result<SnapshotParams, Response> {
+    Ok(SnapshotParams {
+        session_name: session_name_param(params)?.into(),
+        target: optional_string_param(params, "target")?.map(str::to_string),
         wait_strategy: WaitStrategy::from_param(params.get("wait").and_then(|v| v.as_str())),
         full: params
             .get("full")
@@ -86,7 +81,7 @@ fn validate_snapshot_params(params: &serde_json::Value) -> SnapshotParams {
             .get("timeout")
             .and_then(|v| v.as_u64())
             .unwrap_or(30000),
-    }
+    })
 }
 
 /// Truncate page text to the given maximum length (in bytes).
@@ -201,7 +196,10 @@ const DOM_STABLE_JS: &str = r#"new Promise(resolve => {
 
 /// Handle the canonical `snapshot` command.
 pub async fn handle_snapshot(req: &Request, state: &Arc<DaemonState>) -> Response {
-    let params = validate_snapshot_params(&req.params);
+    let params = match validate_snapshot_params(&req.params) {
+        Ok(params) => params,
+        Err(response) => return response,
+    };
 
     // Resolve session
     let session = match state.sessions.get(&params.session_name) {
@@ -381,7 +379,7 @@ mod tests {
     #[test]
     fn validate_snapshot_params_defaults() {
         let params = serde_json::json!({});
-        let p = validate_snapshot_params(&params);
+        let p = validate_snapshot_params(&params).unwrap();
         assert_eq!(p.session_name, "default");
         assert_eq!(p.target, None);
         assert_eq!(p.wait_strategy, WaitStrategy::DomStable);
@@ -400,7 +398,7 @@ mod tests {
             "no_page_text": true,
             "timeout": 60000
         });
-        let p = validate_snapshot_params(&params);
+        let p = validate_snapshot_params(&params).unwrap();
         assert_eq!(p.session_name, "agent-a");
         assert_eq!(p.target, Some("TAB123".into()));
         assert_eq!(p.wait_strategy, WaitStrategy::NetworkIdle);

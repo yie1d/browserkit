@@ -11,6 +11,8 @@ use crate::daemon::protocol::{Request, Response};
 use crate::daemon::state::DaemonState;
 use crate::error::ErrorCode;
 
+use super::common::{optional_string_param, session_name_param};
+
 /// Validated parameters for the screenshot command.
 #[derive(Debug)]
 struct ScreenshotParams {
@@ -23,17 +25,10 @@ struct ScreenshotParams {
 }
 
 /// Validate and extract screenshot parameters from request JSON.
-fn validate_screenshot_params(params: &serde_json::Value) -> ScreenshotParams {
-    ScreenshotParams {
-        session_name: params
-            .get("session")
-            .and_then(|v| v.as_str())
-            .unwrap_or("default")
-            .into(),
-        target: params
-            .get("target")
-            .and_then(|v| v.as_str())
-            .map(|s| s.into()),
+fn validate_screenshot_params(params: &serde_json::Value) -> Result<ScreenshotParams, Response> {
+    Ok(ScreenshotParams {
+        session_name: session_name_param(params)?.into(),
+        target: optional_string_param(params, "target")?.map(str::to_string),
         full_page: params
             .get("full_page")
             .and_then(|v| v.as_bool())
@@ -50,12 +45,15 @@ fn validate_screenshot_params(params: &serde_json::Value) -> ScreenshotParams {
             .get("labels")
             .and_then(|v| v.as_bool())
             .unwrap_or(false),
-    }
+    })
 }
 
 /// Handle the canonical `screenshot` command.
 pub async fn handle_screenshot(req: &Request, state: &Arc<DaemonState>) -> Response {
-    let params = validate_screenshot_params(&req.params);
+    let params = match validate_screenshot_params(&req.params) {
+        Ok(params) => params,
+        Err(response) => return response,
+    };
 
     // Resolve session
     let session = match state.sessions.get(&params.session_name) {
@@ -190,7 +188,7 @@ mod tests {
     #[test]
     fn validate_screenshot_params_defaults() {
         let params = serde_json::json!({});
-        let p = validate_screenshot_params(&params);
+        let p = validate_screenshot_params(&params).unwrap();
         assert_eq!(p.session_name, "default");
         assert_eq!(p.target, None);
         assert!(!p.full_page);
@@ -207,7 +205,7 @@ mod tests {
             "selector": "#app",
             "labels": true
         });
-        let p = validate_screenshot_params(&params);
+        let p = validate_screenshot_params(&params).unwrap();
         assert_eq!(p.session_name, "agent-a");
         assert_eq!(p.target, Some("TAB1".into()));
         assert!(p.full_page);

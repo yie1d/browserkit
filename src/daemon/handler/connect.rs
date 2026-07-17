@@ -16,15 +16,19 @@ use crate::daemon::state::{Browser, DaemonState};
 use crate::daemon::target_lifecycle::{ensure_target_watcher, spawn_session_tab_subscriptions};
 use crate::error::ErrorCode;
 
+use super::common::session_name_param;
 use super::session::check_session_limit;
+
+fn connect_session_name(params: &serde_json::Value) -> Result<&str, Response> {
+    session_name_param(params)
+}
 
 /// Handle the canonical `connect` command.
 pub async fn handle_connect(req: &Request, state: &Arc<DaemonState>) -> Response {
-    let session_name = req
-        .params
-        .get("session")
-        .and_then(|v| v.as_str())
-        .unwrap_or("default");
+    let session_name = match connect_session_name(&req.params) {
+        Ok(session_name) => session_name,
+        Err(response) => return response,
+    };
 
     // Idempotent check: if already connected, return immediately
     if let Some(resp) = check_already_connected(state, session_name) {
@@ -525,20 +529,22 @@ mod tests {
 
     #[test]
     fn connect_session_name_from_params() {
-        // Verify default session name extraction logic
-        let params = serde_json::json!({});
-        let name = params
-            .get("session")
-            .and_then(|v| v.as_str())
-            .unwrap_or("default");
-        assert_eq!(name, "default");
+        assert_eq!(
+            connect_session_name(&serde_json::json!({})).unwrap(),
+            "default"
+        );
+        assert_eq!(
+            connect_session_name(&serde_json::json!({"session": "agent-a"})).unwrap(),
+            "agent-a"
+        );
+    }
 
-        let params = serde_json::json!({"session": "agent-a"});
-        let name = params
-            .get("session")
-            .and_then(|v| v.as_str())
-            .unwrap_or("default");
-        assert_eq!(name, "agent-a");
+    #[test]
+    fn connect_rejects_non_string_session() {
+        let response = connect_session_name(&serde_json::json!({"session": false})).unwrap_err();
+        let value = serde_json::to_value(response).unwrap();
+
+        assert_eq!(value["error"]["code"], "INVALID_ARGUMENT");
     }
 
     #[test]

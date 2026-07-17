@@ -13,6 +13,8 @@ use crate::daemon::protocol::{Request, Response};
 use crate::daemon::state::DaemonState;
 use crate::error::ErrorCode;
 
+use super::common::{optional_string_param, session_name_param};
+
 /// Navigation action to perform.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NavAction {
@@ -66,15 +68,8 @@ fn validate_navigate_params(params: &serde_json::Value) -> Result<NavigateParams
 
     Ok(NavigateParams {
         action,
-        session_name: params
-            .get("session")
-            .and_then(|v| v.as_str())
-            .unwrap_or("default")
-            .into(),
-        target: params
-            .get("target")
-            .and_then(|v| v.as_str())
-            .map(|s| s.into()),
+        session_name: session_name_param(params)?.into(),
+        target: optional_string_param(params, "target")?.map(str::to_string),
         timeout: params
             .get("timeout")
             .and_then(|v| v.as_u64())

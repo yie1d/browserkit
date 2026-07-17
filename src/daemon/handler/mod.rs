@@ -79,6 +79,7 @@ pub async fn handle_request(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::daemon::session::Session;
 
     fn test_context() -> HandlerContext {
         let (shutdown, _rx) = tokio::sync::watch::channel(false);
@@ -312,6 +313,94 @@ mod tests {
             let value =
                 serde_json::to_value(handle_request(&req, &state, &test_context()).await).unwrap();
             assert_eq!(value["error"]["code"], "SESSION_NOT_FOUND", "{cmd}");
+        }
+    }
+
+    #[tokio::test]
+    async fn canonical_routes_reject_non_string_session_and_target_selectors() {
+        let state = Arc::new(DaemonState::new());
+        let mut session = Session::new_default("localhost:9222".into());
+        session.add_tab("T1".into(), "https://example.test".into(), "Example".into());
+        state.sessions.insert("default".into(), session);
+
+        let invalid_session_cases = [
+            (
+                "open",
+                serde_json::json!({"url": "https://example.test", "session": false}),
+            ),
+            ("snapshot", serde_json::json!({"session": false})),
+            (
+                "navigate",
+                serde_json::json!({"reload": true, "session": false}),
+            ),
+            (
+                "evaluate",
+                serde_json::json!({"expression": "1", "session": false}),
+            ),
+            ("screenshot", serde_json::json!({"session": false})),
+            (
+                "wait",
+                serde_json::json!({"selector": "#app", "session": false}),
+            ),
+            (
+                "attach",
+                serde_json::json!({"session": false, "target": "T1"}),
+            ),
+            ("tabs", serde_json::json!({"session": false})),
+            ("close", serde_json::json!({"session": false})),
+            ("session.close", serde_json::json!({"session": false})),
+            ("session.cookies.get", serde_json::json!({"session": false})),
+            (
+                "session.cookies.set",
+                serde_json::json!({"session": false, "cookies": []}),
+            ),
+            (
+                "session.cookies.clear",
+                serde_json::json!({"session": false}),
+            ),
+        ];
+
+        for (cmd, params) in invalid_session_cases {
+            let request = Request {
+                cmd: cmd.into(),
+                params,
+                token: None,
+            };
+            let value =
+                serde_json::to_value(handle_request(&request, &state, &test_context()).await)
+                    .unwrap();
+            assert_eq!(value["error"]["code"], "INVALID_ARGUMENT", "{cmd}");
+        }
+
+        let invalid_target_cases = [
+            ("snapshot", serde_json::json!({"target": false})),
+            (
+                "navigate",
+                serde_json::json!({"reload": true, "target": false}),
+            ),
+            (
+                "evaluate",
+                serde_json::json!({"expression": "1", "target": false}),
+            ),
+            ("screenshot", serde_json::json!({"target": false})),
+            (
+                "wait",
+                serde_json::json!({"selector": "#app", "target": false}),
+            ),
+            ("attach", serde_json::json!({"target": false})),
+            ("close", serde_json::json!({"target": false})),
+        ];
+
+        for (cmd, params) in invalid_target_cases {
+            let request = Request {
+                cmd: cmd.into(),
+                params,
+                token: None,
+            };
+            let value =
+                serde_json::to_value(handle_request(&request, &state, &test_context()).await)
+                    .unwrap();
+            assert_eq!(value["error"]["code"], "INVALID_ARGUMENT", "{cmd}");
         }
     }
 
