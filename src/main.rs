@@ -116,6 +116,9 @@ pub enum Command {
         /// Wait strategy: dom-stable, networkidle, none
         #[arg(long, default_value = "dom-stable")]
         wait: String,
+        /// Deterministic content token budget (16..100000)
+        #[arg(long)]
+        max_tokens: Option<usize>,
     },
 
     /// Execute interaction (click/type/fill/press/scroll/hover/focus/select/options/upload/drag)
@@ -802,6 +805,24 @@ fn build_navigate_params(
     params
 }
 
+fn build_snapshot_params(
+    full: bool,
+    no_page_text: bool,
+    wait: &str,
+    max_tokens: Option<usize>,
+    cli: &Cli,
+) -> serde_json::Value {
+    let mut params = json!({"full": full, "no_page_text": no_page_text, "wait": wait});
+    add_session_target_params(&mut params, cli);
+    if let Some(timeout) = cli.timeout {
+        params["timeout"] = json!(timeout);
+    }
+    if let Some(max_tokens) = max_tokens {
+        params["max_tokens"] = json!(max_tokens);
+    }
+    params
+}
+
 fn build_network_watch_params(pattern: &str, count: usize, cli: &Cli) -> serde_json::Value {
     let mut params = json!({"pattern": pattern, "count": count});
     add_session_target_params(&mut params, cli);
@@ -896,17 +917,9 @@ async fn dispatch(cli: &Cli, client: &mut DaemonClient) -> Result<(), String> {
             full,
             no_page_text,
             wait,
+            max_tokens,
         } => {
-            let mut params = json!({"full": full, "no_page_text": no_page_text, "wait": wait});
-            if let Some(s) = &cli.session {
-                params["session"] = json!(s);
-            }
-            if let Some(t) = &cli.target {
-                params["target"] = json!(t);
-            }
-            if let Some(to) = cli.timeout {
-                params["timeout"] = json!(to);
-            }
+            let params = build_snapshot_params(*full, *no_page_text, wait, *max_tokens, cli);
             let resp = send_cmd(client, "snapshot", params).await?;
             print_response(&resp);
         }
@@ -1757,6 +1770,40 @@ mod tests {
         } else {
             panic!("wrong variant");
         }
+    }
+
+    #[test]
+    fn cli_parses_snapshot_token_budget() {
+        let cli = try_parse(&[
+            "bk",
+            "--session",
+            "agent-a",
+            "--target",
+            "TAB1",
+            "--timeout",
+            "5000",
+            "snapshot",
+            "--max-tokens",
+            "512",
+            "--wait",
+            "none",
+        ])
+        .unwrap();
+        let Command::Snapshot {
+            full,
+            no_page_text,
+            wait,
+            max_tokens,
+        } = &cli.command
+        else {
+            panic!("wrong variant");
+        };
+        let params = build_snapshot_params(*full, *no_page_text, wait, *max_tokens, &cli);
+        assert_eq!(params["max_tokens"], 512);
+        assert_eq!(params["session"], "agent-a");
+        assert_eq!(params["target"], "TAB1");
+        assert_eq!(params["timeout"], 5000);
+        assert_eq!(params["wait"], "none");
     }
 
     #[test]

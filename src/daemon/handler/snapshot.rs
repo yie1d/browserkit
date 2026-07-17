@@ -28,6 +28,8 @@ const COMPACT_MAX_ELEMENTS: usize = 50;
 const COMPACT_MAX_TEXT: usize = 2000;
 /// Maximum page_text characters in full mode.
 const FULL_MAX_TEXT: usize = 8000;
+const MIN_TOKEN_BUDGET: usize = 16;
+const MAX_TOKEN_BUDGET: usize = 100_000;
 
 /// Wait strategy for snapshot collection.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -61,10 +63,29 @@ struct SnapshotParams {
     full: bool,
     no_page_text: bool,
     timeout: u64,
+    max_tokens: Option<usize>,
 }
 
 /// Validate and extract snapshot parameters from request.
 fn validate_snapshot_params(params: &serde_json::Value) -> Result<SnapshotParams, Response> {
+    let max_tokens = match params.get("max_tokens") {
+        None => None,
+        Some(value) => Some(
+            value
+                .as_u64()
+                .and_then(|value| usize::try_from(value).ok())
+                .filter(|value| (MIN_TOKEN_BUDGET..=MAX_TOKEN_BUDGET).contains(value))
+                .ok_or_else(|| {
+                    Response::error_detail(
+                        ErrorCode::InvalidArgument,
+                        format!(
+                            "snapshot 'max_tokens' must be an integer from {MIN_TOKEN_BUDGET} to {MAX_TOKEN_BUDGET}"
+                        ),
+                        None,
+                    )
+                })?,
+        ),
+    };
     Ok(SnapshotParams {
         session_name: session_name_param(params)?.into(),
         target: optional_string_param(params, "target")?.map(str::to_string),
@@ -81,6 +102,7 @@ fn validate_snapshot_params(params: &serde_json::Value) -> Result<SnapshotParams
             .get("timeout")
             .and_then(|v| v.as_u64())
             .unwrap_or(30000),
+        max_tokens,
     })
 }
 
@@ -119,6 +141,196 @@ fn wrap_page_text(text: &str) -> String {
     format!("[PAGE_CONTENT_START]{text}[PAGE_CONTENT_END]")
 }
 
+#[derive(Debug, PartialEq)]
+struct BudgetedContent {
+    elements: Vec<serde_json::Value>,
+    page_text: String,
+    page_text_bytes: usize,
+    estimated_tokens: usize,
+    elements_limited_by_budget: bool,
+    page_text_limited_by_budget: bool,
+}
+
+fn content_json_bytes(elements: &[serde_json::Value], page_text: &str) -> usize {
+    serde_json::to_vec(&json!({
+        "elements": elements,
+        "page_text": page_text,
+    }))
+    .map_or(0, |json| json.len())
+}
+
+fn estimate_content_tokens(elements: &[serde_json::Value], page_text: &str) -> usize {
+    content_json_bytes(elements, page_text).div_ceil(4)
+}
+
+fn content_json_bytes_from_parts(element_array_bytes: usize, page_text: &str) -> usize {
+    let empty_content_bytes = content_json_bytes(&[], "");
+    let text_bytes = serde_json::to_vec(page_text).map_or(0, |json| json.len());
+    empty_content_bytes - 4 + element_array_bytes + text_bytes
+}
+
+fn apply_content_budget(
+    elements: Vec<serde_json::Value>,
+    page_text: &str,
+    include_page_text: bool,
+    max_tokens: Option<usize>,
+) -> BudgetedContent {
+    let unbudgeted_page_text = if include_page_text {
+        wrap_page_text(page_text)
+    } else {
+        String::new()
+    };
+    let Some(max_tokens) = max_tokens else {
+        return BudgetedContent {
+            estimated_tokens: estimate_content_tokens(&elements, &unbudgeted_page_text),
+            elements,
+            page_text: unbudgeted_page_text,
+            page_text_bytes: if include_page_text {
+                page_text.len()
+            } else {
+                0
+            },
+            elements_limited_by_budget: false,
+            page_text_limited_by_budget: false,
+        };
+    };
+
+    let max_bytes = max_tokens.saturating_mul(4);
+    let empty_marked_text = include_page_text.then(|| wrap_page_text(""));
+    let baseline_page_text = empty_marked_text
+        .filter(|text| content_json_bytes(&[], text) <= max_bytes)
+        .unwrap_or_default();
+    let markers_fit = !include_page_text || !baseline_page_text.is_empty();
+
+    let mut selected = Vec::new();
+    let mut element_array_bytes = 2usize;
+    for element in &elements {
+        let element_bytes = serde_json::to_vec(element).map_or(0, |json| json.len());
+        let candidate_array_bytes = if selected.is_empty() {
+            element_array_bytes + element_bytes
+        } else {
+            element_array_bytes + 1 + element_bytes
+        };
+        if content_json_bytes_from_parts(candidate_array_bytes, &baseline_page_text) > max_bytes {
+            break;
+        }
+        selected.push(element.clone());
+        element_array_bytes = candidate_array_bytes;
+    }
+    let elements_limited_by_budget = selected.len() < elements.len();
+
+    let (page_text_out, page_text_bytes, page_text_limited_by_budget) = if !include_page_text {
+        (String::new(), 0, false)
+    } else if !markers_fit {
+        (String::new(), 0, true)
+    } else if content_json_bytes_from_parts(element_array_bytes, &unbudgeted_page_text) <= max_bytes
+    {
+        (unbudgeted_page_text, page_text.len(), false)
+    } else {
+        let mut boundaries = vec![0];
+        boundaries.extend(page_text.char_indices().skip(1).map(|(index, _)| index));
+        boundaries.push(page_text.len());
+
+        let mut low = 0usize;
+        let mut high = boundaries.len();
+        while low < high {
+            let middle = (low + high) / 2;
+            let candidate = wrap_page_text(&page_text[..boundaries[middle]]);
+            if content_json_bytes_from_parts(element_array_bytes, &candidate) <= max_bytes {
+                low = middle + 1;
+            } else {
+                high = middle;
+            }
+        }
+        let boundary = boundaries[low.saturating_sub(1)];
+        (
+            wrap_page_text(&page_text[..boundary]),
+            boundary,
+            boundary < page_text.len(),
+        )
+    };
+
+    BudgetedContent {
+        estimated_tokens: estimate_content_tokens(&selected, &page_text_out),
+        elements: selected,
+        page_text: page_text_out,
+        page_text_bytes,
+        elements_limited_by_budget,
+        page_text_limited_by_budget,
+    }
+}
+
+struct SnapshotMetadataInput {
+    requested_tokens: Option<usize>,
+    estimated_tokens: usize,
+    total_elements: usize,
+    mode_elements: usize,
+    shown_elements: usize,
+    source_text_truncated: bool,
+    available_text_bytes: usize,
+    mode_text_bytes: usize,
+    shown_text_bytes: usize,
+    no_page_text: bool,
+    elements_budget_limited: bool,
+    page_text_budget_limited: bool,
+}
+
+fn build_snapshot_metadata(input: SnapshotMetadataInput) -> serde_json::Value {
+    let mut element_reasons = Vec::new();
+    if input.mode_elements < input.total_elements {
+        element_reasons.push("mode_limit");
+    }
+    if input.elements_budget_limited {
+        element_reasons.push("token_budget");
+    }
+
+    let mut page_text_reasons = Vec::new();
+    if input.no_page_text {
+        page_text_reasons.push("excluded");
+    } else {
+        if input.source_text_truncated {
+            page_text_reasons.push("source_limit");
+        }
+        if input.mode_text_bytes < input.available_text_bytes {
+            page_text_reasons.push("mode_limit");
+        }
+        if input.page_text_budget_limited {
+            page_text_reasons.push("token_budget");
+        }
+    }
+
+    json!({
+        "token_budget": {
+            "requested": input.requested_tokens,
+            "estimated": input.estimated_tokens,
+            "estimator": "ceil(serialized_utf8_bytes/4)",
+            "scope": "elements+page_text",
+        },
+        "truncation": {
+            "elements": {
+                "total": input.total_elements,
+                "mode_candidates": input.mode_elements,
+                "shown": input.shown_elements,
+                "truncated": input.shown_elements < input.total_elements,
+                "reasons": element_reasons,
+            },
+            "page_text": {
+                "source_truncated": input.source_text_truncated,
+                "available_bytes": input.available_text_bytes,
+                "mode_bytes": input.mode_text_bytes,
+                "shown_bytes": input.shown_text_bytes,
+                "excluded": input.no_page_text,
+                "truncated": !input.no_page_text && (
+                    input.source_text_truncated
+                        || input.mode_text_bytes < input.available_text_bytes
+                        || input.page_text_budget_limited
+                ),
+                "reasons": page_text_reasons,
+            },
+        },
+    })
+}
+
 /// Build the snapshot response data JSON.
 #[allow(clippy::too_many_arguments)]
 fn build_snapshot_data(
@@ -136,8 +348,9 @@ fn build_snapshot_data(
     elements_shown: usize,
     page_text: &str,
     truncated: bool,
+    metadata: serde_json::Value,
 ) -> serde_json::Value {
-    json!({
+    let mut data = json!({
         "url": url,
         "title": title,
         "target": target,
@@ -148,7 +361,10 @@ fn build_snapshot_data(
         "elements_shown": elements_shown,
         "page_text": page_text,
         "truncated": truncated,
-    })
+    });
+    data["token_budget"] = metadata["token_budget"].clone();
+    data["truncation"] = metadata["truncation"].clone();
+    data
 }
 
 /// Convert an ElementInfo to a v2 JSON representation.
@@ -315,7 +531,7 @@ pub async fn handle_snapshot(req: &Request, state: &Arc<DaemonState>) -> Respons
             } else {
                 COMPACT_MAX_ELEMENTS
             };
-            let elements_shown = total_elements.min(max_elements);
+            let mode_elements = total_elements.min(max_elements);
             let elements: Vec<serde_json::Value> = page_state
                 .elements
                 .iter()
@@ -331,13 +547,30 @@ pub async fn handle_snapshot(req: &Request, state: &Arc<DaemonState>) -> Respons
             };
             let raw_text = &page_state.page_text.text;
             let text_slice = truncate_page_text(raw_text, max_text);
-            let truncated = page_state.page_text.truncated || text_slice.len() < raw_text.len();
-
-            let page_text_out = if params.no_page_text {
-                String::new()
-            } else {
-                wrap_page_text(text_slice)
-            };
+            let content = apply_content_budget(
+                elements,
+                text_slice,
+                !params.no_page_text,
+                params.max_tokens,
+            );
+            let elements_shown = content.elements.len();
+            let truncated = page_state.page_text.truncated
+                || text_slice.len() < raw_text.len()
+                || content.page_text_limited_by_budget;
+            let metadata = build_snapshot_metadata(SnapshotMetadataInput {
+                requested_tokens: params.max_tokens,
+                estimated_tokens: content.estimated_tokens,
+                total_elements,
+                mode_elements,
+                shown_elements: elements_shown,
+                source_text_truncated: page_state.page_text.truncated,
+                available_text_bytes: raw_text.len(),
+                mode_text_bytes: text_slice.len(),
+                shown_text_bytes: content.page_text_bytes,
+                no_page_text: params.no_page_text,
+                elements_budget_limited: content.elements_limited_by_budget,
+                page_text_budget_limited: content.page_text_limited_by_budget,
+            });
 
             // Calculate scroll percent
             let doc_h = page_state.page_info.document.height;
@@ -359,11 +592,12 @@ pub async fn handle_snapshot(req: &Request, state: &Arc<DaemonState>) -> Respons
                 scroll_y,
                 doc_h,
                 scroll_percent,
-                elements,
+                content.elements,
                 total_elements,
                 elements_shown,
-                &page_text_out,
+                &content.page_text,
                 truncated,
+                metadata,
             );
 
             Response::ok(data)
@@ -376,6 +610,24 @@ pub async fn handle_snapshot(req: &Request, state: &Arc<DaemonState>) -> Respons
 mod tests {
     use super::*;
 
+    fn untruncated_metadata(elements: &[serde_json::Value], page_text: &str) -> serde_json::Value {
+        let wrapped = wrap_page_text(page_text);
+        build_snapshot_metadata(SnapshotMetadataInput {
+            requested_tokens: None,
+            estimated_tokens: estimate_content_tokens(elements, &wrapped),
+            total_elements: elements.len(),
+            mode_elements: elements.len(),
+            shown_elements: elements.len(),
+            source_text_truncated: false,
+            available_text_bytes: page_text.len(),
+            mode_text_bytes: page_text.len(),
+            shown_text_bytes: page_text.len(),
+            no_page_text: false,
+            elements_budget_limited: false,
+            page_text_budget_limited: false,
+        })
+    }
+
     #[test]
     fn validate_snapshot_params_defaults() {
         let params = serde_json::json!({});
@@ -386,6 +638,7 @@ mod tests {
         assert!(!p.full);
         assert!(!p.no_page_text);
         assert_eq!(p.timeout, 30000);
+        assert_eq!(p.max_tokens, None);
     }
 
     #[test]
@@ -405,6 +658,22 @@ mod tests {
         assert!(p.full);
         assert!(p.no_page_text);
         assert_eq!(p.timeout, 60000);
+        assert_eq!(p.max_tokens, None);
+    }
+
+    #[tokio::test]
+    async fn snapshot_rejects_invalid_token_budget_before_session_lookup() {
+        let state = Arc::new(DaemonState::new());
+        for max_tokens in [json!(0), json!("512"), json!(100001)] {
+            let req = Request {
+                cmd: "snapshot".into(),
+                params: json!({"max_tokens": max_tokens}),
+                token: None,
+            };
+            let response = handle_snapshot(&req, &state).await;
+            let value = serde_json::to_value(response).unwrap();
+            assert_eq!(value["error"]["code"], "INVALID_ARGUMENT");
+        }
     }
 
     #[test]
@@ -522,6 +791,81 @@ mod tests {
     }
 
     #[test]
+    fn snapshot_content_without_budget_is_unchanged() {
+        let elements = vec![json!({"ref": 1, "text": "first"}), json!({"ref": 2})];
+        let content = apply_content_budget(elements.clone(), "hello", true, None);
+
+        assert_eq!(content.elements, elements);
+        assert_eq!(
+            content.page_text,
+            "[PAGE_CONTENT_START]hello[PAGE_CONTENT_END]"
+        );
+        assert!(!content.elements_limited_by_budget);
+        assert!(!content.page_text_limited_by_budget);
+        assert_eq!(
+            content.estimated_tokens,
+            estimate_content_tokens(&content.elements, &content.page_text)
+        );
+    }
+
+    #[test]
+    fn snapshot_content_budget_is_bounded_and_deterministic() {
+        let elements = vec![
+            json!({"ref": 1, "text": "x".repeat(80)}),
+            json!({"ref": 2, "text": "y".repeat(80)}),
+        ];
+        let page_text = "abcdefghij".repeat(40);
+
+        let first = apply_content_budget(elements.clone(), &page_text, true, Some(40));
+        let second = apply_content_budget(elements.clone(), &page_text, true, Some(40));
+
+        assert!(first.estimated_tokens <= 40);
+        assert!(elements.starts_with(&first.elements));
+        assert!(first.page_text.starts_with("[PAGE_CONTENT_START]"));
+        assert!(first.page_text.ends_with("[PAGE_CONTENT_END]"));
+        assert!(first.elements_limited_by_budget || first.page_text_limited_by_budget);
+        assert_eq!(first.elements, second.elements);
+        assert_eq!(first.page_text, second.page_text);
+        assert_eq!(first.estimated_tokens, second.estimated_tokens);
+    }
+
+    #[test]
+    fn snapshot_metadata_reports_independent_truncation_reasons() {
+        let metadata = build_snapshot_metadata(SnapshotMetadataInput {
+            requested_tokens: Some(40),
+            estimated_tokens: 39,
+            total_elements: 100,
+            mode_elements: 50,
+            shown_elements: 12,
+            source_text_truncated: true,
+            available_text_bytes: 2000,
+            mode_text_bytes: 1500,
+            shown_text_bytes: 500,
+            no_page_text: false,
+            elements_budget_limited: true,
+            page_text_budget_limited: true,
+        });
+
+        assert_eq!(metadata["token_budget"]["requested"], 40);
+        assert_eq!(metadata["token_budget"]["estimated"], 39);
+        assert_eq!(
+            metadata["token_budget"]["estimator"],
+            "ceil(serialized_utf8_bytes/4)"
+        );
+        assert_eq!(metadata["token_budget"]["scope"], "elements+page_text");
+        assert_eq!(metadata["truncation"]["elements"]["truncated"], true);
+        assert_eq!(
+            metadata["truncation"]["elements"]["reasons"],
+            json!(["mode_limit", "token_budget"])
+        );
+        assert_eq!(metadata["truncation"]["page_text"]["truncated"], true);
+        assert_eq!(
+            metadata["truncation"]["page_text"]["reasons"],
+            json!(["source_limit", "mode_limit", "token_budget"])
+        );
+    }
+
+    #[test]
     fn snapshot_response_structure() {
         let data = build_snapshot_data(
             "https://example.com",
@@ -538,6 +882,7 @@ mod tests {
             0,
             "[PAGE_CONTENT_START]page text here[PAGE_CONTENT_END]",
             false,
+            untruncated_metadata(&[], "page text here"),
         );
         assert_eq!(data["url"], "https://example.com");
         assert_eq!(data["title"], "Example");
@@ -551,6 +896,8 @@ mod tests {
         assert_eq!(data["total_elements"], 0);
         assert_eq!(data["elements_shown"], 0);
         assert_eq!(data["truncated"], false);
+        assert_eq!(data["token_budget"]["requested"], serde_json::Value::Null);
+        assert_eq!(data["truncation"]["elements"]["truncated"], false);
         assert!(data["page_text"]
             .as_str()
             .unwrap()
@@ -563,6 +910,7 @@ mod tests {
             json!({"ref": 42, "tag": "button", "index": 0, "text": "Submit", "x": 10.0, "y": 20.0, "width": 80.0, "height": 30.0}),
             json!({"ref": 55, "tag": "input", "index": 1, "text": "", "x": 50.0, "y": 80.0, "width": 200.0, "height": 40.0}),
         ];
+        let metadata = untruncated_metadata(&elements, "text");
         let data = build_snapshot_data(
             "https://example.com",
             "Test",
@@ -578,6 +926,7 @@ mod tests {
             2,
             "[PAGE_CONTENT_START]text[PAGE_CONTENT_END]",
             false,
+            metadata,
         );
         assert_eq!(data["elements"].as_array().unwrap().len(), 2);
         assert_eq!(data["total_elements"], 2);
