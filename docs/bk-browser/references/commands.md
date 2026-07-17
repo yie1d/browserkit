@@ -26,7 +26,7 @@ Use these for normal browser work.
 | `bk connect` | Connect to the user's Chrome, idempotent |
 | `bk open <URL>` | Open a browserkit-owned tab |
 | `bk attach [PATTERN]` | Attach an existing user tab to the default session |
-| `bk snapshot [--full] [--no-page-text] [--wait dom-stable|networkidle|none]` | Get elements, page text, and viewport state |
+| `bk snapshot [--full] [--no-page-text] [--wait dom-stable|networkidle|none] [--max-tokens <16..100000>]` | Get elements, page text, viewport, and truncation metadata |
 | `bk find <SELECTOR> [--attributes <NAMES>] [--include-text] [--max <N>]` | Find elements by CSS selector |
 | `bk search <TEXT> [--regex] [--scope <SCOPE>] [--context <N>] [--max <N>]` | Search text in the page |
 | `bk act click --ref <N>` | Click by snapshot ref |
@@ -56,6 +56,9 @@ Use these for normal browser work.
 | `bk wait --time <MS>` | Fixed wait |
 | `bk evaluate <EXPR>` | Evaluate JavaScript |
 | `bk evaluate --file <PATH>` | Evaluate JavaScript from a file |
+| `bk evaluate <EXPR> --append-to <FILE>` | Append an exact string result locally without echoing it |
+| `bk network watch --pattern <SUBSTRING> [--count <1..100>]` | Observe bounded XHR/fetch responses |
+| `bk download --ref <N> --output-dir <DIR>` | Click and track one download to terminal state |
 | `bk html [--selector <CSS>]` | Get page or element HTML |
 | `bk console [--level <LEVEL>] [--limit <N>]` | Show console buffer |
 | `bk pdf [-o <FILE>]` | Generate PDF of current target |
@@ -70,6 +73,17 @@ Use these for normal browser work.
 
 `bk act click` reports `new_tab` when the action opens a new target. Use the
 reported target ID or run `bk tabs` before operating on the new page.
+
+`snapshot --max-tokens` uses `ceil(serialized UTF-8 JSON bytes / 4)` for the
+`elements + page_text` scope. Read `token_budget` and `truncation` in the
+response; this is deterministic but not a model-specific tokenizer. Omitting
+the flag preserves compact/`--full` content limits.
+
+`evaluate --append-to` is CLI-local and accepts only string results. It appends
+exact UTF-8 bytes with no implicit newline. `network watch` stops at count or
+timeout and reports `stop_reason`; it is not a stream. `download` requires an
+existing output directory, validates the final path, and restores Browser
+download behavior after the lifecycle.
 
 ## Session storage commands
 

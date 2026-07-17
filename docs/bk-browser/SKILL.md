@@ -134,8 +134,9 @@ bk navigate --reload                  # 刷新
 # 页面状态（操作前必须先执行）
 bk snapshot                           # 元素列表 + 页面文本 + viewport
 bk snapshot --no-page-text            # 只要元素列表（更快）
-bk snapshot --full                    # 包含所有元素（不截断）
+bk snapshot --full                    # 取消 compact 元素数量上限
 bk snapshot --wait networkidle        # 等网络空闲后再快照
+bk snapshot --max-tokens 512          # 确定性 elements + page_text 内容预算
 
 # 交互（ref = snapshot 返回的 backendNodeId）
 bk act click --ref <N>                # 点击元素
@@ -163,6 +164,11 @@ bk wait --time 2000                   # 固定等待
 bk evaluate "document.title"
 bk evaluate "await fetch('/api').then(r=>r.json())"
 bk evaluate --file script.js
+bk evaluate "extractLongText()" --append-to results.txt
+
+# 网络响应与下载（都有 timeout/count 边界，不是无限流）
+bk network watch --pattern "/api/orders" --count 3 --timeout 10000
+bk download --ref <N> --output-dir ./downloads --timeout 30000
 
 # 截图
 bk screenshot --output page.png
@@ -196,7 +202,7 @@ bk session cookies clear              # 清除 cookies
 
 2. **永远先 `bk snapshot`**：每次操作前先拿到元素 ref，不要猜 ref
 
-3. **不要截断 snapshot 输出**：完整元素列表才能正确定位；截断会导致操作失败率大幅上升
+3. **检查 snapshot 截断元数据**：默认 compact 通常够用；上下文受限时可用 `--max-tokens`，但必须查看 `truncation.elements/page_text`，元素被截断时不要猜 ref
 
 4. **`bk act type` 默认替换**：默认清空后输入。需要追加时加 `--append`
 
@@ -241,8 +247,26 @@ bk snapshot
 ```bash
 bk navigate https://example.com/list
 bk wait --idle
-bk evaluate "Array.from(document.querySelectorAll('.item-title')).map(e => e.textContent.trim())"
+bk evaluate "JSON.stringify(Array.from(document.querySelectorAll('.item-title')).map(e => e.textContent.trim())) + '\n'" --append-to results.jsonl
 ```
+
+`--append-to` 只接受 string，按原始 UTF-8 bytes 追加且不自动补换行；需要 JSONL 时表达式必须显式返回结尾 `\n`。成功只返回文件和追加字节数，不回显长文本。
+
+### 观察 API 响应
+
+```bash
+bk network watch --pattern "/api/orders" --count 2 --timeout 10000
+```
+
+只观察当前 session/target 的 XHR/fetch，达到 count 或 timeout 后一次性返回 JSON。检查 `stop_reason` / `timed_out`，不要把它当成 streaming command。
+
+### 下载文件
+
+```bash
+bk download --ref 42 --output-dir <existing-dir> --timeout 30000
+```
+
+必须先 snapshot 得到下载触发元素 ref。输出目录必须已存在；成功后检查 `status`、`path_verified` 和 `path`。timeout 会尝试取消下载。
 
 ### 多标签页操作
 

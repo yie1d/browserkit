@@ -137,6 +137,8 @@ bk session cookies                  # Cookie operations
 | `navigate` | Navigate to URL or back/forward/reload |
 | `wait` | Wait for a page condition |
 | `evaluate` | Execute JavaScript |
+| `network watch` | Observe a bounded number of XHR/fetch responses |
+| `download` | Click an element and track its download lifecycle |
 | `html` | Get page HTML |
 | `console` | Show the console log buffer |
 | `pdf` | Generate a PDF of the current target |
@@ -246,9 +248,16 @@ bk navigate --reload                # Reload
 ```sh
 bk snapshot                         # Elements + page text + viewport
 bk snapshot --no-page-text          # Exclude page text
-bk snapshot --full                  # No truncation
+bk snapshot --full                  # Remove the compact element cap
 bk snapshot --wait networkidle      # Wait strategy: dom-stable (default), networkidle, none
+bk snapshot --max-tokens 512        # Deterministic elements + page_text budget
 ```
+
+`--max-tokens` accepts `16..100000`. It uses the deterministic estimate
+`ceil(serialized UTF-8 JSON bytes / 4)` for the `elements + page_text` content
+scope; it is not a model-specific tokenizer. Responses keep the legacy
+`truncated` field and add `token_budget` plus per-field `truncation` metadata.
+Without `--max-tokens`, compact and `--full` limits behave as before.
 
 ### wait
 
@@ -268,7 +277,41 @@ bk wait --time 2000                 # Fixed delay (ms)
 bk evaluate "document.title"
 bk evaluate "await fetch('/api').then(r => r.json())"
 bk evaluate --file script.js
+bk evaluate "extractLongText()" --append-to results.txt
 ```
+
+`--append-to` is CLI-local: the daemon returns `data.result`, then the CLI
+requires that result to be a string and appends its exact UTF-8 bytes to the
+file. It does not add a newline and does not echo the long result. Directory
+targets, symbolic links, missing parents, and write failures return structured
+JSON errors.
+
+### network watch
+
+```sh
+bk network watch --pattern "/api/orders" --count 3 --timeout 10000
+```
+
+`network watch` observes only XHR/fetch responses whose URL contains the
+pattern. It returns JSON after `count` matching responses complete or the
+timeout expires, with `stop_reason` and `timed_out`; it is not an infinite
+stream. JSON response bodies are returned as structured values, while non-JSON
+or base64 bodies remain JSON strings.
+
+### download
+
+```sh
+mkdir downloads
+bk download --ref 42 --output-dir ./downloads --timeout 30000
+```
+
+`download` subscribes to Browser download events before clicking the ref,
+correlates the main frame and download GUID, and waits for completed or canceled
+state. The CLI resolves an existing output directory to an absolute path; the
+daemon verifies any reported final path remains inside it. Timeout attempts to
+cancel the download, and Chrome download behavior is restored on every handled
+exit. `path_verified` is false when Chrome reports completion before a final
+filesystem path can be confirmed.
 
 ### screenshot
 
