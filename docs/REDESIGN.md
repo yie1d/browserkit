@@ -95,7 +95,7 @@ Session 是 v2 中 agent 与浏览器交互的隔离单元。它取代了 v1 中
 **为什么 isolated session 用 BrowserContext 隔离：**
 
 - 多 agent 并行时，BrowserContext 天然隔离 cookie/storage/cache
-- BrowserContext 在 Chrome 层隔离其中创建的 tab；browserkit 当前只对 `bk open` 创建的 target 做 session-native 生命周期追踪
+- BrowserContext 在 Chrome 层隔离其中创建的 tab；browserkit 对 `bk open` 和 click 产生的新 target 做 session-native 生命周期追踪
 - Default session 只用于单 agent 操作用户已登录网站的场景，不需要隔离
 
 **为什么不沿用 workspace：**
@@ -109,13 +109,13 @@ Session 是 v2 中 agent 与浏览器交互的隔离单元。它取代了 v1 中
 **Isolated session（`--session <name>`）：**
 
 - `bk open` 创建的 tab 会登记到 session，并参与 active tab 管理
-- Chrome 内核保证新 tab 在创建它的 BrowserContext 中打开，但 click 触发的 target 尚未接入 browserkit 的 session-native target 生命周期追踪
-- 因此当前不能依赖 click 自动登记或切换到 `target=_blank` 打开的 tab
+- Chrome 内核保证新 tab 在创建它的 BrowserContext 中打开；click 触发的 target 也会由 watcher 登记到同一 session
+- `act click` 在 `target=_blank` 等场景返回 `new_tab` target ID，并把新 target 设为 active
 
 **Default session（不带 `--session`）：**
 
 - Agent 用 `bk open` 创建的 tab 归本 session
-- 用户自己的 tab 对 agent **不可见、不可操作**（`bk tabs` 不返回用户自己的 tab）
+- 未 attach 的用户 tab 不进入 session，也不会出现在 `bk tabs`；`bk attach` 可显式接入，随后 `bk close` 只 detach 而不关闭用户 target
 - 设计理由：防止 agent 误操作用户正在浏览的页面
 
 ### 2.4 Session Active Tab
