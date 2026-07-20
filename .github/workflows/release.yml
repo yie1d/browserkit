@@ -41,9 +41,35 @@ jobs:
           toolchain: 1.75.0
       - run: cargo +1.75.0 check --all-targets --locked
 
+  licenses:
+    name: Generate third-party licenses
+    needs: validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+      - name: Install cargo-about
+        uses: taiki-e/install-action@07b4745e0c39a41822af610387492e3e53aa222b # v2
+        with:
+          tool: cargo-about@0.9.1
+      - name: Generate license report
+        run: cargo about generate --locked --fail about.hbs --output-file THIRD-PARTY-LICENSES.html
+      - name: Upload legal notices
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: legal-notices
+          path: |
+            LICENSE
+            THIRD-PARTY-LICENSES.html
+          if-no-files-found: error
+          retention-days: 1
+
   build:
     name: Build ${{ matrix.target }}
-    needs: validate
+    needs: [validate, licenses]
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -87,18 +113,28 @@ jobs:
       - name: Build release binary
         run: cargo build --release --locked --target ${{ matrix.target }}
 
+      - name: Download legal notices
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: legal-notices
+          path: legal
+
       - name: Package (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
           $bin = "target/${{ matrix.target }}/release/${{ matrix.binary }}"
-          Compress-Archive -Path $bin -DestinationPath ${{ matrix.archive }}
+          New-Item -ItemType Directory -Path package
+          Copy-Item $bin, legal/LICENSE, legal/THIRD-PARTY-LICENSES.html package/
+          Compress-Archive -Path package/* -DestinationPath ${{ matrix.archive }}
 
       - name: Package (Unix)
         if: runner.os != 'Windows'
         run: |
           bin="target/${{ matrix.target }}/release/${{ matrix.binary }}"
-          tar -czf ${{ matrix.archive }} -C "$(dirname $bin)" "$(basename $bin)"
+          mkdir package
+          cp "$bin" legal/LICENSE legal/THIRD-PARTY-LICENSES.html package/
+          tar -czf ${{ matrix.archive }} -C package .
 
       - name: Upload package artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -119,6 +155,7 @@ jobs:
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           path: dist
+          pattern: bk-*
           merge-multiple: true
 
       - name: Verify release artifacts

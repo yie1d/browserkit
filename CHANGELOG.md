@@ -1,5 +1,15 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+
+- Reduced current documentation to maintained architecture, roadmap, Chrome
+  connection, and agent command references; completed implementation plans
+  remain available in Git history.
+- Release archives now include the browserkit license and a generated
+  third-party license report.
+
 ## [0.2.0] - 2026-07-20
 
 ### Breaking Changes
