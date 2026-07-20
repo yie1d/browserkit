@@ -69,6 +69,13 @@ cargo build --release
 # binary: target/release/bk
 ```
 
+## Documentation
+
+- [Architecture](docs/REDESIGN.md)
+- [Roadmap](docs/ROADMAP.md)
+- [Connect to an existing Chrome](docs/connect-existing-chrome.md)
+- [Agent skill and command reference](docs/bk-browser/)
+
 ## Quick Start
 
 ```sh

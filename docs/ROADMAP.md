@@ -1,114 +1,31 @@
-# browserkit / cdpkit-rs Joint Roadmap
+# browserkit Roadmap
 
-This roadmap tracks the shared direction for browserkit and cdpkit-rs.
+## Current State
 
-Core boundary:
+The v2 session-runtime migration is complete as of browserkit 0.2.0.
 
-- cdpkit-rs is the pure CDP protocol layer: typed commands, sessions, events, sender traits, connection handling, and generated protocol bindings.
-- browserkit is the persistent browser runtime for AI agents: daemon lifecycle, browser attachment, sessions, tabs, persistence, snapshots, actions, and agent-facing JSON commands.
-- browserkit depends on cdpkit-rs. Breaking cdpkit-rs changes are allowed during active development, but browserkit must be updated in the same maintenance flow.
+- browserkit is the persistent browser runtime and agent-facing JSON API.
+- cdpkit-rs is the typed CDP protocol layer.
+- The default session attaches to the user's browser context.
+- Named sessions use isolated BrowserContexts.
+- Schema v3 persists sessions and target ownership.
+- Schema v2 workspace state is migrated once with a backup and visible report.
+- Workspace commands, v1 aliases, and legacy daemon routes are removed.
+- Network observation, downloads, append-to-file evaluation, and deterministic
+  snapshot budgets are available through canonical session commands.
+- CI, Rust 1.75 checks, release validation, and cross-platform artifacts are in
+  place.
 
-## Phase 0: Baseline And Boundaries
+## Maintenance Priorities
 
-Status: complete
+1. Keep README, CLI help, the bundled skill source, CHANGELOG, and this roadmap
+   aligned with each release.
+2. Add protocol capabilities to cdpkit first, then consume the released crate
+   from browserkit.
+3. Preserve session ownership, bounded observation, structured errors, and
+   cleanup reporting when adding commands.
+4. Add new transports or SDKs only when they reuse the same daemon/runtime
+   contract rather than creating a parallel automation model.
 
-- [x] Record the current dirty worktree state in both repositories before large changes.
-- [x] Align README, AGENTS, REDESIGN, and CLI help with the protocol/runtime boundary.
-- [x] Keep browserkit on a local path dependency to cdpkit-rs during joint development.
-- [x] Establish verification commands for both projects.
-- [x] Fix obvious project metadata drift, including release versions and Rust MSRV.
-
-## Phase 1: browserkit v2 Session Runtime Closure
-
-Status: complete
-
-- [x] Make `connect --session <name>` create a real isolated BrowserContext.
-- [x] Keep default session attached to the user's existing browser context.
-- [x] Route `open`, `snapshot`, `act`, `navigate`, `tabs`, `close`, `evaluate`, `screenshot`, and `session cookies` through the session model.
-- [x] Move `wait` off the legacy workspace path and onto session targets.
-- [x] Enforce `max_sessions` and `max_tabs_per_session`.
-- [x] Implement session idle timeout and cleanup.
-- [x] Ensure Chrome disconnect handling marks affected sessions and returns structured errors.
-
-## Phase 2: browserkit Session Persistence
-
-Status: complete
-
-- [x] Extend `state.json` to persist sessions.
-- [x] Persist session mode, browser host, BrowserContext id, tabs, active target, and timestamps.
-- [x] Restore sessions after daemon restart, or mark them disconnected with explicit restore warnings.
-- [x] Mark non-restorable sessions or tabs as disconnected instead of pretending they are usable.
-- [x] Add one-way migration from legacy workspace state into session state with explicit drop warnings for non-restorable tabs.
-- [x] Document state schema versioning and forward-compatibility rules.
-
-## Phase 3: browserkit Legacy Removal
-
-Status: complete
-
-- [x] Deprecate or remove public `ws.*` commands.
-- [x] Deprecate or remove legacy `tab.*`, `nav.*`, `page.*`, and `act.*` handlers after v2 equivalents are complete.
-- [x] Remove `BK_WS`, `--ws`, and workspace-first documentation.
-- [x] Move workspace code out of the runtime path, keeping only migration code until it can be deleted.
-- [x] Remove legacy tests after equivalent v2 tests exist.
-- [x] Keep CLI output JSON-only.
-
-## Phase 4: cdpkit-rs Protocol-Layer Improvements
-
-Status: complete
-
-- [x] Fix the `flatten=false` footgun so generated APIs cannot silently create unsupported non-flatten sessions.
-- [x] Make generated `protocol.rs` stable across runs by removing volatile timestamps.
-- [x] Add codegen golden tests for command builders, event subscriptions, enum handling, refs, keyword renames, and flatten overrides.
-- [x] Add explicit bounded and unbounded event stream policies for high-rate events.
-- [x] Add `event_stream_result<T>()` for surfacing deserialization failures.
-- [x] Clarify and narrow HTTP discovery behavior.
-- [x] Keep browser automation concepts out of cdpkit-rs.
-
-## Phase 5: browserkit Feature Expansion
-
-Status: complete
-
-- [x] Add new features only after the v2 runtime path is stable.
-- [x] Add `network watch` for structured, bounded XHR/fetch response observation.
-- [x] Add download lifecycle handling.
-- [x] Add `evaluate --append-to <file>` for long extraction workflows.
-- [x] Add deterministic snapshot token controls and truncation metadata.
-- [x] Route missing low-level CDP capability work to cdpkit-rs first.
-
-## Phase 6: CI, Release, And Synchronization
-
-Status: complete
-
-- [x] Add or restore test and clippy CI for both repositories.
-- [x] Ensure browserkit release builds run tests and clippy before packaging.
-- [x] Keep CHANGELOG entries aligned with actual repository files and workflows.
-- [x] Publish cdpkit-rs first when browserkit depends on a new cdpkit API.
-- [x] Switch browserkit back from path dependency to crates.io once the required cdpkit-rs version is published.
-- [x] Document breaking changes and migration steps for both projects.
-
-## Current First Batch
-
-- [x] Fix browserkit clippy failures.
-- [x] Write a focused browserkit v2 migration design.
-- [x] Implement isolated session connect.
-- [x] Persist and restore sessions.
-- [x] Move `wait` to the session model.
-- [x] Implement session idle timeout and cleanup.
-- [x] Remove the legacy `page.wait` daemon route after v2 `wait` parity.
-- [x] Remove the legacy `nav.wait` daemon route after v2 `wait --idle` parity.
-- [x] Remove the legacy `page.state` and `page.info` daemon routes after v2 `snapshot` parity.
-- [x] Move deprecated `eval` onto v2 `evaluate` and remove legacy `js.eval` / `js.await` daemon routes.
-- [x] Move legacy `back` / `forward` / `reload` onto v2 `navigate` and remove matching daemon routes.
-- [x] Move deprecated `shot` onto v2 `screenshot` and remove legacy `page.screenshot` daemon route.
-- [x] Remove deprecated `goto`, `info`, `eval`, and `shot` CLI aliases after v2 parity.
-- [x] Remove legacy `back`, `forward`, and `reload` CLI aliases after v2 `navigate` parity.
-- [x] Remove legacy `new`, `ls`, and `rm` workspace CLI aliases.
-- [x] Remove legacy `url` and `title` CLI aliases after v2 `evaluate` parity.
-- [x] Complete v2 act parity Batch A by moving `scroll`, `hover`, and `focus` onto `bk act` and removing their legacy daemon routes.
-- [x] Complete v2 act parity Batch B by moving `select` and `options` onto `bk act` and removing their legacy daemon routes.
-- [x] Complete v2 act parity Batch C by moving `fill` onto `bk act` and removing the legacy `fill` command and `act.fill` daemon route.
-- [x] Complete v2 act parity Batch D by moving `upload` and `drag` onto `bk act` and removing the legacy CLI commands plus `act.upload` / `act.drag` daemon routes.
-- [x] Complete v2 act parity Batch E by moving legacy `keys` onto `bk act press --keys` and removing the `act.keys` daemon route.
-- [x] Complete v2 act parity Batch F by moving legacy `click` and `type` onto `bk act` and removing the legacy CLI commands plus `act.click` / `act.type` daemon routes.
-- [x] Add session-native target lifecycle tracking so `bk act click` can report `new_tab` again.
-- [x] Start deleting legacy workspace-facing surfaces after v2 parity is verified.
+Completed implementation checklists remain available in Git history; they are
+not maintained as current documentation.

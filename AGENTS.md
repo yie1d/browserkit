@@ -46,6 +46,12 @@ cargo test
 
 涉及 CLI 行为的改动,尽量实际跑相关 `bk` 命令验证。新增网络监听/端口暴露时,主动说明是否引入未鉴权入口。
 
+### Chrome 验收安全边界（必须遵守）
+
+- 自动化测试和 agent 实跑 `bk` 时,只能使用专门创建的临时 Chrome profile、独立调试端口和可识别的测试进程;测试结束后只清理这些明确归属本次测试的资源。
+- 未经用户针对本次操作明确授权,禁止连接、启动、关闭或终止用户日常正在使用的 Chrome,禁止使用 `taskkill /IM chrome*` 等按进程名批量清理。
+- 需要验证 attach-existing-browser 交互时,默认由用户在自己的 Chrome 中手动完成;agent 仍可用隔离测试 Chrome 覆盖协议和运行时路径。
+
 ## Agent 团队
 
 本项目一套项目内 agent 协作,均**只服务于 browserkit**:
