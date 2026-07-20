@@ -1,7 +1,8 @@
 [package]
 name = "browserkit"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
+rust-version = "1.75"
 description = "Persistent browser runtime and CLI for AI agents, built on cdpkit-rs"
 license = "MIT"
 repository = "https://github.com/yie1d/browserkit"
@@ -11,7 +12,7 @@ name = "bk"
 path = "src/main.rs"
 
 [dependencies]
-cdpkit = { path = "../cdpkit-rs/cdpkit" }
+cdpkit = "0.5.0"
 tokio = { version = "1", features = ["full"] }
 clap = { version = "4", features = ["derive", "env"] }
 serde = { version = "1", features = ["derive"] }

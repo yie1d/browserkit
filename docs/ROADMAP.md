@@ -10,13 +10,13 @@ Core boundary:
 
 ## Phase 0: Baseline And Boundaries
 
-Status: in progress
+Status: complete
 
-- [ ] Record the current dirty worktree state in both repositories before large changes.
-- [ ] Align README, AGENTS, REDESIGN, and CLI help with the protocol/runtime boundary.
-- [ ] Keep browserkit on a local path dependency to cdpkit-rs during joint development.
-- [ ] Establish verification commands for both projects.
-- [ ] Fix obvious project metadata drift, such as stale versions and memory path notes.
+- [x] Record the current dirty worktree state in both repositories before large changes.
+- [x] Align README, AGENTS, REDESIGN, and CLI help with the protocol/runtime boundary.
+- [x] Keep browserkit on a local path dependency to cdpkit-rs during joint development.
+- [x] Establish verification commands for both projects.
+- [x] Fix obvious project metadata drift, including release versions and Rust MSRV.
 
 ## Phase 1: browserkit v2 Session Runtime Closure
 
@@ -54,37 +54,37 @@ Status: complete
 
 ## Phase 4: cdpkit-rs Protocol-Layer Improvements
 
-Status: pending
+Status: complete
 
-- [ ] Fix the `flatten=false` footgun so generated APIs cannot silently create unsupported non-flatten sessions.
-- [ ] Make generated `protocol.rs` stable across runs by removing volatile timestamps.
-- [ ] Add codegen golden tests for command builders, event subscriptions, enum handling, refs, keyword renames, and flatten overrides.
-- [ ] Evaluate bounded event streams or event stream policies for high-rate events.
-- [ ] Evaluate `event_stream_result<T>()` for surfacing deserialization failures.
-- [ ] Clarify or narrow HTTP discovery behavior.
-- [ ] Keep browser automation concepts out of cdpkit-rs.
+- [x] Fix the `flatten=false` footgun so generated APIs cannot silently create unsupported non-flatten sessions.
+- [x] Make generated `protocol.rs` stable across runs by removing volatile timestamps.
+- [x] Add codegen golden tests for command builders, event subscriptions, enum handling, refs, keyword renames, and flatten overrides.
+- [x] Add explicit bounded and unbounded event stream policies for high-rate events.
+- [x] Add `event_stream_result<T>()` for surfacing deserialization failures.
+- [x] Clarify and narrow HTTP discovery behavior.
+- [x] Keep browser automation concepts out of cdpkit-rs.
 
 ## Phase 5: browserkit Feature Expansion
 
-Status: pending
+Status: complete
 
-- [ ] Add new features only after the v2 runtime path is stable.
-- [ ] Candidate: `network watch` for structured XHR/fetch response observation.
-- [ ] Candidate: download lifecycle handling.
-- [ ] Candidate: `evaluate --append-to <file>` for long extraction workflows.
-- [ ] Candidate: more precise snapshot token controls.
-- [ ] Route missing low-level CDP capability work to cdpkit-rs first.
+- [x] Add new features only after the v2 runtime path is stable.
+- [x] Add `network watch` for structured, bounded XHR/fetch response observation.
+- [x] Add download lifecycle handling.
+- [x] Add `evaluate --append-to <file>` for long extraction workflows.
+- [x] Add deterministic snapshot token controls and truncation metadata.
+- [x] Route missing low-level CDP capability work to cdpkit-rs first.
 
 ## Phase 6: CI, Release, And Synchronization
 
-Status: pending
+Status: complete
 
-- [ ] Add or restore test and clippy CI for both repositories.
-- [ ] Ensure browserkit release builds run tests and clippy before packaging.
-- [ ] Keep CHANGELOG entries aligned with actual repository files and workflows.
-- [ ] Publish cdpkit-rs first when browserkit depends on a new cdpkit API.
-- [ ] Switch browserkit back from path dependency to crates.io once the required cdpkit-rs version is published.
-- [ ] Document breaking changes and migration steps for both projects.
+- [x] Add or restore test and clippy CI for both repositories.
+- [x] Ensure browserkit release builds run tests and clippy before packaging.
+- [x] Keep CHANGELOG entries aligned with actual repository files and workflows.
+- [x] Publish cdpkit-rs first when browserkit depends on a new cdpkit API.
+- [x] Switch browserkit back from path dependency to crates.io once the required cdpkit-rs version is published.
+- [x] Document breaking changes and migration steps for both projects.
 
 ## Current First Batch
 
