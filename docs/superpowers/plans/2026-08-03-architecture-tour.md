@@ -8,6 +8,12 @@
 
 **Tech Stack:** HTML5, CSS media queries and system color preference, inline SVG, browser-native JavaScript, PowerShell static validation, local browser visual inspection.
 
+**Execution status:** Implemented on 2026-08-03. Static, JavaScript syntax,
+anchor, source-path, offline-dependency, and responsive-contract checks passed.
+The Codex in-app browser blocked direct `file:` navigation by policy, so the
+interactive and visual smoke test remains a manual double-click check rather
+than a claimed automated pass.
+
 ## Global Constraints
 
 - Do not modify Rust runtime code.
@@ -125,7 +131,7 @@ On `DOMContentLoaded`, select `daemon`, render `auto-start`, synchronize the com
 
 - [ ] **Step 1: Run static safety checks**
 
-Run PowerShell checks that assert all ten section IDs exist; every `href="#..."` target resolves; `ARCHITECTURE_NODES`, `RUNTIME_FLOWS`, `selectNode`, and `renderFlow` exist; and the document contains none of `http://`, `https://`, `fetch(`, `XMLHttpRequest`, `WebSocket`, `<script src=`, or `<link rel="stylesheet"`.
+Run PowerShell checks that assert all ten section IDs exist; every `href="#..."` target resolves; `ARCHITECTURE_NODES`, `RUNTIME_FLOWS`, `selectNode`, and `renderFlow` exist; and the document contains none of `http://`, `https://`, `fetch(`, `XMLHttpRequest`, `new WebSocket(`, `<script src=`, or `<link rel="stylesheet"`. Explanatory prose may mention WebSocket because the Chrome disconnect path is part of the architecture.
 
 Expected: all checks pass with exit code 0.
 
