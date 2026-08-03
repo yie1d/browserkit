@@ -19,7 +19,7 @@ macro_rules! handler {
         ) -> $crate::daemon::protocol::Response {
             match $inner($req, $state).await {
                 Ok(resp) => resp,
-                Err(e) => $crate::daemon::protocol::Response::err(e.to_string()),
+                Err(e) => $crate::daemon::protocol::Response::from(e),
             }
         }
     };

@@ -646,24 +646,11 @@ async fn async_main() {
 
 /// Run daemon in foreground (blocking).
 async fn run_daemon_start() {
-    // Write daemon logs to ~/.bk/daemon.log (append mode).
+    // Write daemon logs to daily rolling files under ~/.bk/.
     // Since the daemon is typically spawned with stdio redirected to null,
     // file-based logging is the only way to observe runtime behavior.
     let log_dir = daemon::bk_home();
-    let _ = std::fs::create_dir_all(&log_dir);
-    let log_file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(log_dir.join("daemon.log"))
-        .expect("failed to open daemon.log for writing");
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::from_default_env()
-                .add_directive("browserkit=debug".parse().unwrap()),
-        )
-        .with_writer(log_file)
-        .with_ansi(false)
-        .init();
+    browserkit::daemon_logging::init(&log_dir);
 
     match daemon::start_daemon().await {
         Ok(result) => {

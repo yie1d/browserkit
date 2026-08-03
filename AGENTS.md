@@ -13,7 +13,7 @@ daemon 常驻后台,维持持久 CDP 连接,状态持久化到 `~/.bk/`,重启�
 ## 源码布局（`src/`）
 
 - `main.rs` CLI 入口(clap)、`client.rs` TCP 客户端 + daemon 自启、`config.rs`(`~/.bk/config.toml`)、`error.rs`(统一 `BkError`)。
-- `browser/` — Chrome 发现 `finder.rs`、进程管理 `launcher.rs`、CDP 连接 `mod.rs`。
+- `browser/` — Chrome 发现 `finder.rs`、CDP 连接 `mod.rs`。
 - `daemon/` — 生命周期 `mod.rs`、状态 `state.rs`(`Arc<DaemonState>` + DashMap)、TCP server `server.rs`、防抖持久化 `persist.rs`、协议 `protocol.rs`、`handler/`(每命令组一文件:session/open/attach/tabs/snapshot/act/navigate/wait/evaluate/inspect/storage/dialog/browser/network/debug/daemon/common)。
 - `page/` — navigation / interaction / capture / state。
 
@@ -66,11 +66,9 @@ cargo test
 
 ## 记忆系统
 
-持久记忆在 **`.Codex/memory/`**,索引为 `.Codex/memory/MEMORY.md`。本项目所有 agent(及主对话)遵守:
+持久记忆使用运行环境提供的全局 memory 系统；个人记忆不写入或迁移到本仓库。本项目所有 agent(及主对话)遵守:
 
-- **开工前**:读 `.Codex/memory/MEMORY.md`,按需读相关条目。
-- **收尾时**:把**非显而易见**的持久信息写成条目并在 MEMORY.md 加一行索引。值得记的:用户偏好与反馈、跨会话仍有效的决策、踩过的坑/约束、外部资源指针。
+- **开工前**:若运行环境提供 memory 索引,按需读取 browserkit 相关条目；没有则直接以当前代码和文档为准。
+- **收尾时**:仅在用户明确要求更新记忆时,按运行环境的 memory 写入规则记录非显而易见的持久信息。不要在仓库中创建私有 memory 目录。
 - **不要记**:能从代码/git 看出来的、仅本次任务的临时状态。
 - 记忆可能过时:据此行动前先核对当前代码,冲突时以现状为准并更新记忆。
-
-条目文件用 frontmatter(`name` / `description` / `metadata.type`,type ∈ user/feedback/project/reference),feedback/project 类型正文写明 **Why** 与 **How to apply**。

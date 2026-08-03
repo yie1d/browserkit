@@ -154,6 +154,6 @@ document compatibility aliases for these surfaces:
 
 Schema v2 state is backed up before migration to schema v3. `bk status` reports
 migration metadata. If writes are disabled, `persistence.enabled` is false and
-`persistence.disabled_reason` explains the preserved-state error. Cleanup commands return structured `cleanup_errors` when
+`persistence.disabled_reason` explains the preserved-state error. Recoverable runtime write failures leave writes enabled and appear in `persistence.last_error` until a later write succeeds. Cleanup commands return structured `cleanup_errors` when
 cleanup is partial. Schema v3 state contains browser metadata, sessions, tab
 ownership, and optional migration metadata, but no workspace fields.

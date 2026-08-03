@@ -20,12 +20,14 @@ mod screenshot;
 mod session;
 mod snapshot;
 mod tabs;
+mod url_policy;
 mod wait;
 
 use std::sync::Arc;
 
 use crate::daemon::protocol::{Request, Response};
 use crate::daemon::state::DaemonState;
+use crate::error::ErrorCode;
 
 pub use common::HandlerContext;
 
@@ -37,6 +39,80 @@ pub async fn handle_request(
 ) -> Response {
     state.inc_request_count();
 
+    if let Some(session_name) = request_session_name(req) {
+        let lifecycle_lock = state.session_lifecycle_lock(&session_name);
+        if req.cmd == "session.close" {
+            let _operation_guard = lifecycle_lock.write().await;
+            if let Some(mut session) = state.sessions.get_mut(&session_name) {
+                session.touch();
+                drop(session);
+                state.request_persist();
+            }
+            return dispatch_request(req, state, ctx).await;
+        }
+        let _operation_guard = lifecycle_lock.read().await;
+        if let Some(mut session) = state.sessions.get_mut(&session_name) {
+            session.touch();
+            drop(session);
+            state.request_persist();
+        }
+        return dispatch_request(req, state, ctx).await;
+    }
+
+    dispatch_request(req, state, ctx).await
+}
+
+fn request_session_name(req: &Request) -> Option<String> {
+    let session_bound = matches!(
+        req.cmd.as_str(),
+        "open"
+            | "snapshot"
+            | "navigate"
+            | "act"
+            | "attach"
+            | "tabs"
+            | "close"
+            | "session.close"
+            | "session.cookies.get"
+            | "session.cookies.set"
+            | "session.cookies.clear"
+            | "session.storage.local.get"
+            | "session.storage.local.set"
+            | "session.storage.export"
+            | "session.storage.import"
+            | "evaluate"
+            | "screenshot"
+            | "wait"
+            | "find"
+            | "search"
+            | "html"
+            | "console"
+            | "pdf"
+            | "debug.block"
+            | "debug.unblock"
+            | "network.watch"
+            | "download"
+            | "debug.cdp"
+            | "dialog.list"
+            | "dialog.accept"
+            | "dialog.dismiss"
+            | "dialog.policy"
+    );
+    if !session_bound {
+        return None;
+    }
+    match req.params.get("session") {
+        None => Some("default".into()),
+        Some(serde_json::Value::String(name)) => Some(name.clone()),
+        Some(_) => None,
+    }
+}
+
+async fn dispatch_request(
+    req: &Request,
+    state: &Arc<DaemonState>,
+    ctx: &HandlerContext,
+) -> Response {
     match req.cmd.as_str() {
         "ping" => daemon::handle_ping(),
         "connect" => connect::handle_connect(req, state).await,
@@ -75,7 +151,11 @@ pub async fn handle_request(
         "dialog.accept" => dialog::handle_dialog_accept(req, state).await,
         "dialog.dismiss" => dialog::handle_dialog_dismiss(req, state).await,
         "dialog.policy" => dialog::handle_dialog_policy(req, state).await,
-        _ => Response::err(format!("unknown command: {}", req.cmd)),
+        _ => Response::error_detail(
+            ErrorCode::InvalidArgument,
+            format!("unknown command: {}", req.cmd),
+            Some("run 'bk --help' to list supported commands".into()),
+        ),
     }
 }
 
@@ -96,6 +176,50 @@ mod tests {
 
     fn removed_route(prefix: &str, command: &str) -> String {
         format!("{prefix}.{command}")
+    }
+
+    fn assert_unknown_error(value: &serde_json::Value, command: &str) {
+        assert_eq!(value["ok"], false);
+        assert_eq!(value["error"]["code"], "INVALID_ARGUMENT");
+        assert_eq!(
+            value["error"]["message"],
+            format!("unknown command: {command}")
+        );
+    }
+
+    #[tokio::test]
+    async fn session_bound_request_touches_activity_centrally() {
+        let state = Arc::new(DaemonState::new());
+        let mut session = Session::new_default("localhost:9222".into());
+        session.last_active = 1;
+        state.sessions.insert("default".into(), session);
+        let request = Request {
+            cmd: "tabs".into(),
+            params: serde_json::json!({}),
+            token: None,
+        };
+
+        let _ = handle_request(&request, &state, &test_context()).await;
+
+        assert!(state.sessions.get("default").unwrap().last_active > 1);
+    }
+
+    #[test]
+    fn daemon_and_browser_requests_do_not_claim_a_session() {
+        for command in [
+            "ping",
+            "connect",
+            "daemon.status",
+            "browser.list",
+            "unknown",
+        ] {
+            let request = Request {
+                cmd: command.into(),
+                params: serde_json::json!({}),
+                token: None,
+            };
+            assert_eq!(request_session_name(&request), None, "{command}");
+        }
     }
 
     #[tokio::test]
@@ -168,8 +292,7 @@ mod tests {
         let resp = handle_request(&req, &state, &test_context()).await;
         let json = serde_json::to_value(&resp).unwrap();
 
-        assert_eq!(json["ok"], false);
-        assert_eq!(json["error"], format!("unknown command: {cmd}"));
+        assert_unknown_error(&json, &cmd);
     }
 
     #[tokio::test]
@@ -185,8 +308,7 @@ mod tests {
         let resp = handle_request(&req, &state, &test_context()).await;
         let json = serde_json::to_value(&resp).unwrap();
 
-        assert_eq!(json["ok"], false);
-        assert_eq!(json["error"], format!("unknown command: {cmd}"));
+        assert_unknown_error(&json, &cmd);
     }
 
     #[tokio::test]
@@ -207,8 +329,7 @@ mod tests {
             let resp = handle_request(&req, &state, &test_context()).await;
             let json = serde_json::to_value(&resp).unwrap();
 
-            assert_eq!(json["ok"], false);
-            assert_eq!(json["error"], format!("unknown command: {cmd}"));
+            assert_unknown_error(&json, &cmd);
         }
     }
 
@@ -226,8 +347,7 @@ mod tests {
             let resp = handle_request(&req, &state, &test_context()).await;
             let json = serde_json::to_value(&resp).unwrap();
 
-            assert_eq!(json["ok"], false);
-            assert_eq!(json["error"], format!("unknown command: {cmd}"));
+            assert_unknown_error(&json, cmd);
         }
     }
 
@@ -250,8 +370,7 @@ mod tests {
             let resp = handle_request(&req, &state, &test_context()).await;
             let json = serde_json::to_value(&resp).unwrap();
 
-            assert_eq!(json["ok"], false);
-            assert_eq!(json["error"], format!("unknown command: {cmd}"));
+            assert_unknown_error(&json, &cmd);
         }
     }
 
@@ -268,8 +387,7 @@ mod tests {
         let resp = handle_request(&req, &state, &test_context()).await;
         let json = serde_json::to_value(&resp).unwrap();
 
-        assert_eq!(json["ok"], false);
-        assert_eq!(json["error"], format!("unknown command: {cmd}"));
+        assert_unknown_error(&json, &cmd);
     }
 
     async fn assert_routes_removed(commands: &[&str]) {
@@ -282,7 +400,7 @@ mod tests {
             };
             let value =
                 serde_json::to_value(handle_request(&req, &state, &test_context()).await).unwrap();
-            assert_eq!(value["error"], format!("unknown command: {cmd}"));
+            assert_unknown_error(&value, cmd);
         }
     }
 
@@ -500,7 +618,7 @@ mod tests {
             };
             let value =
                 serde_json::to_value(handle_request(&req, &state, &test_context()).await).unwrap();
-            assert_eq!(value["error"], format!("unknown command: {cmd}"));
+            assert_unknown_error(&value, &cmd);
         }
     }
 }

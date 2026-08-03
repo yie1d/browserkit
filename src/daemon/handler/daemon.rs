@@ -25,6 +25,7 @@ pub async fn handle_daemon_status(state: &Arc<DaemonState>, ctx: &HandlerContext
         .persist_disabled
         .load(std::sync::atomic::Ordering::Relaxed);
     let persistence_disabled_reason = state.persist_disabled_reason.lock().clone();
+    let persistence_last_error = state.persist_last_error.lock().clone();
 
     Response::ok(json!({
         "pid": ctx.pid,
@@ -37,6 +38,7 @@ pub async fn handle_daemon_status(state: &Arc<DaemonState>, ctx: &HandlerContext
         "persistence": {
             "enabled": persistence_enabled,
             "disabled_reason": persistence_disabled_reason,
+            "last_error": persistence_last_error,
         },
         "config": {
             "session_timeout_hours": state.config.limits.session_timeout_hours,
@@ -67,7 +69,7 @@ pub async fn handle_daemon_stop(state: &Arc<DaemonState>, _ctx: &HandlerContext)
 
     let browsers_removed = super::browser::drain_browsers_for_shutdown(state);
     state.request_persist();
-    persist::persist_now(state).await;
+    let persistence_error = persist::persist_now(state).await.err();
 
     let sessions_closed: usize = reports.iter().map(|report| report.sessions_closed()).sum();
     let targets_closed: usize = reports.iter().map(|report| report.targets_closed()).sum();
@@ -82,6 +84,7 @@ pub async fn handle_daemon_stop(state: &Arc<DaemonState>, _ctx: &HandlerContext)
         "targets_closed": targets_closed,
         "browsers_removed": browsers_removed,
         "cleanup_errors": cleanup_errors,
+        "persistence_error": persistence_error,
     }))
 }
 
@@ -188,6 +191,19 @@ mod tests {
             value["data"]["persistence"]["disabled_reason"],
             "state.json uses newer state version 4"
         );
+    }
+
+    #[tokio::test]
+    async fn daemon_status_distinguishes_transient_persistence_error() {
+        let state = Arc::new(DaemonState::new());
+        *state.persist_last_error.lock() = Some("disk full".into());
+
+        let value =
+            serde_json::to_value(handle_daemon_status(&state, &test_context()).await).unwrap();
+
+        assert_eq!(value["data"]["persistence"]["enabled"], true);
+        assert_eq!(value["data"]["persistence"]["last_error"], "disk full");
+        assert!(value["data"]["persistence"]["disabled_reason"].is_null());
     }
 
     #[tokio::test]

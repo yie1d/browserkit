@@ -1,7 +1,6 @@
 // Browser: Chrome instance management and CDP connection
 pub mod discover;
 pub mod finder;
-pub mod launcher;
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -197,7 +196,7 @@ pub fn spawn_disconnect_monitor(state: Arc<DaemonState>, host: String, cdp: Arc<
         cdp.closed().await;
         tracing::warn!(host = %host, "CDP WebSocket closed, triggering disconnect cleanup");
         let _lifecycle_guard = state.session_bind_lock.lock().await;
-        state.handle_browser_disconnect(&host, &cdp);
+        state.handle_browser_disconnect(&host, &cdp).await;
     });
 }
 

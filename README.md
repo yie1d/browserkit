@@ -58,7 +58,7 @@ Low-level CDP support belongs in cdpkit-rs. browserkit composes those capabiliti
 ## Requirements
 
 - Rust 1.75+
-- Chrome or Chromium (auto-discovered, or set `chrome_path` in config)
+- Chrome or Chromium with remote debugging enabled
 
 ## Build
 
@@ -374,7 +374,7 @@ browserkit now exposes one session runtime. The old workspace surface was remove
 - removed environment and flags: `BK_WS`, `--ws`;
 - removed daemon routes: `ws.*`, `tab.*`, `nav.*`, `page.*`, old `storage.*`, and `v2.*` aliases.
 
-On startup, schema v2 state is backed up as `state.v2.backup.json` (or a numbered variant) before being converted to schema v3. `bk status` exposes migration metadata so migrated or dropped state is visible instead of silent. If malformed or newer state disables writes, `persistence.enabled` is false and `persistence.disabled_reason` explains why. Cleanup commands such as `browser disconnect` and `daemon stop` return structured `cleanup_errors` when cleanup is partial.
+On startup, schema v2 state is backed up as `state.v2.backup.json` (or a numbered variant) before being converted to schema v3. `bk status` exposes migration metadata so migrated or dropped state is visible instead of silent. If malformed or newer state disables writes, `persistence.enabled` is false and `persistence.disabled_reason` explains why. A recoverable runtime write failure keeps persistence enabled for later retries and appears in `persistence.last_error` until a write succeeds. Cleanup commands such as `browser disconnect` and `daemon stop` return structured `cleanup_errors` when cleanup is partial.
 
 ## Configuration
 
@@ -383,9 +383,6 @@ Optional config at `~/.bk/config.toml`:
 ```toml
 [daemon]
 cleanup_interval_seconds = 60    # how often to check for expired sessions
-chrome_path = "/usr/bin/chromium" # override Chrome auto-discovery
-disable_security = true          # pass --ignore-certificate-errors to Chrome
-headless = true                  # set to false to show browser window
 
 [limits]
 max_sessions = 10                # isolated sessions; default session does not count
@@ -394,7 +391,7 @@ session_timeout_hours = 72       # idle session timeout
 js_timeout_seconds = 0           # 0 = no timeout
 ```
 
-Historical workspace config keys are ignored by current binaries. Session limits are controlled by `max_sessions`, `max_tabs_per_session`, and `session_timeout_hours`.
+Historical workspace and managed-Chrome launch keys are ignored by current binaries. Browser discovery and connection do not launch Chrome. Session limits are controlled by `max_sessions`, `max_tabs_per_session`, and `session_timeout_hours`.
 
 ## State Persistence
 
@@ -410,6 +407,7 @@ The runtime never writes workspace fields to schema v3. Attached user tabs are d
 Additional runtime files in `~/.bk/`:
 - `daemon.port` — current daemon TCP port
 - `daemon.lock` — singleton lock (prevents multiple daemons)
+- `daemon.log.YYYY-MM-DD` — daily daemon logs; the seven newest files are retained
 
 Writes are atomic (tmp + rename) and debounced (500ms quiet window) to avoid blocking request handlers.
 

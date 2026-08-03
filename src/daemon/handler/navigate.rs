@@ -14,6 +14,7 @@ use crate::daemon::state::DaemonState;
 use crate::error::ErrorCode;
 
 use super::common::{optional_string_param, session_name_param};
+use super::url_policy::validate_and_normalize_url;
 
 /// Navigation action to perform.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -53,7 +54,7 @@ fn validate_navigate_params(params: &serde_json::Value) -> Result<NavigateParams
     }
 
     let action = match (url, back, forward, reload) {
-        (Some(url), false, false, false) => NavAction::Goto(url.to_string()),
+        (Some(url), false, false, false) => NavAction::Goto(validate_and_normalize_url(url)?),
         (None, true, false, false) => NavAction::Back,
         (None, false, true, false) => NavAction::Forward,
         (None, false, false, true) => NavAction::Reload,
@@ -83,35 +84,12 @@ fn optional_bool_param(params: &serde_json::Value, field: &str) -> Result<Option
     }
 }
 
-/// Validate that a URL does not use a dangerous scheme.
-fn validate_url_scheme(url: &str) -> Result<(), Response> {
-    let lower = url.to_lowercase();
-    if lower.starts_with("javascript:") || lower.starts_with("data:text/html") {
-        return Err(Response::error_detail(
-            ErrorCode::InvalidArgument,
-            format!(
-                "URL scheme not allowed: {}",
-                &url[..url.find(':').unwrap_or(url.len())]
-            ),
-            Some("use http:// or https:// URLs".into()),
-        ));
-    }
-    Ok(())
-}
-
 /// Handle the canonical `navigate` command.
 pub async fn handle_navigate(req: &Request, state: &Arc<DaemonState>) -> Response {
     let params = match validate_navigate_params(&req.params) {
         Ok(p) => p,
         Err(resp) => return resp,
     };
-
-    // Validate URL scheme for goto actions
-    if let NavAction::Goto(ref url) = params.action {
-        if let Err(resp) = validate_url_scheme(url) {
-            return resp;
-        }
-    }
 
     // Resolve session
     let session = match state.sessions.get(&params.session_name) {
@@ -212,8 +190,7 @@ pub async fn handle_navigate(req: &Request, state: &Arc<DaemonState>) -> Respons
             info!(
                 session = %params.session_name,
                 target = %target_id,
-                action = ?params.action,
-                url = %url,
+                action = nav_action_name(&params.action),
                 "navigate complete"
             );
 
@@ -233,6 +210,15 @@ pub async fn handle_navigate(req: &Request, state: &Arc<DaemonState>) -> Respons
             format!("navigation timed out after {}ms", params.timeout),
             None,
         ),
+    }
+}
+
+fn nav_action_name(action: &NavAction) -> &'static str {
+    match action {
+        NavAction::Goto(_) => "goto",
+        NavAction::Back => "back",
+        NavAction::Forward => "forward",
+        NavAction::Reload => "reload",
     }
 }
 
@@ -412,20 +398,20 @@ mod tests {
 
     #[test]
     fn validate_url_scheme_allows_http() {
-        assert!(validate_url_scheme("https://example.com").is_ok());
-        assert!(validate_url_scheme("http://localhost:3000").is_ok());
+        assert!(validate_and_normalize_url("https://example.com").is_ok());
+        assert!(validate_and_normalize_url("http://localhost:3000").is_ok());
     }
 
     #[test]
     fn validate_url_scheme_blocks_javascript() {
-        let err = validate_url_scheme("javascript:alert(1)").unwrap_err();
+        let err = validate_and_normalize_url("javascript:alert(1)").unwrap_err();
         let json = serde_json::to_value(&err).unwrap();
         assert_eq!(json["error"]["code"], "INVALID_ARGUMENT");
     }
 
     #[test]
     fn validate_url_scheme_blocks_data_text_html() {
-        assert!(validate_url_scheme("data:text/html,<h1>hi</h1>").is_err());
+        assert!(validate_and_normalize_url("data:text/html,<h1>hi</h1>").is_err());
     }
 
     #[tokio::test]

@@ -71,6 +71,24 @@ pub enum BkError {
     Other(String),
 }
 
+impl BkError {
+    pub fn error_code(&self) -> ErrorCode {
+        match self {
+            Self::BrowserNotFound(_) => ErrorCode::BrowserNotInstalled,
+            Self::BrowserConnectionFailed(_)
+            | Self::BrowserConnectionTimeout(_, _)
+            | Self::BrowserStartupTimeout => ErrorCode::NotConnected,
+            Self::ElementIndexOutOfRange(_, _)
+            | Self::ElementNotFound(_)
+            | Self::InvalidRequest(_) => ErrorCode::InvalidArgument,
+            Self::NavigationFailed(_) => ErrorCode::NavigateFailed,
+            Self::JsError(_) => ErrorCode::JsError,
+            Self::Timeout(_) => ErrorCode::Timeout,
+            Self::Cdp(_) | Self::Io(_) | Self::Json(_) | Self::Other(_) => ErrorCode::DaemonError,
+        }
+    }
+}
+
 // ── v2 Structured Error Codes ───────────────────────────────────────────
 
 use serde::{Deserialize, Serialize};

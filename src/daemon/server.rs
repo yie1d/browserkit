@@ -1,6 +1,6 @@
 // TCP server: accepts client connections, dispatches to handler
 
-use std::{collections::HashSet, sync::Arc};
+use std::sync::Arc;
 
 use tokio::io::{AsyncWrite, BufReader, BufWriter};
 use tokio::net::{TcpListener, TcpStream};
@@ -98,7 +98,8 @@ pub fn spawn_cleanup_task(
     interval_seconds: u64,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        let mut interval = tokio::time::interval(std::time::Duration::from_secs(interval_seconds));
+        let mut interval =
+            tokio::time::interval(std::time::Duration::from_secs(interval_seconds.max(1)));
         loop {
             interval.tick().await;
             cleanup_idle_once(&state).await;
@@ -116,47 +117,35 @@ async fn cleanup_expired_sessions(state: &Arc<DaemonState>) {
         .unwrap_or_default()
         .as_secs();
 
-    let timeout = state.config.limits.session_timeout_hours * 60 * 60;
+    let timeout = state
+        .config
+        .limits
+        .session_timeout_hours
+        .saturating_mul(60 * 60);
     if timeout == 0 {
         return;
     }
 
-    let expired: Vec<ExpiredSession> = state
+    let expired_session_names: Vec<String> = state
         .sessions
         .iter()
         .filter(|entry| now.saturating_sub(entry.value().last_active) > timeout)
-        .map(|entry| {
-            let session = entry.value();
-            let cdp = state
-                .browsers
-                .get(&session.browser_host)
-                .map(|b| Arc::clone(&b.cdp));
-            ExpiredSession {
-                name: entry.key().clone(),
-                browser_host: session.browser_host.clone(),
-                browser_context_id: session.browser_context_id.clone(),
-                mode: session.mode,
-                targets: expired_session_close_requests(session),
-                cdp,
-            }
-        })
+        .map(|entry| entry.key().clone())
         .collect();
 
-    let mut cleanup_completed = HashSet::new();
-    for expired_session in &expired {
-        let still_expired = state
-            .sessions
-            .get(&expired_session.name)
-            .map(|session| now.saturating_sub(session.last_active) > timeout)
-            .unwrap_or(false);
-
-        if !still_expired {
+    let mut changed = false;
+    for session_name in expired_session_names {
+        let lifecycle_lock = state.session_lifecycle_lock(&session_name);
+        let _cleanup_guard = lifecycle_lock.write().await;
+        let Some(expired_session) =
+            expired_session_plan_if_still_idle(state, &session_name, now, timeout)
+        else {
             tracing::debug!(
-                session = %expired_session.name,
+                session = %session_name,
                 "session re-activated during cleanup, skipping removal"
             );
             continue;
-        }
+        };
 
         let mut success = true;
         for target in &expired_session.targets {
@@ -195,33 +184,24 @@ async fn cleanup_expired_sessions(state: &Arc<DaemonState>) {
         }
 
         if success {
-            cleanup_completed.insert(expired_session.name.clone());
-        }
-    }
-
-    let mut changed = false;
-    for expired_session in &expired {
-        if !cleanup_completed.contains(&expired_session.name) {
-            continue;
-        }
-
-        if expired_session.mode == crate::daemon::session::SessionMode::Default {
-            if let Some(mut session) = state.sessions.get_mut(&expired_session.name) {
-                session.touch();
+            if expired_session.mode == crate::daemon::session::SessionMode::Default {
+                if let Some(mut session) = state.sessions.get_mut(&expired_session.name) {
+                    session.touch();
+                }
+            } else {
+                state
+                    .dialog_state
+                    .cancel_all_for_session(&expired_session.name);
+                state.sessions.remove(&expired_session.name);
             }
-        } else {
-            state
-                .dialog_state
-                .cancel_all_for_session(&expired_session.name);
-            state.sessions.remove(&expired_session.name);
-        }
 
-        changed = true;
-        info!(
-            session = %expired_session.name,
-            host = %expired_session.browser_host,
-            "session expired and cleaned up"
-        );
+            changed = true;
+            info!(
+                session = %expired_session.name,
+                host = %expired_session.browser_host,
+                "session expired and cleaned up"
+            );
+        }
     }
 
     if changed {
@@ -231,6 +211,30 @@ async fn cleanup_expired_sessions(state: &Arc<DaemonState>) {
 
 fn expired_session_close_requests(session: &Session) -> Vec<SessionTargetCloseRequest> {
     session_tab_close_requests(session.tabs.values())
+}
+
+fn expired_session_plan_if_still_idle(
+    state: &DaemonState,
+    session_name: &str,
+    now: u64,
+    timeout: u64,
+) -> Option<ExpiredSession> {
+    let session = state.sessions.get(session_name)?;
+    if now.saturating_sub(session.last_active) <= timeout {
+        return None;
+    }
+    let cdp = state
+        .browsers
+        .get(&session.browser_host)
+        .map(|browser| Arc::clone(&browser.cdp));
+    Some(ExpiredSession {
+        name: session_name.to_string(),
+        browser_host: session.browser_host.clone(),
+        browser_context_id: session.browser_context_id.clone(),
+        mode: session.mode,
+        targets: expired_session_close_requests(&session),
+        cdp,
+    })
 }
 
 struct ExpiredSession {
@@ -528,9 +532,9 @@ mod tests {
         let resp: Response =
             serde_json::from_str(std::str::from_utf8(&buf[..n]).unwrap().trim()).unwrap();
         assert!(!resp.ok);
-        assert!(resp
-            .error
-            .unwrap()
+        let error = resp.error.unwrap();
+        assert_eq!(error["code"], "INVALID_ARGUMENT");
+        assert!(error["message"]
             .as_str()
             .unwrap()
             .contains("unknown command: no.such"));
@@ -684,6 +688,31 @@ mod tests {
         assert!(state.sessions.contains_key("agent-b"));
     }
 
+    #[test]
+    fn cleanup_rebuilds_target_plan_after_lifecycle_lock() {
+        let state = Arc::new(DaemonState::new());
+        let now = now_ts();
+        let mut session = make_default_session("localhost:9222", now - 73 * 60 * 60);
+        session.add_tab(
+            "late-target".into(),
+            "https://late.test".into(),
+            "Late".into(),
+        );
+        session.last_active = now - 73 * 60 * 60;
+        state.sessions.insert("default".into(), session);
+
+        let plan = expired_session_plan_if_still_idle(&state, "default", now, 72 * 60 * 60)
+            .expect("session remains expired");
+        let target_ids: std::collections::HashSet<_> = plan
+            .targets
+            .iter()
+            .map(|target| target.target_id.as_str())
+            .collect();
+
+        assert!(target_ids.contains("target-default"));
+        assert!(target_ids.contains("late-target"));
+    }
+
     #[tokio::test]
     async fn cleanup_removes_only_successfully_closed_default_tabs() {
         let state = Arc::new(DaemonState::new());
@@ -760,6 +789,34 @@ mod tests {
             "agent-a".to_string(),
             make_isolated_session("agent-a", "localhost:9222", now - 365 * 24 * 60 * 60),
         );
+
+        cleanup_expired_sessions(&state).await;
+
+        assert!(state.sessions.contains_key("agent-a"));
+    }
+
+    #[tokio::test]
+    async fn zero_cleanup_interval_is_safely_clamped() {
+        let state = Arc::new(DaemonState::new());
+        let handle = spawn_cleanup_task(state, 0);
+        tokio::task::yield_now().await;
+        assert!(!handle.is_finished());
+        handle.abort();
+    }
+
+    #[tokio::test]
+    async fn session_timeout_conversion_saturates() {
+        let state = Arc::new(DaemonState::with_config(crate::config::Config {
+            limits: crate::config::LimitsConfig {
+                session_timeout_hours: u64::MAX,
+                ..Default::default()
+            },
+            ..Default::default()
+        }));
+        let mut session =
+            Session::new_isolated("agent-a".into(), "localhost:9222".into(), "ctx".into());
+        session.last_active = 1;
+        state.sessions.insert("agent-a".into(), session);
 
         cleanup_expired_sessions(&state).await;
 

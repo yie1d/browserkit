@@ -43,14 +43,10 @@ impl Response {
         }
     }
 
-    /// Build a legacy error response with a plain string message.
+    /// Build a structured daemon error response for generic failures.
     #[must_use]
     pub fn err(msg: impl Into<String>) -> Self {
-        Self {
-            ok: false,
-            data: None,
-            error: Some(serde_json::Value::String(msg.into())),
-        }
+        Self::error_detail(ErrorCode::DaemonError, msg.into(), None)
     }
 
     /// Build a v2 structured error response with code, message, suggestion, and recoverable flag.
@@ -73,7 +69,7 @@ impl Response {
 
 impl From<BkError> for Response {
     fn from(e: BkError) -> Self {
-        Response::err(e.to_string())
+        Response::error_detail(e.error_code(), e.to_string(), None)
     }
 }
 
@@ -180,10 +176,7 @@ mod tests {
         let r = Response::err("something broke");
         assert!(!r.ok);
         assert!(r.data.is_none());
-        assert_eq!(
-            r.error,
-            Some(serde_json::Value::String("something broke".into()))
-        );
+        assert_eq!(r.error.unwrap()["code"], "DAEMON_ERROR");
     }
 
     #[test]
@@ -277,12 +270,7 @@ mod tests {
         let e = BkError::InvalidRequest("missing command".into());
         let resp: Response = e.into();
         assert!(!resp.ok);
-        assert_eq!(
-            resp.error,
-            Some(serde_json::Value::String(
-                "invalid request: missing command".into()
-            ))
-        );
+        assert_eq!(resp.error.unwrap()["code"], "INVALID_ARGUMENT");
     }
 
     #[tokio::test]
@@ -323,9 +311,7 @@ mod tests {
         let mut reader = BufReader::new(&oversized[..]);
         let err = read_request(&mut reader).await.unwrap_err();
         assert!(!err.ok);
-        assert!(err
-            .error
-            .unwrap()
+        assert!(err.error.unwrap()["message"]
             .as_str()
             .unwrap()
             .contains("request too large"));
@@ -383,9 +369,10 @@ mod tests {
     }
 
     #[test]
-    fn response_legacy_err_unchanged() {
+    fn response_generic_err_is_structured() {
         let resp = Response::err("something broke");
         let json = serde_json::to_value(&resp).unwrap();
-        assert_eq!(json["error"], "something broke");
+        assert_eq!(json["error"]["code"], "DAEMON_ERROR");
+        assert_eq!(json["error"]["message"], "something broke");
     }
 }

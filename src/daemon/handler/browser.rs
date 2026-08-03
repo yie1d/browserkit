@@ -226,21 +226,30 @@ fn cleanup_error_for_context(session: &str, message: String) -> BrowserCleanupEr
     }
 }
 
-fn cleanup_plans_for_host(state: &DaemonState, host: &str) -> Vec<BrowserSessionCleanupPlan> {
+fn session_names_for_host(state: &DaemonState, host: &str) -> Vec<String> {
     state
         .sessions
         .iter()
         .filter(|entry| entry.value().browser_host == host)
-        .map(|entry| {
-            let session = entry.value();
-            BrowserSessionCleanupPlan {
-                name: entry.key().clone(),
-                browser_context_id: session.browser_context_id.clone(),
-                mode: session.mode,
-                targets: session_tab_close_requests(session.tabs.values()),
-            }
-        })
+        .map(|entry| entry.key().clone())
         .collect()
+}
+
+fn cleanup_plan_for_session_if_host(
+    state: &DaemonState,
+    session_name: &str,
+    host: &str,
+) -> Option<BrowserSessionCleanupPlan> {
+    let session = state.sessions.get(session_name)?;
+    if session.browser_host != host {
+        return None;
+    }
+    Some(BrowserSessionCleanupPlan {
+        name: session_name.to_string(),
+        browser_context_id: session.browser_context_id.clone(),
+        mode: session.mode,
+        targets: session_tab_close_requests(session.tabs.values()),
+    })
 }
 
 fn cancel_console_for_session(state: &DaemonState, session_name: &str) {
@@ -282,11 +291,17 @@ pub(crate) async fn cleanup_browser_sessions_for_host(
 ) -> BrowserCleanupReport {
     cancel_browser_background_tasks(state, host);
 
-    let plans = cleanup_plans_for_host(state, host);
+    let session_names = session_names_for_host(state, host);
+    let had_sessions = !session_names.is_empty();
     let cdp = state.browsers.get(host).map(|b| Arc::clone(&b.cdp));
     let mut report = BrowserCleanupReport::default();
 
-    for plan in &plans {
+    for session_name in session_names {
+        let lifecycle = state.session_lifecycle_lock(&session_name);
+        let _lifecycle_guard = lifecycle.write().await;
+        let Some(plan) = cleanup_plan_for_session_if_host(state, &session_name, host) else {
+            continue;
+        };
         let mut success = true;
 
         for target in &plan.targets {
@@ -338,7 +353,7 @@ pub(crate) async fn cleanup_browser_sessions_for_host(
         }
     }
 
-    if !plans.is_empty() {
+    if had_sessions {
         state.request_persist();
     }
 
@@ -429,6 +444,27 @@ async fn do_browser_disconnect(
 mod tests {
     use super::*;
     use crate::daemon::session::Session;
+
+    #[test]
+    fn browser_cleanup_rebuilds_plan_for_locked_session() {
+        let state = DaemonState::new();
+        let mut session = Session::new_default("localhost:9222".into());
+        session.add_tab("T1".into(), "https://one.test".into(), "One".into());
+        session.add_tab("T2".into(), "https://two.test".into(), "Two".into());
+        state.sessions.insert("default".into(), session);
+
+        let plan = cleanup_plan_for_session_if_host(&state, "default", "localhost:9222")
+            .expect("matching session must produce a plan");
+        let target_ids: std::collections::HashSet<_> = plan
+            .targets
+            .iter()
+            .map(|target| target.target_id.as_str())
+            .collect();
+
+        assert_eq!(target_ids.len(), 2);
+        assert!(target_ids.contains("T1"));
+        assert!(target_ids.contains("T2"));
+    }
     use tokio_util::sync::CancellationToken;
 
     #[test]

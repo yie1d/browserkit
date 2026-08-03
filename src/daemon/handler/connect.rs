@@ -29,9 +29,18 @@ pub async fn handle_connect(req: &Request, state: &Arc<DaemonState>) -> Response
         Err(response) => return response,
     };
 
-    // Idempotent check: if already connected, return immediately
-    if let Some(resp) = check_already_connected(state, session_name) {
-        return resp;
+    {
+        let lifecycle = state.session_lifecycle_lock(session_name);
+        let _lifecycle_guard = lifecycle.read().await;
+        if let Some(mut session) = state.sessions.get_mut(session_name) {
+            session.touch();
+            drop(session);
+            state.request_persist();
+        }
+        // Idempotent check: if already connected, return immediately.
+        if let Some(resp) = check_already_connected(state, session_name) {
+            return resp;
+        }
     }
 
     // Discover and connect
@@ -232,6 +241,8 @@ async fn bind_session_state<B: SessionReconnectBackend>(
     backend: &B,
 ) -> Result<SessionBindResult, Response> {
     let _bind_guard = state.session_bind_lock.lock().await;
+    let lifecycle = state.session_lifecycle_lock(session_name);
+    let _lifecycle_guard = lifecycle.write().await;
     bind_session_state_unlocked(state, session_name, browser_host, backend).await
 }
 
@@ -320,6 +331,8 @@ pub(crate) async fn bind_session_to_browser(
     cdp: &Arc<cdpkit::CDP>,
 ) -> Result<SessionBindResult, Response> {
     let _bind_guard = state.session_bind_lock.lock().await;
+    let lifecycle = state.session_lifecycle_lock(session_name);
+    let _lifecycle_guard = lifecycle.write().await;
     validate_current_browser_connection(state, browser_host, cdp)?;
     let backend = CdpReconnectBackend { cdp };
     let result = bind_session_state_unlocked(state, session_name, browser_host, &backend).await?;
@@ -890,7 +903,9 @@ mod tests {
         let disconnect = async {
             tokio::time::sleep(std::time::Duration::from_millis(5)).await;
             let _guard = state.session_bind_lock.lock().await;
-            state.disconnect_sessions_for_host("remote.example:9222");
+            state
+                .disconnect_sessions_for_host("remote.example:9222")
+                .await;
         };
         let (bound, ()) = tokio::join!(bind, disconnect);
 

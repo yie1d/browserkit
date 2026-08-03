@@ -261,8 +261,7 @@ fn spawn_dialog_subscription_for_key(
                         owner = %key.0,
                         target = %key.1,
                         dialog_type = %dialog_type,
-                        message = %ev.message,
-                        url = %ev.url,
+                        message_length = ev.message.len(),
                         has_browser_handler = ev.has_browser_handler,
                         "dialog: JavascriptDialogOpening received"
                     );

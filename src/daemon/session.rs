@@ -90,6 +90,8 @@ pub struct Session {
     /// Set to true when the backing browser WebSocket closes unexpectedly.
     #[serde(default)]
     pub disconnected: bool,
+    #[serde(skip, default)]
+    pub pending_tab_reservations: usize,
 }
 
 impl Session {
@@ -106,6 +108,7 @@ impl Session {
             created_at: now,
             last_active: now,
             disconnected: false,
+            pending_tab_reservations: 0,
         }
     }
 
@@ -122,6 +125,7 @@ impl Session {
             created_at: now,
             last_active: now,
             disconnected: false,
+            pending_tab_reservations: 0,
         }
     }
 
@@ -152,7 +156,12 @@ impl Session {
     /// Check whether another tab can be added given a max limit.
     /// A limit of 0 means unlimited.
     pub fn can_add_tab(&self, max: usize) -> bool {
-        max == 0 || self.tabs.len() < max
+        max == 0
+            || self
+                .tabs
+                .len()
+                .saturating_add(self.pending_tab_reservations)
+                < max
     }
 
     /// Update last_active timestamp to now.

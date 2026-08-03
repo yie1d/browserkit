@@ -13,12 +13,14 @@ use crate::daemon::session::SessionTab;
 use crate::daemon::state::DaemonState;
 use crate::daemon::target_close::detach_unregistered_target_session;
 use crate::daemon::target_lifecycle::{
-    emit_session_tab_created, enable_session_tab_domains, register_initialized_session_tab,
-    spawn_session_tab_subscriptions, SessionTabRegistration,
+    emit_session_tab_created, enable_session_tab_domains, register_reserved_session_tab,
+    release_session_tab_reservation, reserve_session_tab, spawn_session_tab_subscriptions,
+    SessionTabRegistration,
 };
 use crate::error::ErrorCode;
 
 use super::common::session_name_param;
+use super::url_policy::validate_and_normalize_url;
 
 /// Validated parameters for the `open` command.
 #[derive(Debug)]
@@ -27,87 +29,82 @@ struct OpenParams {
     session_name: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum OpenTargetRegistration {
-    Registered,
-    AlreadyTracked,
+struct OpenTabReservation {
+    state: Arc<DaemonState>,
+    session_name: String,
+    active: bool,
 }
 
-fn register_opened_target_if_untracked(
-    state: &Arc<DaemonState>,
-    session_name: &str,
-    target_id: String,
-    url: String,
-    cdp_session_id: String,
-) -> Result<OpenTargetRegistration, ErrorCode> {
-    let mut tab = SessionTab::new_owned(target_id.clone(), url, String::new());
-    tab.cdp_session_id = cdp_session_id;
+impl OpenTabReservation {
+    fn acquire(state: &Arc<DaemonState>, session_name: &str, max: usize) -> Result<Self, Response> {
+        reserve_session_tab(state, session_name, max).map_err(|code| {
+            Response::error_detail(
+                code,
+                format!("session '{session_name}' cannot reserve another tab"),
+                None,
+            )
+        })?;
+        Ok(Self {
+            state: Arc::clone(state),
+            session_name: session_name.to_string(),
+            active: true,
+        })
+    }
 
-    match register_initialized_session_tab(state, session_name, tab)? {
-        SessionTabRegistration::Registered => Ok(OpenTargetRegistration::Registered),
-        SessionTabRegistration::AlreadyTracked => Ok(OpenTargetRegistration::AlreadyTracked),
+    fn register(mut self, tab: SessionTab) -> Result<SessionTabRegistration, ErrorCode> {
+        let result = register_reserved_session_tab(&self.state, &self.session_name, tab);
+        self.active = false;
+        result
+    }
+}
+
+impl Drop for OpenTabReservation {
+    fn drop(&mut self) {
+        if self.active {
+            release_session_tab_reservation(&self.state, &self.session_name);
+        }
+    }
+}
+
+async fn rollback_opened_target(
+    cdp: &cdpkit::CDP,
+    target_id: &str,
+    cdp_session_id: Option<String>,
+) -> Option<String> {
+    let mut errors = Vec::new();
+    if let Some(session_id) = cdp_session_id {
+        if let Err(error) = detach_unregistered_target_session(cdp, session_id).await {
+            errors.push(format!("detach failed: {error}"));
+        }
+    }
+    use cdpkit::target::methods::CloseTarget;
+    if let Err(error) = CloseTarget::new(target_id.to_string()).send(cdp).await {
+        errors.push(format!("close target failed: {error}"));
+    }
+    (!errors.is_empty()).then(|| errors.join("; "))
+}
+
+fn append_cleanup_error(message: String, cleanup_error: Option<String>) -> String {
+    match cleanup_error {
+        Some(error) => format!("{message}; rollback also failed: {error}"),
+        None => message,
     }
 }
 
 /// Validate and extract open command parameters from the request.
 fn validate_open_params(params: &serde_json::Value) -> Result<OpenParams, Response> {
-    let url = params
-        .get("url")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| {
-            Response::error_detail(
-                ErrorCode::InvalidArgument,
-                "missing required parameter: url".into(),
-                None,
-            )
-        })?
-        .to_string();
+    let url = params.get("url").and_then(|v| v.as_str()).ok_or_else(|| {
+        Response::error_detail(
+            ErrorCode::InvalidArgument,
+            "missing required parameter: url".into(),
+            None,
+        )
+    })?;
+    let url = validate_and_normalize_url(url)?;
 
     let session_name = session_name_param(params)?.to_string();
 
     Ok(OpenParams { url, session_name })
-}
-
-/// Check whether the session has reached its tab limit.
-fn check_tab_limit(
-    state: &Arc<DaemonState>,
-    session_name: &str,
-    max: usize,
-) -> Result<(), Response> {
-    if max == 0 {
-        return Ok(());
-    }
-    if let Some(session) = state.sessions.get(session_name) {
-        if !session.can_add_tab(max) {
-            return Err(Response::error_detail(
-                ErrorCode::TabLimitExceeded,
-                format!(
-                    "session '{}' already has {} tabs (limit: {})",
-                    session_name,
-                    session.tab_count(),
-                    max
-                ),
-                None,
-            ));
-        }
-    }
-    Ok(())
-}
-
-/// Validate that a URL does not use a dangerous scheme.
-fn validate_url_scheme(url: &str) -> Result<(), Response> {
-    let lower = url.to_lowercase();
-    if lower.starts_with("javascript:") || lower.starts_with("data:text/html") {
-        return Err(Response::error_detail(
-            ErrorCode::InvalidArgument,
-            format!(
-                "URL scheme not allowed: {}",
-                &url[..url.find(':').unwrap_or(url.len())]
-            ),
-            Some("use http:// or https:// URLs".into()),
-        ));
-    }
-    Ok(())
 }
 
 /// Handle the canonical `open` command.
@@ -117,16 +114,11 @@ pub async fn handle_open(req: &Request, state: &Arc<DaemonState>) -> Response {
         Err(resp) => return resp,
     };
 
-    // Validate URL scheme
-    if let Err(resp) = validate_url_scheme(&params.url) {
-        return resp;
-    }
-
-    // Check tab limit
     let max_tabs = state.config.limits.max_tabs_per_session;
-    if let Err(resp) = check_tab_limit(state, &params.session_name, max_tabs) {
-        return resp;
-    }
+    let reservation = match OpenTabReservation::acquire(state, &params.session_name, max_tabs) {
+        Ok(reservation) => reservation,
+        Err(response) => return response,
+    };
 
     // Get session (must exist -- connect should have been called first)
     let session = match state.sessions.get(&params.session_name) {
@@ -190,42 +182,47 @@ pub async fn handle_open(req: &Request, state: &Arc<DaemonState>) -> Response {
     let session_id = match attach_result {
         Ok(r) => r.session_id,
         Err(e) => {
+            let cleanup_error = rollback_opened_target(cdp.as_ref(), &target_id, None).await;
             return Response::error_detail(
                 ErrorCode::DaemonError,
-                format!("failed to attach to new tab: {e}"),
-                None,
-            )
-        }
-    };
-
-    if let Err(error) = enable_session_tab_domains(cdp.as_ref(), &session_id).await {
-        let _ = detach_unregistered_target_session(cdp.as_ref(), session_id).await;
-        return Response::error_detail(
-            ErrorCode::DaemonError,
-            format!("failed to initialize new tab session: {error}"),
-            None,
-        );
-    }
-
-    let registration = match register_opened_target_if_untracked(
-        state,
-        &params.session_name,
-        target_id.clone(),
-        params.url.clone(),
-        session_id.clone(),
-    ) {
-        Ok(registration) => registration,
-        Err(code) => {
-            let _ = detach_unregistered_target_session(cdp.as_ref(), session_id).await;
-            return Response::error_detail(
-                code,
-                format!("failed to register opened target '{}'", target_id),
+                append_cleanup_error(format!("failed to attach to new tab: {e}"), cleanup_error),
                 None,
             );
         }
     };
 
-    if registration == OpenTargetRegistration::AlreadyTracked {
+    if let Err(error) = enable_session_tab_domains(cdp.as_ref(), &session_id).await {
+        let cleanup_error =
+            rollback_opened_target(cdp.as_ref(), &target_id, Some(session_id)).await;
+        return Response::error_detail(
+            ErrorCode::DaemonError,
+            append_cleanup_error(
+                format!("failed to initialize new tab session: {error}"),
+                cleanup_error,
+            ),
+            None,
+        );
+    }
+
+    let mut tab = SessionTab::new_owned(target_id.clone(), params.url.clone(), String::new());
+    tab.cdp_session_id = session_id.clone();
+    let registration = match reservation.register(tab) {
+        Ok(registration) => registration,
+        Err(code) => {
+            let cleanup_error =
+                rollback_opened_target(cdp.as_ref(), &target_id, Some(session_id)).await;
+            return Response::error_detail(
+                code,
+                append_cleanup_error(
+                    format!("failed to register opened target '{}'", target_id),
+                    cleanup_error,
+                ),
+                None,
+            );
+        }
+    };
+
+    if registration == SessionTabRegistration::AlreadyTracked {
         let _ = detach_unregistered_target_session(cdp.as_ref(), session_id).await;
     } else {
         spawn_session_tab_subscriptions(
@@ -248,58 +245,9 @@ pub async fn handle_open(req: &Request, state: &Arc<DaemonState>) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::daemon::session::{Session, SessionTab};
+    use crate::daemon::session::Session;
     use crate::daemon::state::DaemonState;
     use std::sync::Arc;
-
-    #[test]
-    fn register_opened_target_adds_owned_tab_when_untracked() {
-        let state = Arc::new(DaemonState::new());
-        let session = Session::new_default("localhost:9222".into());
-        state.sessions.insert("default".into(), session);
-
-        let result = register_opened_target_if_untracked(
-            &state,
-            "default",
-            "T1".into(),
-            "https://a.test".into(),
-            "S1".into(),
-        )
-        .unwrap();
-
-        assert_eq!(result, OpenTargetRegistration::Registered);
-        let session = state.sessions.get("default").unwrap();
-        let tab = session.tabs.get("T1").unwrap();
-        assert_eq!(tab.target_id, "T1");
-        assert_eq!(tab.cdp_session_id, "S1");
-        assert_eq!(tab.ownership, crate::daemon::session::TabOwnership::Owned);
-    }
-
-    #[test]
-    fn register_opened_target_keeps_watcher_registered_tab() {
-        let state = Arc::new(DaemonState::new());
-        let mut session = Session::new_default("localhost:9222".into());
-        let mut tab = SessionTab::new_owned("T1".into(), "https://a.test".into(), String::new());
-        tab.cdp_session_id = "WATCHER_SESSION".into();
-        session.tabs.insert("T1".into(), tab);
-        state.sessions.insert("default".into(), session);
-
-        let result = register_opened_target_if_untracked(
-            &state,
-            "default",
-            "T1".into(),
-            "https://a.test".into(),
-            "OPEN_SESSION".into(),
-        )
-        .unwrap();
-
-        assert_eq!(result, OpenTargetRegistration::AlreadyTracked);
-        let session = state.sessions.get("default").unwrap();
-        assert_eq!(
-            session.tabs.get("T1").unwrap().cdp_session_id,
-            "WATCHER_SESSION"
-        );
-    }
 
     #[test]
     fn validate_open_params_requires_url() {
@@ -326,63 +274,22 @@ mod tests {
     }
 
     #[test]
-    fn tab_limit_exceeded_check() {
+    fn concurrent_tab_reservations_enforce_limit_atomically() {
         let state = Arc::new(DaemonState::new());
-        let mut session = Session::new_default("localhost:9222".into());
-        for i in 0..5 {
-            session.add_tab(
-                format!("T{i}"),
-                format!("https://t{i}.com"),
-                format!("T{i}"),
-            );
-        }
-        state.sessions.insert("default".into(), session);
+        state.sessions.insert(
+            "default".into(),
+            Session::new_default("localhost:9222".into()),
+        );
 
-        let result = check_tab_limit(&state, "default", 5);
-        assert!(result.is_err());
-        let resp = result.unwrap_err();
-        let json = serde_json::to_value(&resp).unwrap();
+        let first = OpenTabReservation::acquire(&state, "default", 1).unwrap();
+        let second = OpenTabReservation::acquire(&state, "default", 1)
+            .err()
+            .expect("second reservation should exceed the limit");
+        let json = serde_json::to_value(second).unwrap();
         assert_eq!(json["error"]["code"], "TAB_LIMIT_EXCEEDED");
-        assert!(json["error"]["message"]
-            .as_str()
-            .unwrap()
-            .contains("5 tabs"));
-    }
 
-    #[test]
-    fn tab_limit_zero_means_unlimited() {
-        let state = Arc::new(DaemonState::new());
-        let mut session = Session::new_default("localhost:9222".into());
-        for i in 0..100 {
-            session.add_tab(
-                format!("T{i}"),
-                format!("https://t{i}.com"),
-                format!("T{i}"),
-            );
-        }
-        state.sessions.insert("default".into(), session);
-
-        let result = check_tab_limit(&state, "default", 0);
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn tab_limit_under_max_is_ok() {
-        let state = Arc::new(DaemonState::new());
-        let mut session = Session::new_default("localhost:9222".into());
-        session.add_tab("T1".into(), "https://t1.com".into(), "T1".into());
-        state.sessions.insert("default".into(), session);
-
-        let result = check_tab_limit(&state, "default", 5);
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn session_not_found_error() {
-        let state = Arc::new(DaemonState::new());
-        // No session inserted -- verify check_tab_limit still passes (session doesn't exist yet)
-        let result = check_tab_limit(&state, "nonexistent", 5);
-        assert!(result.is_ok()); // tab limit only checked if session exists
+        drop(first);
+        assert!(OpenTabReservation::acquire(&state, "default", 1).is_ok());
     }
 
     #[tokio::test]
@@ -481,26 +388,27 @@ mod tests {
 
     #[test]
     fn validate_url_scheme_allows_http() {
-        assert!(validate_url_scheme("https://example.com").is_ok());
-        assert!(validate_url_scheme("http://example.com").is_ok());
+        assert!(validate_and_normalize_url("https://example.com").is_ok());
+        assert!(validate_and_normalize_url("http://example.com").is_ok());
     }
 
     #[test]
     fn validate_url_scheme_blocks_javascript() {
-        let err = validate_url_scheme("javascript:alert(1)").unwrap_err();
+        let err = validate_and_normalize_url("javascript:alert(1)").unwrap_err();
         let json = serde_json::to_value(&err).unwrap();
         assert_eq!(json["error"]["code"], "INVALID_ARGUMENT");
     }
 
     #[test]
     fn validate_url_scheme_blocks_javascript_case_insensitive() {
-        assert!(validate_url_scheme("JavaScript:alert(1)").is_err());
-        assert!(validate_url_scheme("JAVASCRIPT:void(0)").is_err());
+        assert!(validate_and_normalize_url("JavaScript:alert(1)").is_err());
+        assert!(validate_and_normalize_url("JAVASCRIPT:void(0)").is_err());
     }
 
     #[test]
     fn validate_url_scheme_blocks_data_text_html() {
-        let err = validate_url_scheme("data:text/html,<script>alert(1)</script>").unwrap_err();
+        let err =
+            validate_and_normalize_url("data:text/html,<script>alert(1)</script>").unwrap_err();
         let json = serde_json::to_value(&err).unwrap();
         assert_eq!(json["error"]["code"], "INVALID_ARGUMENT");
     }

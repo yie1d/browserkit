@@ -106,6 +106,60 @@ pub fn register_session_tab(
     }
 }
 
+pub fn reserve_session_tab(
+    state: &DaemonState,
+    session_name: &str,
+    max: usize,
+) -> Result<(), ErrorCode> {
+    let _registration_guard = state.target_registration_lock.lock();
+    let mut session = state
+        .sessions
+        .get_mut(session_name)
+        .ok_or(ErrorCode::SessionNotFound)?;
+    if !session.can_add_tab(max) {
+        return Err(ErrorCode::TabLimitExceeded);
+    }
+    session.pending_tab_reservations = session.pending_tab_reservations.saturating_add(1);
+    Ok(())
+}
+
+pub fn release_session_tab_reservation(state: &DaemonState, session_name: &str) {
+    let _registration_guard = state.target_registration_lock.lock();
+    if let Some(mut session) = state.sessions.get_mut(session_name) {
+        session.pending_tab_reservations = session.pending_tab_reservations.saturating_sub(1);
+    }
+}
+
+pub fn register_reserved_session_tab(
+    state: &DaemonState,
+    session_name: &str,
+    tab: SessionTab,
+) -> Result<SessionTabRegistration, ErrorCode> {
+    let _registration_guard = state.target_registration_lock.lock();
+    let owner = find_target_owner(state, &tab.target_id);
+    let mut session = state
+        .sessions
+        .get_mut(session_name)
+        .ok_or(ErrorCode::SessionNotFound)?;
+    session.pending_tab_reservations = session.pending_tab_reservations.saturating_sub(1);
+
+    if let Some(owner) = owner {
+        return if owner == session_name {
+            Ok(SessionTabRegistration::AlreadyTracked)
+        } else {
+            Err(ErrorCode::TargetAlreadyAttached)
+        };
+    }
+
+    let target_id = tab.target_id.clone();
+    session.tabs.insert(target_id.clone(), tab);
+    session.active_target = Some(target_id);
+    session.touch();
+    drop(session);
+    state.request_persist();
+    Ok(SessionTabRegistration::Registered)
+}
+
 pub fn register_initialized_session_tab(
     state: &DaemonState,
     session_name: &str,
@@ -186,6 +240,7 @@ pub fn spawn_session_tab_subscriptions(
 }
 
 pub fn remove_session_tab(state: &DaemonState, target_id: &str) -> Option<(String, SessionTab)> {
+    let _registration_guard = state.target_registration_lock.lock();
     let session_name = find_target_owner(state, target_id)?;
     let mut session = state.sessions.get_mut(&session_name)?;
     let removed = session.tabs.remove(target_id)?;
@@ -338,7 +393,7 @@ async fn run_target_watcher(
                     debug!(host = %host, "target watcher: destroyed stream ended");
                     break;
                 };
-                remove_session_tab(&state, &event.target_id);
+                handle_target_destroyed_event(&state, &event.target_id).await;
             }
             event = info_changed_stream.next() => {
                 let Some(event) = event else {
@@ -346,18 +401,45 @@ async fn run_target_watcher(
                     break;
                 };
                 let target_info = event.target_info;
-                update_session_tab_info(
+                handle_target_info_changed_event(
                     &state,
                     &target_info.target_id,
                     &target_info.url,
                     &target_info.title,
-                );
+                ).await;
             }
         }
     }
 
     cancel.cancel();
     info!(host = %host, "target watcher: ended");
+}
+
+async fn handle_target_destroyed_event(state: &Arc<DaemonState>, target_id: &str) {
+    let Some(session_name) = find_target_owner(state, target_id) else {
+        return;
+    };
+    let lifecycle = state.session_lifecycle_lock(&session_name);
+    let _lifecycle_guard = lifecycle.read().await;
+    if find_target_owner(state, target_id).as_deref() == Some(session_name.as_str()) {
+        remove_session_tab(state, target_id);
+    }
+}
+
+async fn handle_target_info_changed_event(
+    state: &Arc<DaemonState>,
+    target_id: &str,
+    url: &str,
+    title: &str,
+) {
+    let Some(session_name) = find_target_owner(state, target_id) else {
+        return;
+    };
+    let lifecycle = state.session_lifecycle_lock(&session_name);
+    let _lifecycle_guard = lifecycle.read().await;
+    if find_target_owner(state, target_id).as_deref() == Some(session_name.as_str()) {
+        update_session_tab_info(state, target_id, url, title);
+    }
 }
 
 async fn handle_target_created_event(
@@ -386,6 +468,19 @@ async fn handle_target_created_event(
             return;
         }
     };
+    let lifecycle = state.session_lifecycle_lock(&session_name);
+    let _lifecycle_guard = lifecycle.read().await;
+    if session_for_created_target(
+        state,
+        host,
+        target_info.opener_id.as_deref(),
+        target_info.browser_context_id.as_deref(),
+    )
+    .as_deref()
+        != Some(session_name.as_str())
+    {
+        return;
+    }
 
     if find_target_owner(state, &target_info.target_id).is_some() {
         return;
@@ -478,8 +573,9 @@ mod tests {
 
     use super::{
         emit_session_tab_created, ensure_target_watcher_token, find_target_owner,
-        is_trackable_page_target, register_initialized_session_tab, register_session_tab,
-        remove_session_tab, session_for_created_target, subscribe_target_events,
+        handle_target_destroyed_event, is_trackable_page_target, register_initialized_session_tab,
+        register_reserved_session_tab, register_session_tab, remove_session_tab,
+        reserve_session_tab, session_for_created_target, subscribe_target_events,
         update_session_tab_info, SessionTabRegistration, TargetLifecycleEvent,
     };
     use std::sync::{Arc, Barrier};
@@ -584,6 +680,36 @@ mod tests {
     }
 
     #[test]
+    fn reserved_registration_consumes_capacity_and_registers_tab() {
+        let state = DaemonState::new();
+        state.sessions.insert(
+            "default".into(),
+            Session::new_default("localhost:9222".into()),
+        );
+        reserve_session_tab(&state, "default", 1).unwrap();
+        assert_eq!(
+            state
+                .sessions
+                .get("default")
+                .unwrap()
+                .pending_tab_reservations,
+            1
+        );
+
+        let outcome = register_reserved_session_tab(
+            &state,
+            "default",
+            SessionTab::new_owned("T1".into(), "https://a.test".into(), "A".into()),
+        )
+        .unwrap();
+
+        assert_eq!(outcome, SessionTabRegistration::Registered);
+        let session = state.sessions.get("default").unwrap();
+        assert_eq!(session.pending_tab_reservations, 0);
+        assert!(session.tabs.contains_key("T1"));
+    }
+
+    #[test]
     fn destroyed_target_is_removed_from_owning_session() {
         let state = DaemonState::new();
         let mut session = Session::new_default("localhost:9222".into());
@@ -592,6 +718,36 @@ mod tests {
 
         let removed = remove_session_tab(&state, "T1").unwrap();
         assert_eq!(removed.0, "default");
+        assert!(state.sessions.get("default").unwrap().tabs.is_empty());
+    }
+
+    #[test]
+    fn ownership_removal_waits_for_registration_lock() {
+        let state = Arc::new(DaemonState::new());
+        let mut session = Session::new_default("localhost:9222".into());
+        session.add_tab("T1".into(), "https://a.test".into(), "A".into());
+        state.sessions.insert("default".into(), session);
+
+        let registration_guard = state.target_registration_lock.lock();
+        let (result_tx, result_rx) = std::sync::mpsc::channel();
+        let remove_state = Arc::clone(&state);
+        let remover = thread::spawn(move || {
+            let removed = remove_session_tab(&remove_state, "T1");
+            result_tx.send(removed.is_some()).unwrap();
+        });
+
+        assert!(
+            result_rx
+                .recv_timeout(std::time::Duration::from_millis(100))
+                .is_err(),
+            "ownership removal must not run concurrently with registration"
+        );
+        drop(registration_guard);
+
+        assert!(result_rx
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .unwrap());
+        remover.join().unwrap();
         assert!(state.sessions.get("default").unwrap().tabs.is_empty());
     }
 
@@ -723,6 +879,34 @@ mod tests {
             .get("localhost:9222")
             .unwrap()
             .is_cancelled());
+    }
+
+    #[tokio::test]
+    async fn watcher_mutation_waits_for_exclusive_session_lifecycle() {
+        let state = Arc::new(DaemonState::new());
+        let mut session = Session::new_default("localhost:9222".into());
+        session.add_tab("T1".into(), "https://a.test".into(), "A".into());
+        state.sessions.insert("default".into(), session);
+
+        let lifecycle = state.session_lifecycle_lock("default");
+        let exclusive_guard = lifecycle.write().await;
+        let watcher_state = Arc::clone(&state);
+        let watcher = tokio::spawn(async move {
+            handle_target_destroyed_event(&watcher_state, "T1").await;
+        });
+
+        tokio::task::yield_now().await;
+        assert!(state
+            .sessions
+            .get("default")
+            .unwrap()
+            .tabs
+            .contains_key("T1"));
+        assert!(!watcher.is_finished());
+
+        drop(exclusive_guard);
+        watcher.await.unwrap();
+        assert!(state.sessions.get("default").unwrap().tabs.is_empty());
     }
 
     #[test]

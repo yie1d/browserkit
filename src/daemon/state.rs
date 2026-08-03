@@ -6,7 +6,7 @@ use std::sync::Arc;
 use cdpkit::CDP;
 use dashmap::DashMap;
 use parking_lot::Mutex;
-use tokio::sync::Mutex as AsyncMutex;
+use tokio::sync::{Mutex as AsyncMutex, RwLock as AsyncRwLock};
 use tokio_util::sync::CancellationToken;
 
 use crate::config::Config;
@@ -45,6 +45,8 @@ pub struct DaemonState {
     /// Serializes session creation and reconnect so concurrent clients cannot
     /// create duplicate BrowserContexts for the same session name.
     pub session_bind_lock: Arc<AsyncMutex<()>>,
+    /// Serializes operations and idle cleanup for each session.
+    pub session_lifecycle_locks: DashMap<String, Arc<AsyncRwLock<()>>>,
     /// Sender for the debounced persistence task.
     /// Call `request_persist(&self.persist_tx)` after any state mutation.
     pub persist_tx: PersistTx,
@@ -68,6 +70,8 @@ pub struct DaemonState {
     pub persist_disabled: AtomicBool,
     /// Human-readable reason persistence was disabled for this daemon run.
     pub persist_disabled_reason: Mutex<Option<String>>,
+    /// Most recent recoverable runtime persistence error. Cleared after a successful write.
+    pub persist_last_error: Mutex<Option<String>>,
     /// Report from a v2 -> v3 startup migration, retained for status and future persists.
     pub migration_report: Mutex<Option<MigrationReport>>,
     /// Sessions: name -> Session.
@@ -95,6 +99,7 @@ impl DaemonState {
                 .as_secs(),
             browser_launch_lock: Arc::new(AsyncMutex::new(())),
             session_bind_lock: Arc::new(AsyncMutex::new(())),
+            session_lifecycle_locks: DashMap::new(),
             persist_tx,
             _persist_rx_guard: Some(persist_rx),
             target_watchers: DashMap::new(),
@@ -104,6 +109,7 @@ impl DaemonState {
             dialog_state: DialogState::new(),
             persist_disabled: AtomicBool::new(false),
             persist_disabled_reason: Mutex::new(None),
+            persist_last_error: Mutex::new(None),
             migration_report: Mutex::new(None),
             sessions: DashMap::new(),
         }
@@ -130,10 +136,19 @@ impl DaemonState {
         self.request_count.fetch_add(1, Ordering::Relaxed) + 1
     }
 
+    pub fn session_lifecycle_lock(&self, session_name: &str) -> Arc<AsyncRwLock<()>> {
+        Arc::clone(
+            self.session_lifecycle_locks
+                .entry(session_name.to_string())
+                .or_insert_with(|| Arc::new(AsyncRwLock::new(())))
+                .value(),
+        )
+    }
+
     /// Called when a browser WebSocket disconnects (Chrome crash, shutdown, or network error).
     /// Removes browser from DashMap, cancels target watchers, and marks all sessions
     /// using that browser as disconnected.
-    pub fn handle_browser_disconnect(&self, host: &str, disconnected_cdp: &Arc<CDP>) {
+    pub async fn handle_browser_disconnect(&self, host: &str, disconnected_cdp: &Arc<CDP>) {
         use dashmap::mapref::entry::Entry;
 
         let removed_current = match self.browsers.entry(host.to_string()) {
@@ -148,33 +163,38 @@ impl DaemonState {
             return;
         }
 
-        self.disconnect_browser_runtime_state(host);
+        self.disconnect_browser_runtime_state(host).await;
         self.request_persist();
         tracing::warn!(host, "browser disconnected, sessions marked");
     }
 
-    fn disconnect_browser_runtime_state(&self, host: &str) {
+    async fn disconnect_browser_runtime_state(&self, host: &str) {
         if let Some((_, token)) = self.target_watchers.remove(host) {
             token.cancel();
         }
-        self.disconnect_sessions_for_host(host);
+        self.disconnect_sessions_for_host(host).await;
     }
 
-    pub(crate) fn disconnect_sessions_for_host(&self, host: &str) {
+    pub(crate) async fn disconnect_sessions_for_host(&self, host: &str) {
         let session_names: Vec<String> = self
             .sessions
-            .iter_mut()
-            .filter_map(|mut entry| {
-                if entry.value().browser_host == host {
-                    entry.value_mut().mark_disconnected();
-                    Some(entry.key().clone())
-                } else {
-                    None
-                }
-            })
+            .iter()
+            .filter(|entry| entry.value().browser_host == host)
+            .map(|entry| entry.key().clone())
             .collect();
 
         for session_name in session_names {
+            let lifecycle = self.session_lifecycle_lock(&session_name);
+            let _lifecycle_guard = lifecycle.write().await;
+            let Some(mut session) = self.sessions.get_mut(&session_name) else {
+                continue;
+            };
+            if session.browser_host != host {
+                continue;
+            }
+            session.mark_disconnected();
+            drop(session);
+
             let console_keys: Vec<_> = self
                 .console_subscription_tokens
                 .iter()
@@ -240,8 +260,8 @@ mod tests {
         assert!(state.started_at > 0);
     }
 
-    #[test]
-    fn cleanup_sessions_on_browser_disconnect() {
+    #[tokio::test]
+    async fn cleanup_sessions_on_browser_disconnect() {
         use crate::daemon::session::Session;
 
         let state = DaemonState::new();
@@ -260,7 +280,9 @@ mod tests {
             .target_watchers
             .insert("localhost:9222".into(), token.clone());
 
-        state.disconnect_browser_runtime_state("localhost:9222");
+        state
+            .disconnect_browser_runtime_state("localhost:9222")
+            .await;
 
         // Browser should be removed (it wasn't there, so just verify no panic)
         assert!(!state.browsers.contains_key("localhost:9222"));
@@ -272,8 +294,8 @@ mod tests {
         assert!(s.disconnected);
     }
 
-    #[test]
-    fn cleanup_sessions_unrelated_session_not_affected() {
+    #[tokio::test]
+    async fn cleanup_sessions_unrelated_session_not_affected() {
         use crate::daemon::session::Session;
 
         let state = DaemonState::new();
@@ -282,7 +304,9 @@ mod tests {
         state.sessions.insert("other".into(), session);
 
         // Disconnect a different host
-        state.disconnect_browser_runtime_state("localhost:9222");
+        state
+            .disconnect_browser_runtime_state("localhost:9222")
+            .await;
 
         // The unrelated session should NOT be marked disconnected
         let s = state.sessions.get("other").unwrap();
@@ -298,8 +322,8 @@ mod tests {
         assert!(!same_connection(&replacement, &original));
     }
 
-    #[test]
-    fn disconnect_sessions_for_host_cancels_live_subscription_handles() {
+    #[tokio::test]
+    async fn disconnect_sessions_for_host_cancels_live_subscription_handles() {
         use crate::daemon::dialog::PendingDialog;
         use crate::daemon::session::Session;
 
@@ -329,12 +353,39 @@ mod tests {
             },
         );
 
-        state.disconnect_sessions_for_host("localhost:9222");
+        state.disconnect_sessions_for_host("localhost:9222").await;
 
         assert!(state.sessions.get("default").unwrap().disconnected);
         assert!(console_token.is_cancelled());
         assert!(dialog_token.is_cancelled());
         assert!(state.console_subscription_tokens.is_empty());
         assert!(state.dialog_state.get_pending("default", "T1").is_none());
+    }
+
+    #[tokio::test]
+    async fn disconnect_sessions_waits_for_exclusive_lifecycle() {
+        use crate::daemon::session::Session;
+
+        let state = Arc::new(DaemonState::new());
+        state.sessions.insert(
+            "default".into(),
+            Session::new_default("localhost:9222".into()),
+        );
+        let lifecycle = state.session_lifecycle_lock("default");
+        let active_operation = lifecycle.read().await;
+        let disconnect_state = Arc::clone(&state);
+        let disconnect = tokio::spawn(async move {
+            disconnect_state
+                .disconnect_sessions_for_host("localhost:9222")
+                .await;
+        });
+
+        tokio::task::yield_now().await;
+        assert!(!state.sessions.get("default").unwrap().disconnected);
+        assert!(!disconnect.is_finished());
+
+        drop(active_operation);
+        disconnect.await.unwrap();
+        assert!(state.sessions.get("default").unwrap().disconnected);
     }
 }

@@ -23,14 +23,6 @@ pub struct Config {
 pub struct DaemonConfig {
     /// Cleanup check interval in seconds.
     pub cleanup_interval_seconds: u64,
-    /// Custom Chrome executable path (overrides auto-discovery).
-    pub chrome_path: Option<String>,
-    /// Whether to pass `--ignore-certificate-errors` and `--disable-web-security`
-    /// to Chrome. Defaults to `true` for backward compatibility.
-    pub disable_security: bool,
-    /// Whether to launch Chrome in headless mode.
-    /// Set to `false` to show the browser window. Defaults to `true`.
-    pub headless: bool,
 }
 
 /// Resource limits to prevent runaway usage.
@@ -62,9 +54,6 @@ impl Default for DaemonConfig {
     fn default() -> Self {
         Self {
             cleanup_interval_seconds: 60,
-            chrome_path: None,
-            disable_security: true,
-            headless: true,
         }
     }
 }
@@ -76,8 +65,13 @@ impl Default for DaemonConfig {
 pub fn load_config() -> Config {
     let path = config_file_path();
     match std::fs::read_to_string(&path) {
-        Ok(content) => match toml::from_str(&content) {
-            Ok(config) => {
+        Ok(content) => match toml::from_str::<Config>(&content) {
+            Ok(mut config) => {
+                if config.daemon.cleanup_interval_seconds == 0 {
+                    tracing::warn!("cleanup_interval_seconds must be positive; using 60");
+                    config.daemon.cleanup_interval_seconds =
+                        DaemonConfig::default().cleanup_interval_seconds;
+                }
                 tracing::info!(?path, "loaded config");
                 config
             }
@@ -103,9 +97,6 @@ mod tests {
     fn default_config_has_sensible_values() {
         let c = Config::default();
         assert_eq!(c.daemon.cleanup_interval_seconds, 60);
-        assert!(c.daemon.chrome_path.is_none());
-        assert!(c.daemon.disable_security); // default true for backward compat
-        assert!(c.daemon.headless); // default true
         assert_eq!(c.limits.js_timeout_seconds, 0);
         assert_eq!(c.limits.max_sessions, 10);
         assert_eq!(c.limits.max_tabs_per_session, 5);
@@ -117,9 +108,6 @@ mod tests {
         let toml = r#"
 [daemon]
 cleanup_interval_seconds = 120
-chrome_path = "/usr/bin/chromium"
-disable_security = false
-headless = false
 
 [limits]
 js_timeout_seconds = 30
@@ -129,9 +117,6 @@ session_timeout_hours = 96
 "#;
         let c: Config = toml::from_str(toml).unwrap();
         assert_eq!(c.daemon.cleanup_interval_seconds, 120);
-        assert_eq!(c.daemon.chrome_path.as_deref(), Some("/usr/bin/chromium"));
-        assert!(!c.daemon.disable_security);
-        assert!(!c.daemon.headless);
         assert_eq!(c.limits.js_timeout_seconds, 30);
         assert_eq!(c.limits.max_sessions, 12);
         assert_eq!(c.limits.max_tabs_per_session, 7);

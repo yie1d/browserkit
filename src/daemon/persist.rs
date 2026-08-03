@@ -119,6 +119,7 @@ impl PersistedSessionV3 {
             created_at: self.created_at,
             last_active: self.last_active,
             disconnected: self.disconnected,
+            pending_tab_reservations: 0,
         }
     }
 }
@@ -498,7 +499,7 @@ pub fn spawn_persist_task_with_rx(state: Arc<DaemonState>, mut rx: mpsc::Receive
                     Err(_) => break,
                 }
             }
-            do_persist(&state).await;
+            let _ = do_persist(&state).await;
         }
     });
 }
@@ -533,41 +534,88 @@ pub fn build_persisted_state(state: &DaemonState) -> PersistedStateV3 {
     }
 }
 
-async fn do_persist(state: &Arc<DaemonState>) {
+fn record_runtime_persist_result(
+    state: &DaemonState,
+    result: Result<(), String>,
+) -> Result<(), String> {
+    match result {
+        Ok(()) => {
+            state.persist_last_error.lock().take();
+            Ok(())
+        }
+        Err(error) => {
+            *state.persist_last_error.lock() = Some(error.clone());
+            warn!(error = %error, "runtime persistence failed; later changes will retry");
+            Err(error)
+        }
+    }
+}
+
+async fn do_persist(state: &Arc<DaemonState>) -> Result<(), String> {
     if state
         .persist_disabled
         .load(std::sync::atomic::Ordering::Relaxed)
     {
         tracing::debug!("persist skipped: state.json on disk is not writable by this binary");
-        return;
+        return Err(state
+            .persist_disabled_reason
+            .lock()
+            .clone()
+            .unwrap_or_else(|| "persistence is disabled".into()));
     }
 
     let persisted = build_persisted_state(state);
-    let _ = tokio::task::spawn_blocking(move || {
+    let result = tokio::task::spawn_blocking(move || -> Result<(), String> {
         let bk_dir = bk_home();
-        if let Err(error) = std::fs::create_dir_all(&bk_dir) {
-            warn!(error = %error, "failed to create ~/.bk directory for persistence");
-            return;
-        }
-
-        if let Err(error) = write_json_atomic(&state_file_path(), &persisted) {
-            warn!(error = %error, "failed to persist state.json");
-        }
+        std::fs::create_dir_all(&bk_dir)
+            .map_err(|error| format!("failed to create persistence directory: {error}"))?;
+        write_json_atomic(&state_file_path(), &persisted)
+            .map_err(|error| format!("failed to persist state.json: {error}"))
     })
-    .await;
+    .await
+    .map_err(|error| format!("persistence worker failed: {error}"))
+    .and_then(|result| result);
+
+    record_runtime_persist_result(state, result)
 }
 
 #[cfg(not(test))]
-pub(crate) async fn persist_now(state: &Arc<DaemonState>) {
-    do_persist(state).await;
+pub(crate) async fn persist_now(state: &Arc<DaemonState>) -> Result<(), String> {
+    do_persist(state).await
 }
 
 #[cfg(test)]
-pub(crate) async fn persist_now(_state: &Arc<DaemonState>) {}
+pub(crate) async fn persist_now(_state: &Arc<DaemonState>) -> Result<(), String> {
+    Ok(())
+}
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn runtime_failure_remains_retryable() {
+        let state = DaemonState::new();
+        let result = record_runtime_persist_result(&state, Err("disk full".into()));
+
+        assert_eq!(result.unwrap_err(), "disk full");
+        assert!(!state
+            .persist_disabled
+            .load(std::sync::atomic::Ordering::Relaxed));
+        assert_eq!(
+            state.persist_last_error.lock().as_deref(),
+            Some("disk full")
+        );
+    }
+
+    #[test]
+    fn successful_retry_clears_runtime_error() {
+        let state = DaemonState::new();
+        let _ = record_runtime_persist_result(&state, Err("disk full".into()));
+
+        assert!(record_runtime_persist_result(&state, Ok(())).is_ok());
+        assert!(state.persist_last_error.lock().is_none());
+    }
 
     #[test]
     fn persisted_v3_has_only_session_fields() {

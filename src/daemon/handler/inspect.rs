@@ -103,7 +103,7 @@ async fn do_find(req: &Request, state: &Arc<DaemonState>) -> Result<Response, Re
     info!(
         session = %ctx.session_name,
         target = %ctx.target_id,
-        selector = %selector,
+        selector_length = selector.len(),
         count = elements.len(),
         "find"
     );
@@ -159,7 +159,7 @@ async fn do_search(req: &Request, state: &Arc<DaemonState>) -> Result<Response, 
     info!(
         session = %ctx.session_name,
         target = %ctx.target_id,
-        text = %text,
+        query_length = text.len(),
         matches = matches.len(),
         "search"
     );
@@ -185,7 +185,7 @@ async fn do_html(req: &Request, state: &Arc<DaemonState>) -> Result<Response, Re
     info!(
         session = %ctx.session_name,
         target = %ctx.target_id,
-        selector = ?selector,
+        scoped = selector.is_some(),
         "html captured"
     );
 
