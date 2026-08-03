@@ -8,7 +8,7 @@
 bk CLI / TCP client  --(newline-JSON over TCP)-->  browserkit daemon/runtime  --(cdpkit typed CDP)-->  Chrome
 ```
 
-daemon 常驻后台,维持持久 CDP 连接,状态持久化到 `~/.bk/`,重启时恢复(重连浏览器、为每个 tab 重新 attach session)。
+daemon 常驻后台,维持持久 CDP 连接,状态持久化到 `~/.bk/`。重启时先恢复 session 元数据为 disconnected;当前版本不会启动 Chrome,用户浏览器需由 `bk connect` 重新发现并绑定。仅历史状态中的 managed browser 记录保留兼容性重连。
 
 ## 源码布局（`src/`）
 

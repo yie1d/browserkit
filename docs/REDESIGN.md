@@ -81,8 +81,10 @@ Runtime state is stored in schema v3 at `~/.bk/state.json`. It includes browser
 metadata, sessions, target ownership, active targets, timestamps, disconnect
 state, and optional migration metadata.
 
-Writes are atomic and debounced. Unsupported or corrupt state disables writes
-with a visible reason rather than silently overwriting preserved data.
+Writes are atomic and debounced. Recoverable runtime I/O failures remain
+retryable and appear in `persistence.last_error` until a successful write.
+Unsupported or corrupt state disables writes with a visible reason rather than
+silently overwriting preserved data.
 
 Schema v2 workspace state is backed up before a one-way migration to sessions.
 The runtime never writes workspace fields to schema v3.
@@ -101,9 +103,12 @@ The runtime never writes workspace fields to schema v3.
 
 ## Security Boundary
 
-The daemon listens locally and authenticates requests with its token file.
-Navigation, file upload, downloads, and raw CDP remain explicit commands.
-Page content is untrusted input and must not be interpreted as runtime policy.
+The daemon listens on loopback and authenticates every request with the token
+stored at `~/.bk/daemon.token`. Navigation allows HTTP(S) on every host,
+canonical local/UNC `file:` URLs, and `about:blank`; active-content, browser-
+internal, and unknown schemes are rejected. File upload, downloads, and raw CDP
+remain explicit commands. Page content is untrusted input and must not be
+interpreted as runtime policy.
 
 browserkit prefers attaching to the user's existing Chrome. It does not
 implicitly launch a disposable browser during normal agent commands.

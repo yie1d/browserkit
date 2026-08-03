@@ -346,6 +346,15 @@ bk tabs                             # List all tabs in session
 to the browser's default context. Use `bk --session <name> open <url>` for an
 isolated session.
 
+`open` and URL navigation accept `http:` and `https:` for every host, including
+localhost, loopback addresses, and private networks. They also accept canonical
+local and UNC file URLs such as `file:///C:/reports/result.html` and
+`file://server/share/result.html`, plus `about:blank`. Active-content, browser-
+internal, and unknown schemes such as `javascript:`, `data:`, `chrome:`,
+`chrome-extension:`, and `devtools:` are rejected. This policy controls which
+URLs browserkit sends to Chrome; Chrome's own file-access and cross-origin
+restrictions still apply.
+
 ## Global Options
 
 | Option | Description |
@@ -386,7 +395,7 @@ cleanup_interval_seconds = 60    # how often to check for expired sessions
 
 [limits]
 max_sessions = 10                # isolated sessions; default session does not count
-max_tabs_per_session = 5         # tabs per isolated session
+max_tabs_per_session = 5         # tabs per session, including default
 session_timeout_hours = 72       # idle session timeout
 js_timeout_seconds = 0           # 0 = no timeout
 ```
@@ -397,7 +406,7 @@ Historical workspace and managed-Chrome launch keys are ignored by current binar
 
 All daemon state is stored in a single schema v3 `~/.bk/state.json` file:
 
-- browser metadata for restorable managed browser connections;
+- historical managed-browser metadata retained for compatible restoration;
 - session metadata: mode, browser host, BrowserContext ID, tabs, active target, timestamps, disconnected flag;
 - per-tab ownership (`Owned` or `Attached`);
 - migration metadata when a v2 state file was converted.
@@ -406,10 +415,11 @@ The runtime never writes workspace fields to schema v3. Attached user tabs are d
 
 Additional runtime files in `~/.bk/`:
 - `daemon.port` — current daemon TCP port
+- `daemon.token` — per-daemon authentication token (owner-only mode on Unix; stored under the user profile on Windows)
 - `daemon.lock` — singleton lock (prevents multiple daemons)
 - `daemon.log.YYYY-MM-DD` — daily daemon logs; the seven newest files are retained
 
-Writes are atomic (tmp + rename) and debounced (500ms quiet window) to avoid blocking request handlers.
+Writes are atomic (tmp + rename) and debounced (500ms quiet window) to avoid blocking request handlers. Recoverable write failures remain retryable and are reported through `daemon.status.persistence.last_error`; corrupt or future-schema state disables writes to prevent destructive overwrite.
 
 ## Shell Completions
 

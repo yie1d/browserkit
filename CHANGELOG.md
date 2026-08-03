@@ -9,6 +9,25 @@
   remain available in Git history.
 - Release archives now include the browserkit license and a generated
   third-party license report.
+- Removed current managed-Chrome launch configuration and kept browser
+  discovery/connection focused on an already-running user browser.
+- Documented the canonical URL policy consistently across the README,
+  architecture, bundled skill, and command reference.
+
+### Security
+
+- Authenticated loopback daemon requests with a per-daemon token.
+- Restricted `open` and URL navigation to HTTP(S), canonical local/UNC `file:`
+  URLs, and `about:blank`, while preserving localhost, loopback, and private
+  network access.
+
+### Fixed
+
+- Serialized target ownership changes and destructive session lifecycle work
+  without blocking watcher-driven new-tab registration during ordinary actions.
+- Kept transient persistence failures retryable and exposed the latest error in
+  daemon status.
+- Limited daemon log pruning to dated `daemon.log.YYYY-MM-DD` files.
 
 ## [0.2.0] - 2026-07-20
 

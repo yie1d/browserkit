@@ -1,6 +1,11 @@
 # Browserkit Runtime Hardening Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+>
+> **Status:** Completed on 2026-08-03 in commit `2822a9e`. The checklist below is
+> retained as a historical execution record; unchecked boxes and planning-time
+> test names are not the current completion or command contract. Use `bk --help`,
+> `README.md`, and `docs/bk-browser/references/commands.md` for current behavior.
 
 **Goal:** Close the remaining target-lifecycle races, make transient persistence failures recoverable, and constrain log retention without changing the approved URL or CLI surface.
 

@@ -15,6 +15,9 @@ The v2 session-runtime migration is complete as of browserkit 0.2.0.
   snapshot budgets are available through canonical session commands.
 - CI, Rust 1.75 checks, release validation, and cross-platform artifacts are in
   place.
+- Daemon requests use a per-daemon token, navigation rejects active-content and
+  browser-internal schemes without blocking localhost or canonical `file:`
+  URLs, and lifecycle cleanup is serialized against active session work.
 
 ## Maintenance Priorities
 
@@ -27,5 +30,5 @@ The v2 session-runtime migration is complete as of browserkit 0.2.0.
 4. Add new transports or SDKs only when they reuse the same daemon/runtime
    contract rather than creating a parallel automation model.
 
-Completed implementation checklists remain available in Git history; they are
-not maintained as current documentation.
+Completed implementation records under `docs/superpowers/` are historical
+evidence; they are not maintained as the current command or behavior contract.

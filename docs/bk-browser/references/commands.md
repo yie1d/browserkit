@@ -74,6 +74,13 @@ Use these for normal browser work.
 `bk act click` reports `new_tab` when the action opens a new target. Use the
 reported target ID or run `bk tabs` before operating on the new page.
 
+`bk open` and `bk navigate <URL>` allow HTTP(S) URLs for public, localhost,
+loopback, and private-network hosts. They also allow canonical local/UNC file
+URLs (`file:///C:/path/file.html`, `file://server/share/file.html`) and
+`about:blank`. They reject active-content, browser-internal, and unknown schemes
+including `javascript:`, `data:`, `chrome:`, `chrome-extension:`, and `devtools:`.
+Chrome's own file-access and cross-origin restrictions still apply.
+
 `snapshot --max-tokens` uses `ceil(serialized UTF-8 JSON bytes / 4)` for the
 `elements + page_text` scope. Read `token_budget` and `truncation` in the
 response; this is deterministic but not a model-specific tokenizer. Omitting
@@ -154,6 +161,9 @@ document compatibility aliases for these surfaces:
 
 Schema v2 state is backed up before migration to schema v3. `bk status` reports
 migration metadata. If writes are disabled, `persistence.enabled` is false and
-`persistence.disabled_reason` explains the preserved-state error. Recoverable runtime write failures leave writes enabled and appear in `persistence.last_error` until a later write succeeds. Cleanup commands return structured `cleanup_errors` when
-cleanup is partial. Schema v3 state contains browser metadata, sessions, tab
-ownership, and optional migration metadata, but no workspace fields.
+`persistence.disabled_reason` explains the preserved-state error. Recoverable
+runtime write failures leave writes enabled and appear in
+`persistence.last_error` until a later write succeeds. Cleanup commands return
+structured `cleanup_errors` when cleanup is partial. Schema v3 state contains
+historical managed-browser metadata, sessions, tab ownership, and optional
+migration metadata, but no workspace fields.

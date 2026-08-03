@@ -140,6 +140,8 @@ restart Chrome or disable and re-enable remote debugging before retrying.
 
 - Attaching gives browserkit control over authenticated browser sessions,
   cookies, localStorage, and page content.
-- The daemon listens on localhost only and speaks JSON over local TCP.
+- The daemon listens on loopback only and authenticates each JSON request with
+  the per-daemon token in `~/.bk/daemon.token`. The standard `bk` client reads
+  and sends this token automatically.
 - Treat the daemon as privileged local automation. Do not expose its port to a
   network.

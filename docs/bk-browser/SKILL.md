@@ -114,6 +114,13 @@ bk connect
 
 daemon 在命令之间保持连接，无需重复 connect。
 
+`bk open` / `bk navigate` 支持所有 host 的 HTTP(S)（包括 localhost、
+`127.0.0.1`、IPv6 loopback 和局域网），也支持标准本地/UNC 文件 URL，
+例如 `file:///C:/path/report.html`、`file://server/share/report.html`，以及
+`about:blank`。不要尝试 `javascript:`、`data:`、`chrome:`、
+`chrome-extension:`、`devtools:` 或自定义 scheme；这些会被 runtime 拒绝。
+Chrome 自身的本地文件访问和跨域限制仍然生效。
+
 ---
 
 ## 常用命令速查
