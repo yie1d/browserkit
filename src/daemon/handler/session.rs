@@ -1077,7 +1077,6 @@ mod tests {
         let req = Request {
             cmd: "session.close".into(),
             params: json!({}),
-            token: None,
         };
         // No default session exists — should return ok with 0 tabs closed
         let resp = handle_session_close(&req, &state).await;
@@ -1109,7 +1108,6 @@ mod tests {
         let req = Request {
             cmd: "session.close".into(),
             params: json!({}),
-            token: None,
         };
         let resp = handle_session_close(&req, &state).await;
 
@@ -1126,7 +1124,6 @@ mod tests {
         let req = Request {
             cmd: "session.close".into(),
             params: json!({"session": "nonexistent"}),
-            token: None,
         };
         let resp = handle_session_close(&req, &state).await;
         let json = serde_json::to_value(&resp).unwrap();
@@ -1143,7 +1140,6 @@ mod tests {
         let req = Request {
             cmd: "session.list".into(),
             params: json!({}),
-            token: None,
         };
         let resp = handle_session_list(&req, &state).await;
         let json = serde_json::to_value(&resp).unwrap();
@@ -1159,7 +1155,6 @@ mod tests {
         let req = Request {
             cmd: "session.cookies.get".into(),
             params: json!({"session": "nonexistent"}),
-            token: None,
         };
         let resp = handle_session_cookies_get(&req, &state).await;
         let json = serde_json::to_value(&resp).unwrap();
@@ -1177,7 +1172,6 @@ mod tests {
         let req = Request {
             cmd: "session.cookies.get".into(),
             params: json!({}),
-            token: None,
         };
         let resp = handle_session_cookies_get(&req, &state).await;
         let json = serde_json::to_value(&resp).unwrap();
@@ -1194,7 +1188,6 @@ mod tests {
         let req = Request {
             cmd: "session.cookies.set".into(),
             params: json!({}),
-            token: None,
         };
         let resp = handle_session_cookies_set(&req, &state).await;
         let json = serde_json::to_value(&resp).unwrap();
@@ -1215,7 +1208,6 @@ mod tests {
         let req = Request {
             cmd: "session.cookies.set".into(),
             params: json!({"file": "/nonexistent/cookies.json"}),
-            token: None,
         };
         let resp = handle_session_cookies_set(&req, &state).await;
         let json = serde_json::to_value(&resp).unwrap();
@@ -1237,7 +1229,6 @@ mod tests {
         let req = Request {
             cmd: "session.cookies.set".into(),
             params: json!({"file": file_path.to_str().unwrap()}),
-            token: None,
         };
         let resp = handle_session_cookies_set(&req, &state).await;
         let json = serde_json::to_value(&resp).unwrap();
@@ -1262,7 +1253,6 @@ mod tests {
         let req = Request {
             cmd: "session.cookies.set".into(),
             params: json!({"file": file_path.to_str().unwrap()}),
-            token: None,
         };
         let resp = handle_session_cookies_set(&req, &state).await;
         let json = serde_json::to_value(&resp).unwrap();
@@ -1284,7 +1274,6 @@ mod tests {
         let req = Request {
             cmd: "session.cookies.set".into(),
             params: json!({"cookies": [{"bad_field": "x"}]}),
-            token: None,
         };
         let resp = handle_session_cookies_set(&req, &state).await;
         let json = serde_json::to_value(&resp).unwrap();
@@ -1302,7 +1291,6 @@ mod tests {
         let req = Request {
             cmd: "session.cookies.clear".into(),
             params: json!({"session": "nonexistent"}),
-            token: None,
         };
         let resp = handle_session_cookies_clear(&req, &state).await;
         let json = serde_json::to_value(&resp).unwrap();

@@ -99,7 +99,6 @@ mod tests {
                 port: 0,
                 pid: 0,
                 shutdown,
-                daemon_token: None,
             },
             rx,
         )

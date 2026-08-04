@@ -151,7 +151,6 @@ mod tests {
         let req = Request {
             cmd: "wait".into(),
             params: serde_json::json!({"selector": "#app", "session": "missing"}),
-            token: None,
         };
 
         let resp = handle_wait(&req, &state).await;
@@ -170,7 +169,6 @@ mod tests {
         let req = Request {
             cmd: "wait".into(),
             params: serde_json::json!({"selector": "#app"}),
-            token: None,
         };
 
         let resp = handle_wait(&req, &state).await;
@@ -188,7 +186,6 @@ mod tests {
         let req = Request {
             cmd: "wait".into(),
             params: serde_json::json!({"selector": "#app"}),
-            token: None,
         };
 
         let resp = handle_wait(&req, &state).await;

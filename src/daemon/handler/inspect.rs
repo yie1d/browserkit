@@ -352,7 +352,6 @@ mod tests {
             let req = Request {
                 cmd: cmd.into(),
                 params,
-                token: None,
             };
             let value = serde_json::to_value(handle_inspect(&req, &state).await).unwrap();
             assert_eq!(value["error"]["code"], "SESSION_NOT_FOUND", "{cmd}");
@@ -365,7 +364,6 @@ mod tests {
         let req = Request {
             cmd: "pdf".into(),
             params: json!({"url": "https://example.com"}),
-            token: None,
         };
 
         let value = serde_json::to_value(handle_inspect(&req, &state).await).unwrap();

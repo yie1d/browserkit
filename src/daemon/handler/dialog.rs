@@ -278,7 +278,6 @@ mod tests {
         let req = Request {
             cmd: "dialog.list".into(),
             params: json!({"session": "agent"}),
-            token: None,
         };
 
         let value = serde_json::to_value(handle_dialog_list(&req, &state).await).unwrap();
@@ -301,7 +300,6 @@ mod tests {
         let req = Request {
             cmd: "dialog.policy".into(),
             params: json!({"session": "agent", "policy": "accept"}),
-            token: None,
         };
 
         let value = serde_json::to_value(handle_dialog_policy(&req, &state).await).unwrap();
@@ -324,7 +322,6 @@ mod tests {
         let req = Request {
             cmd: "dialog.accept".into(),
             params: json!({"session": "agent"}),
-            token: None,
         };
 
         let value = serde_json::to_value(handle_dialog_accept(&req, &state).await).unwrap();
@@ -355,7 +352,6 @@ mod tests {
         let req = Request {
             cmd: "dialog.accept".into(),
             params: json!({"session": "agent"}),
-            token: None,
         };
 
         let value = serde_json::to_value(handle_dialog_accept(&req, &state).await).unwrap();
@@ -378,7 +374,6 @@ mod tests {
         let req = Request {
             cmd: "dialog.accept".into(),
             params: json!({"session": "agent", "target": "T1"}),
-            token: None,
         };
 
         let value = serde_json::to_value(handle_dialog_accept(&req, &state).await).unwrap();
@@ -404,7 +399,6 @@ mod tests {
         let req = Request {
             cmd: "dialog.accept".into(),
             params: json!({"session": "agent", "target": "T1"}),
-            token: None,
         };
 
         let value = serde_json::to_value(handle_dialog_accept(&req, &state).await).unwrap();
@@ -422,7 +416,6 @@ mod tests {
             let request = Request {
                 cmd: command.into(),
                 params: json!({"session": "missing", "target": false}),
-                token: None,
             };
             let response = match command {
                 "dialog.accept" => handle_dialog_accept(&request, &state).await,

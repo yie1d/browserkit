@@ -101,12 +101,14 @@ state migration layer.
 
 ## Security Boundary
 
-The daemon listens on loopback and authenticates every request with the token
-stored at `~/.bk/daemon.token`. Navigation allows HTTP(S) on every host,
-canonical local/UNC `file:` URLs, and `about:blank`; active-content, browser-
-internal, and unknown schemes are rejected. File upload, downloads, and raw CDP
-remain explicit commands. Page content is untrusted input and must not be
-interpreted as runtime policy.
+The daemon listens only on an ephemeral IPv4 loopback port. It has no request
+authentication layer or per-user transport isolation: any local process that
+can reach the port is trusted. It is intended for a single-user workstation,
+and its port must not be exposed or forwarded to a network. Navigation allows
+HTTP(S) on every host, canonical local/UNC `file:` URLs, and `about:blank`;
+active-content, browser-internal, and unknown schemes are rejected. File
+upload, downloads, and raw CDP remain explicit commands. Page content is
+untrusted input and must not be interpreted as runtime policy.
 
 browserkit only connects to an already-running Chrome or Edge CDP endpoint. It
 never launches, manages, or terminates the browser process.

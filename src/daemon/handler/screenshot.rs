@@ -220,7 +220,6 @@ mod tests {
         let req = Request {
             cmd: "screenshot".into(),
             params: serde_json::json!({"session": "nonexistent"}),
-            token: None,
         };
         let resp = handle_screenshot(&req, &state).await;
         let json = serde_json::to_value(&resp).unwrap();
@@ -238,7 +237,6 @@ mod tests {
         let req = Request {
             cmd: "screenshot".into(),
             params: serde_json::json!({}),
-            token: None,
         };
         let resp = handle_screenshot(&req, &state).await;
         let json = serde_json::to_value(&resp).unwrap();
@@ -255,7 +253,6 @@ mod tests {
         let req = Request {
             cmd: "screenshot".into(),
             params: serde_json::json!({}),
-            token: None,
         };
         let resp = handle_screenshot(&req, &state).await;
         let json = serde_json::to_value(&resp).unwrap();
@@ -273,7 +270,6 @@ mod tests {
         let req = Request {
             cmd: "screenshot".into(),
             params: serde_json::json!({"target": "NONEXISTENT"}),
-            token: None,
         };
         let resp = handle_screenshot(&req, &state).await;
         let json = serde_json::to_value(&resp).unwrap();
@@ -294,7 +290,6 @@ mod tests {
         let req = Request {
             cmd: "screenshot".into(),
             params: serde_json::json!({}),
-            token: None,
         };
         let resp = handle_screenshot(&req, &state).await;
         let json = serde_json::to_value(&resp).unwrap();

@@ -16,7 +16,9 @@
   snapshot budgets are available through canonical session commands.
 - CI, Rust 1.75 checks, release validation, and cross-platform artifacts are in
   place.
-- Daemon requests use a per-daemon token, navigation rejects active-content and
+- The daemon is an unauthenticated host-local boundary restricted to an
+  ephemeral IPv4 loopback port, with no per-user transport isolation.
+  Navigation rejects active-content and
   browser-internal schemes without blocking localhost or canonical `file:`
   URLs, and lifecycle cleanup is serialized against active session work.
 

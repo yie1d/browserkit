@@ -210,7 +210,6 @@ mod tests {
         let req = Request {
             cmd: "evaluate".into(),
             params: serde_json::json!({"expression": "1+1", "session": "nonexistent"}),
-            token: None,
         };
         let resp = handle_evaluate(&req, &state).await;
         let json = serde_json::to_value(&resp).unwrap();
@@ -228,7 +227,6 @@ mod tests {
         let req = Request {
             cmd: "evaluate".into(),
             params: serde_json::json!({"expression": "1+1"}),
-            token: None,
         };
         let resp = handle_evaluate(&req, &state).await;
         let json = serde_json::to_value(&resp).unwrap();
@@ -245,7 +243,6 @@ mod tests {
         let req = Request {
             cmd: "evaluate".into(),
             params: serde_json::json!({"expression": "1+1"}),
-            token: None,
         };
         let resp = handle_evaluate(&req, &state).await;
         let json = serde_json::to_value(&resp).unwrap();
@@ -263,7 +260,6 @@ mod tests {
         let req = Request {
             cmd: "evaluate".into(),
             params: serde_json::json!({"expression": "1+1", "target": "NONEXISTENT"}),
-            token: None,
         };
         let resp = handle_evaluate(&req, &state).await;
         let json = serde_json::to_value(&resp).unwrap();
@@ -284,7 +280,6 @@ mod tests {
         let req = Request {
             cmd: "evaluate".into(),
             params: serde_json::json!({"expression": "1+1"}),
-            token: None,
         };
         let resp = handle_evaluate(&req, &state).await;
         let json = serde_json::to_value(&resp).unwrap();

@@ -195,7 +195,6 @@ async fn cancel_download(cdp: &cdpkit::CDP, guid: &str, browser_context_id: Opti
 }
 
 struct DownloadObservation<'a> {
-    req: &'a Request,
     state: &'a Arc<DaemonState>,
     ctx: &'a super::common::SessionTargetContext,
     params: &'a DownloadParams,
@@ -209,7 +208,6 @@ async fn observe_download(
     mut progress_events: cdpkit::EventStream<cdpkit::browser::events::DownloadProgress>,
 ) -> Response {
     let DownloadObservation {
-        req,
         state,
         ctx,
         params,
@@ -230,7 +228,6 @@ async fn observe_download(
             "timeout": remaining.as_millis().min(u128::from(u64::MAX)) as u64,
             "no_state_diff": true,
         }),
-        token: req.token.clone(),
     };
     let trigger_response = super::act::handle_act_with_click_observation(
         &trigger,
@@ -393,7 +390,6 @@ pub async fn handle_download(req: &Request, state: &Arc<DaemonState>) -> Respons
 
     let response = observe_download(
         DownloadObservation {
-            req,
             state,
             ctx: &ctx,
             params: &params,
@@ -419,7 +415,6 @@ mod tests {
         Request {
             cmd: "download".into(),
             params,
-            token: None,
         }
     }
 

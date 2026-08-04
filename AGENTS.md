@@ -25,6 +25,7 @@ daemon 常驻后台,维持持久 CDP 连接,状态持久化到 `~/.bk/`。browse
 - **无迁移与兼容层**:项目尚未投入使用,只维护当前 canonical CLI、route、配置和 JSON 契约;不要新增旧输入兼容或状态迁移。
 - **并发**:DashMap / parking_lot;注意别持锁跨 await。
 - daemon 按需自启;端口存 `~/.bk/daemon.port`。
+- daemon 只监听 `127.0.0.1` 随机端口,不设 token/auth 或 per-user transport isolation;任何能访问该端口的本机进程都属于信任边界,仅适用于单用户工作站且不得暴露或转发端口。未来若支持非 loopback transport,必须作为新设计同时引入正式认证。
 - 输出格式固定为 JSON。
 
 ## 对底层 cdpkit 的依赖（重要）

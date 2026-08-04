@@ -4,7 +4,7 @@ A persistent browser runtime for AI agents that connects to an already-running C
 
 browserkit connects agents to Chrome or Edge through a long-running local daemon. It keeps browser connections, tabs, isolated sessions, and page state available across CLI invocations, so agents can observe and act without re-authenticating the browser. It does not launch, manage, or terminate the browser process.
 
-The `bk` CLI is the default client. Under the hood, it talks to the daemon over newline-delimited JSON on a local TCP socket.
+The `bk` CLI is the default client. Under the hood, it talks to the daemon over newline-delimited JSON on an ephemeral IPv4 loopback port. The daemon has no authentication layer or per-user transport isolation: any local process that can reach the port is trusted. It is intended for a single-user workstation and must never be exposed or forwarded to a network.
 
 ## Architecture
 
@@ -402,7 +402,6 @@ After a daemon restart, restored sessions are visible but disconnected until an 
 
 Additional runtime files in `~/.bk/`:
 - `daemon.port` — current daemon TCP port
-- `daemon.token` — per-daemon authentication token (owner-only mode on Unix; stored under the user profile on Windows)
 - `daemon.lock` — singleton lock (prevents multiple daemons)
 - `daemon.log.YYYY-MM-DD` — daily daemon logs; the seven newest files are retained
 

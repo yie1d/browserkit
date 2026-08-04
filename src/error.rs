@@ -124,7 +124,6 @@ pub enum ErrorCode {
     SelectorNotFound,
     SessionLimitExceeded,
     TabLimitExceeded,
-    Unauthorized,
 }
 
 impl ErrorCode {
@@ -170,9 +169,6 @@ impl ErrorCode {
                 "close unused sessions with 'bk session close --session <name>'"
             }
             Self::TabLimitExceeded => "close unused tabs with 'bk close --target <tid>'",
-            Self::Unauthorized => {
-                "daemon token mismatch; restart daemon or check ~/.bk/daemon.token"
-            }
         }
     }
 

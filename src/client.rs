@@ -76,7 +76,6 @@ impl DaemonClient {
             .send_request(&Request {
                 cmd: "ping".into(),
                 params: json!({}),
-                token: None,
             })
             .await?;
 
@@ -160,16 +159,8 @@ impl DaemonClient {
     }
 
     /// Send a request and receive a single response.
-    ///
-    /// Automatically injects the daemon authentication token from
-    /// `~/.bk/daemon.token` if the request does not already carry one.
     pub async fn send_request(&mut self, req: &Request) -> Result<Response, BkError> {
-        let mut req = req.clone();
-        if req.token.is_none() {
-            req.token = crate::daemon::token::read_token_file();
-        }
-
-        let json = serde_json::to_string(&req)
+        let json = serde_json::to_string(req)
             .map_err(|e| BkError::Other(format!("failed to serialize request: {}", e)))?;
 
         self.writer
@@ -202,7 +193,6 @@ pub fn build_request(cmd: &str, params: serde_json::Value) -> Request {
     Request {
         cmd: cmd.to_string(),
         params,
-        token: None,
     }
 }
 
@@ -279,7 +269,6 @@ mod tests {
             .send_request(&Request {
                 cmd: "ping".into(),
                 params: json!({}),
-                token: None,
             })
             .await
             .unwrap();

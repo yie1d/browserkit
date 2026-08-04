@@ -448,7 +448,6 @@ mod tests {
             port: 0,
             pid: 0,
             shutdown,
-            daemon_token: None,
         }
     }
 
@@ -470,7 +469,6 @@ mod tests {
         let request = Request {
             cmd: "tabs".into(),
             params: serde_json::json!({}),
-            token: None,
         };
 
         let _ = handle_request(&request, &state, &test_context()).await;
@@ -490,7 +488,6 @@ mod tests {
             let request = Request {
                 cmd: command.into(),
                 params: serde_json::json!({}),
-                token: None,
             };
             assert_eq!(request_session_name(&request), None, "{command}");
         }
@@ -503,7 +500,6 @@ mod tests {
         let request = Request {
             cmd: command.into(),
             params: serde_json::json!({}),
-            token: None,
         };
 
         let response = handle_request(&request, &state, &test_context()).await;
@@ -653,7 +649,6 @@ mod tests {
             let req = Request {
                 cmd: (*cmd).into(),
                 params: serde_json::Value::Object(params),
-                token: None,
             };
             assert!(validate_request_fields(&req).is_ok(), "{cmd}");
         }
@@ -661,7 +656,6 @@ mod tests {
         let act = Request {
             cmd: "act".into(),
             params: serde_json::json!({"kind": "click", "ref": 1}),
-            token: None,
         };
         assert!(validate_request_fields(&act).is_ok());
     }
@@ -674,7 +668,6 @@ mod tests {
             let req = Request {
                 cmd: "open".into(),
                 params,
-                token: None,
             };
             let value = serde_json::to_value(validate_request_fields(&req).unwrap_err()).unwrap();
             assert_eq!(value["error"]["code"], "INVALID_ARGUMENT", "{field}");
@@ -684,7 +677,6 @@ mod tests {
         let req = Request {
             cmd: "tabs".into(),
             params: serde_json::json!([]),
-            token: None,
         };
         assert!(validate_request_fields(&req).is_err());
     }
@@ -704,7 +696,6 @@ mod tests {
             let req = Request {
                 cmd: command.into(),
                 params: serde_json::json!({field: value}),
-                token: None,
             };
             let response = validate_request_fields(&req).unwrap_err();
             let json = serde_json::to_value(response).unwrap();
@@ -733,7 +724,6 @@ mod tests {
             let request = Request {
                 cmd: command.into(),
                 params: serde_json::json!({}),
-                token: None,
             };
             let value =
                 serde_json::to_value(handle_request(&request, &state, &test_context()).await)
@@ -748,7 +738,6 @@ mod tests {
         let req = Request {
             cmd: "wait".into(),
             params: serde_json::json!({"selector": "#app"}),
-            token: None,
         };
 
         let resp = handle_request(&req, &state, &test_context()).await;
@@ -768,7 +757,6 @@ mod tests {
                 "count": 3,
                 "timeout": 5000
             }),
-            token: None,
         };
 
         let resp = handle_request(&req, &state, &test_context()).await;
@@ -789,7 +777,6 @@ mod tests {
                 "output_dir": output_dir.path(),
                 "timeout": 15000
             }),
-            token: None,
         };
 
         let resp = handle_request(&req, &state, &test_context()).await;
@@ -811,7 +798,6 @@ mod tests {
             let req = Request {
                 cmd: cmd.into(),
                 params: serde_json::json!({}),
-                token: None,
             };
             let value =
                 serde_json::to_value(handle_request(&req, &state, &test_context()).await).unwrap();
@@ -826,7 +812,6 @@ mod tests {
             let req = Request {
                 cmd: cmd.into(),
                 params: serde_json::json!({}),
-                token: None,
             };
             let value =
                 serde_json::to_value(handle_request(&req, &state, &test_context()).await).unwrap();
@@ -887,7 +872,6 @@ mod tests {
             let request = Request {
                 cmd: cmd.into(),
                 params,
-                token: None,
             };
             let value =
                 serde_json::to_value(handle_request(&request, &state, &test_context()).await)
@@ -918,7 +902,6 @@ mod tests {
             let request = Request {
                 cmd: cmd.into(),
                 params,
-                token: None,
             };
             let value =
                 serde_json::to_value(handle_request(&request, &state, &test_context()).await)
@@ -933,7 +916,6 @@ mod tests {
             let request = Request {
                 cmd: cmd.into(),
                 params,
-                token: None,
             };
             let value =
                 serde_json::to_value(handle_request(&request, &state, &test_context()).await)

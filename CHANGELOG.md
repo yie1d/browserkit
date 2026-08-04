@@ -18,7 +18,8 @@
 
 ### Security
 
-- Authenticated loopback daemon requests with a per-daemon token.
+- Restricted the unauthenticated local daemon transport to an ephemeral IPv4
+  loopback port; the port must not be exposed or forwarded to a network.
 - Restricted `open` and URL navigation to HTTP(S), canonical local/UNC `file:`
   URLs, and `about:blank`, while preserving localhost, loopback, and private
   network access.

@@ -303,7 +303,6 @@ mod tests {
         let req = Request {
             cmd: "navigate".into(),
             params: serde_json::json!({"url": "https://example.com", "session": "nonexistent"}),
-            token: None,
         };
         let resp = handle_navigate(&req, &state).await;
         let json = serde_json::to_value(&resp).unwrap();
@@ -321,7 +320,6 @@ mod tests {
         let req = Request {
             cmd: "navigate".into(),
             params: serde_json::json!({"url": "https://example.com"}),
-            token: None,
         };
         let resp = handle_navigate(&req, &state).await;
         let json = serde_json::to_value(&resp).unwrap();
@@ -339,7 +337,6 @@ mod tests {
         let req = Request {
             cmd: "navigate".into(),
             params: serde_json::json!({"url": "https://example.com"}),
-            token: None,
         };
         let resp = handle_navigate(&req, &state).await;
         let json = serde_json::to_value(&resp).unwrap();
@@ -357,7 +354,6 @@ mod tests {
         let req = Request {
             cmd: "navigate".into(),
             params: serde_json::json!({"url": "https://example.com", "target": "NONEXISTENT"}),
-            token: None,
         };
         let resp = handle_navigate(&req, &state).await;
         let json = serde_json::to_value(&resp).unwrap();
@@ -379,7 +375,6 @@ mod tests {
         let req = Request {
             cmd: "navigate".into(),
             params: serde_json::json!({"url": "https://example.com"}),
-            token: None,
         };
         let resp = handle_navigate(&req, &state).await;
         let json = serde_json::to_value(&resp).unwrap();
@@ -423,7 +418,6 @@ mod tests {
         let req = Request {
             cmd: "navigate".into(),
             params: serde_json::json!({"url": "javascript:void(0)"}),
-            token: None,
         };
 
         let resp = handle_navigate(&req, &state).await;

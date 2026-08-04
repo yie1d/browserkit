@@ -665,7 +665,6 @@ mod tests {
         Request {
             cmd: "network.watch".into(),
             params,
-            token: None,
         }
     }
 

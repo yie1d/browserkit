@@ -295,7 +295,6 @@ mod tests {
         let request = Request {
             cmd: "close".into(),
             params: serde_json::json!({"target": false}),
-            token: None,
         };
 
         let response = handle_close(&request, &state).await;
@@ -313,7 +312,6 @@ mod tests {
         let request = Request {
             cmd: "close".into(),
             params: serde_json::json!({"session": "missing", "target": false}),
-            token: None,
         };
 
         let response = handle_close(&request, &state).await;

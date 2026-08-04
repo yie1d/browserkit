@@ -346,7 +346,6 @@ mod tests {
         let req = Request {
             cmd: "attach".into(),
             params: json!({"target": "T1"}),
-            token: None,
         };
         let value =
             serde_json::to_value(handle_attach(&req, &Arc::new(DaemonState::new())).await).unwrap();
@@ -465,7 +464,6 @@ mod tests {
         let req = Request {
             cmd: "attach".into(),
             params: json!({"session": "agent", "target": "T1"}),
-            token: None,
         };
 
         let value = serde_json::to_value(handle_attach(&req, &state).await).unwrap();

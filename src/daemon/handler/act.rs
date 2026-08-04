@@ -2172,7 +2172,6 @@ mod tests {
         let req = Request {
             cmd: "act".into(),
             params: json!({"kind": "click", "ref": 1, "session": "nonexistent"}),
-            token: None,
         };
         let resp = handle_act(&req, &state).await;
         let json = serde_json::to_value(&resp).unwrap();
@@ -2190,7 +2189,6 @@ mod tests {
         let req = Request {
             cmd: "act".into(),
             params: json!({"kind": "click", "ref": 1}),
-            token: None,
         };
         let resp = handle_act(&req, &state).await;
         let json = serde_json::to_value(&resp).unwrap();
@@ -2207,7 +2205,6 @@ mod tests {
         let req = Request {
             cmd: "act".into(),
             params: json!({"kind": "click", "ref": 1}),
-            token: None,
         };
         let resp = handle_act(&req, &state).await;
         let json = serde_json::to_value(&resp).unwrap();
@@ -2225,7 +2222,6 @@ mod tests {
         let req = Request {
             cmd: "act".into(),
             params: json!({"kind": "click", "ref": 1, "target": "NONEXISTENT"}),
-            token: None,
         };
         let resp = handle_act(&req, &state).await;
         let json = serde_json::to_value(&resp).unwrap();
@@ -2243,7 +2239,6 @@ mod tests {
         let req = Request {
             cmd: "act".into(),
             params: json!({"kind": "click", "ref": 1}),
-            token: None,
         };
         let resp = handle_act(&req, &state).await;
         let json = serde_json::to_value(&resp).unwrap();
@@ -2262,7 +2257,6 @@ mod tests {
             let req = Request {
                 cmd: "act".into(),
                 params,
-                token: None,
             };
             let value = serde_json::to_value(handle_act(&req, &state).await).unwrap();
             assert_eq!(value["error"]["code"], "SESSION_NOT_FOUND");
@@ -2279,7 +2273,6 @@ mod tests {
             let req = Request {
                 cmd: "act".into(),
                 params,
-                token: None,
             };
             let value = serde_json::to_value(handle_act(&req, &state).await).unwrap();
             assert_eq!(value["error"]["code"], "SESSION_NOT_FOUND");
@@ -2292,7 +2285,6 @@ mod tests {
         let req = Request {
             cmd: "act".into(),
             params: json!({"kind": "fill", "fields": [{"ref": 42, "value": "alpha"}]}),
-            token: None,
         };
         let value = serde_json::to_value(handle_act(&req, &state).await).unwrap();
         assert_eq!(value["error"]["code"], "SESSION_NOT_FOUND");
@@ -2308,7 +2300,6 @@ mod tests {
             let req = Request {
                 cmd: "act".into(),
                 params,
-                token: None,
             };
             let value = serde_json::to_value(handle_act(&req, &state).await).unwrap();
             assert_eq!(value["error"]["code"], "SESSION_NOT_FOUND");

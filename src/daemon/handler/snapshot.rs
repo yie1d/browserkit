@@ -671,7 +671,6 @@ mod tests {
             let req = Request {
                 cmd: "snapshot".into(),
                 params: json!({"max_tokens": max_tokens}),
-                token: None,
             };
             let response = handle_snapshot(&req, &state).await;
             let value = serde_json::to_value(response).unwrap();
@@ -1058,7 +1057,6 @@ mod tests {
         let req = Request {
             cmd: "snapshot".into(),
             params: serde_json::json!({}),
-            token: None,
         };
 
         let resp = handle_snapshot(&req, &state).await;
@@ -1077,7 +1075,6 @@ mod tests {
         let req = Request {
             cmd: "snapshot".into(),
             params: serde_json::json!({}),
-            token: None,
         };
 
         let resp = handle_snapshot(&req, &state).await;
@@ -1096,7 +1093,6 @@ mod tests {
         let req = Request {
             cmd: "snapshot".into(),
             params: serde_json::json!({}),
-            token: None,
         };
 
         let resp = handle_snapshot(&req, &state).await;
@@ -1115,7 +1111,6 @@ mod tests {
         let req = Request {
             cmd: "snapshot".into(),
             params: serde_json::json!({"target": "NONEXISTENT"}),
-            token: None,
         };
 
         let resp = handle_snapshot(&req, &state).await;
@@ -1135,7 +1130,6 @@ mod tests {
         let req = Request {
             cmd: "snapshot".into(),
             params: serde_json::json!({}),
-            token: None,
         };
 
         let resp = handle_snapshot(&req, &state).await;
@@ -1154,7 +1148,6 @@ mod tests {
         let req = Request {
             cmd: "snapshot".into(),
             params: serde_json::json!({"session": "agent-a"}),
-            token: None,
         };
 
         let resp = handle_snapshot(&req, &state).await;

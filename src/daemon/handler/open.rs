@@ -298,7 +298,6 @@ mod tests {
         let req = Request {
             cmd: "open".into(),
             params: serde_json::json!({"url": "https://example.com"}),
-            token: None,
         };
 
         let resp = handle_open(&req, &state).await;
@@ -317,7 +316,6 @@ mod tests {
         let req = Request {
             cmd: "open".into(),
             params: serde_json::json!({"url": "https://example.com"}),
-            token: None,
         };
 
         let resp = handle_open(&req, &state).await;
@@ -336,7 +334,6 @@ mod tests {
         let req = Request {
             cmd: "open".into(),
             params: serde_json::json!({"url": "https://example.com"}),
-            token: None,
         };
 
         let resp = handle_open(&req, &state).await;
@@ -351,7 +348,6 @@ mod tests {
         let req = Request {
             cmd: "open".into(),
             params: serde_json::json!({}),
-            token: None,
         };
 
         let resp = handle_open(&req, &state).await;
@@ -377,7 +373,6 @@ mod tests {
         let req = Request {
             cmd: "open".into(),
             params: serde_json::json!({"url": "https://example.com"}),
-            token: None,
         };
 
         let resp = handle_open(&req, &state).await;
@@ -422,7 +417,6 @@ mod tests {
         let req = Request {
             cmd: "open".into(),
             params: serde_json::json!({"url": "javascript:alert(1)"}),
-            token: None,
         };
 
         let resp = handle_open(&req, &state).await;

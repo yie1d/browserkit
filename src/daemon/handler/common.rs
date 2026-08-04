@@ -32,9 +32,6 @@ pub struct HandlerContext {
     pub port: u16,
     pub pid: u32,
     pub shutdown: watch::Sender<bool>,
-    /// Daemon authentication token. When set, every request must include a
-    /// matching `token` field or be rejected with UNAUTHORIZED.
-    pub daemon_token: Option<String>,
 }
 
 #[derive(Clone)]

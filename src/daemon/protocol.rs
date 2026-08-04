@@ -14,9 +14,6 @@ pub struct Request {
     pub cmd: String,
     #[serde(default)]
     pub params: serde_json::Value,
-    /// Authentication token (required for all requests when daemon has a token set).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub token: Option<String>,
 }
 
 /// A response sent from daemon to client.
@@ -184,21 +181,22 @@ mod tests {
         let req: Request = serde_json::from_str(r#"{"cmd":"ping"}"#).unwrap();
         assert_eq!(req.cmd, "ping");
         assert_eq!(req.params, serde_json::Value::Null);
-        assert_eq!(req.token, None);
     }
 
     #[test]
-    fn request_with_token_deserializes() {
-        let req: Request =
-            serde_json::from_str(r#"{"cmd":"ping","params":{},"token":"abc123"}"#).unwrap();
-        assert_eq!(req.cmd, "ping");
-        assert_eq!(req.token, Some("abc123".into()));
+    fn request_rejects_token_as_an_unknown_field() {
+        let error =
+            serde_json::from_str::<Request>(r#"{"cmd":"ping","params":{},"token":"abc123"}"#)
+                .unwrap_err();
+
+        assert!(error.to_string().contains("unknown field"));
     }
 
     #[test]
-    fn request_without_token_field_defaults_to_none() {
+    fn request_accepts_canonical_envelope() {
         let req: Request = serde_json::from_str(r#"{"cmd":"ping","params":{}}"#).unwrap();
-        assert_eq!(req.token, None);
+        assert_eq!(req.cmd, "ping");
+        assert_eq!(req.params, json!({}));
     }
 
     #[test]
@@ -210,25 +208,15 @@ mod tests {
     }
 
     #[test]
-    fn request_token_none_is_not_serialized() {
+    fn request_serializes_only_cmd_and_params() {
         let req = Request {
             cmd: "ping".into(),
             params: json!({}),
-            token: None,
         };
-        let json = serde_json::to_string(&req).unwrap();
-        assert!(!json.contains("token"));
-    }
-
-    #[test]
-    fn request_token_some_is_serialized() {
-        let req = Request {
-            cmd: "ping".into(),
-            params: json!({}),
-            token: Some("secret".into()),
-        };
-        let json = serde_json::to_string(&req).unwrap();
-        assert!(json.contains(r#""token":"secret""#));
+        assert_eq!(
+            serde_json::to_value(&req).unwrap(),
+            json!({"cmd": "ping", "params": {}})
+        );
     }
 
     #[test]
@@ -236,7 +224,6 @@ mod tests {
         let req = Request {
             cmd: "session.list".into(),
             params: json!({"verbose": true}),
-            token: None,
         };
         let json = serde_json::to_string(&req).unwrap();
         let back: Request = serde_json::from_str(&json).unwrap();
