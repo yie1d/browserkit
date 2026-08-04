@@ -1,4 +1,4 @@
-// Handler for the v2 `snapshot` command.
+// Handler for the `snapshot` command.
 //
 // Returns complete page state (elements + page_text + scroll + viewport) with
 // configurable wait strategy. Reuses existing `page/state.rs` discovery logic.
@@ -364,7 +364,7 @@ fn build_snapshot_data(
     data
 }
 
-/// Convert an ElementInfo to a v2 JSON representation.
+/// Convert an ElementInfo to the public JSON representation.
 fn element_to_json(el: &crate::page::ElementInfo) -> serde_json::Value {
     let mut obj = json!({
         "ref": el.backend_node_id,

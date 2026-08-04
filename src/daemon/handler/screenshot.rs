@@ -1,4 +1,4 @@
-// Handler for the v2 `screenshot` command.
+// Handler for the `screenshot` command.
 //
 // Captures a screenshot using session/target resolution (same pattern as snapshot).
 // Supports full-page capture and file output.

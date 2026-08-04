@@ -21,8 +21,7 @@ pub struct Request {
 /// A response sent from daemon to client.
 ///
 /// Success: `{"ok":true,"data":{...}}`
-/// Error (legacy):   `{"ok":false,"error":"<message>"}`
-/// Error (v2):       `{"ok":false,"error":{"code":"...","message":"...","suggestion":"...","recoverable":bool}}`
+/// Error: `{"ok":false,"error":{"code":"...","message":"...","suggestion":"...","recoverable":bool}}`
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Response {
     pub ok: bool,
@@ -49,7 +48,7 @@ impl Response {
         Self::error_detail(ErrorCode::DaemonError, msg.into(), None)
     }
 
-    /// Build a v2 structured error response with code, message, suggestion, and recoverable flag.
+    /// Build a structured error response with code, message, suggestion, and recoverable flag.
     #[must_use]
     pub fn error_detail(code: ErrorCode, message: String, suggestion: Option<String>) -> Self {
         let suggestion = suggestion.unwrap_or_else(|| code.suggestion().to_string());
@@ -331,7 +330,7 @@ mod tests {
         assert_eq!(parsed, resp);
     }
 
-    // ── v2 error_detail tests ───────────────────────────────────────────
+    // ── error_detail tests ──────────────────────────────────────────────
 
     #[test]
     fn response_error_detail_has_correct_structure() {

@@ -1,4 +1,4 @@
-// Handler for the v2 `open` command.
+// Handler for the `open` command.
 //
 // Opens a new tab in the session's BrowserContext, navigates to the specified URL,
 // sets it as the active tab, and returns basic target info.

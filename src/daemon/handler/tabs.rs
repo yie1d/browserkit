@@ -1,4 +1,4 @@
-// Handler for v2 tabs listing and tab close commands.
+// Handler for tab listing and close commands.
 //
 // `bk tabs` — list tabs in the current session (only agent-created tabs visible).
 // `bk close` — close a specific tab (or the active tab) in the session.

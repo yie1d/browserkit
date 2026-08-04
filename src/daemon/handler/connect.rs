@@ -1,4 +1,4 @@
-// Handler for the v2 `connect` command.
+// Handler for the `connect` command.
 //
 // Discovers Chrome/Edge via DevToolsActivePort, establishes CDP connection,
 // creates/finds a session. Idempotent: returns `already_connected` if browser

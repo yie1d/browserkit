@@ -89,11 +89,11 @@ impl BkError {
     }
 }
 
-// ── v2 Structured Error Codes ───────────────────────────────────────────
+// ── Structured Error Codes ──────────────────────────────────────────────
 
 use serde::{Deserialize, Serialize};
 
-/// Machine-readable error codes for v2 structured responses.
+/// Machine-readable error codes for structured responses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum ErrorCode {

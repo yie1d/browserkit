@@ -1,4 +1,4 @@
-// Handler for v2 session lifecycle commands.
+// Handler for session lifecycle commands.
 //
 // `bk session list`    — list all active sessions
 // `bk session close`   — close a session (owned tabs close; attached tabs detach)

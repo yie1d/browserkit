@@ -1,4 +1,4 @@
-// Handler for the v2 `evaluate` command.
+// Handler for the `evaluate` command.
 //
 // Executes JavaScript in the context of a page target.
 // Uses session/target resolution (same pattern as snapshot/navigate).

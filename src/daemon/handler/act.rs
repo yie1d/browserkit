@@ -1,4 +1,4 @@
-// Handler for the v2 `act` command (click/type/fill/press/scroll/hover/focus/select/options/upload/drag).
+// Handler for the `act` command (click/type/fill/press/scroll/hover/focus/select/options/upload/drag).
 //
 // Unified action dispatcher for the session-native interaction surface.
 // Each returns result + state_diff (before/after URL/title/element comparison).

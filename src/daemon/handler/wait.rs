@@ -1,4 +1,4 @@
-// Handler for the v2 `wait` command.
+// Handler for the `wait` command.
 //
 // Waits for page conditions on a session-owned tab.
 

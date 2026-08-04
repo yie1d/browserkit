@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use crate::error::BkError;
 
-// ── DevToolsActivePort discovery (v2 connect) ──────────────────────────────
+// ── DevToolsActivePort discovery ───────────────────────────────────────────
 
 /// Parsed DevToolsActivePort file content.
 #[derive(Debug, Clone)]
@@ -112,7 +112,7 @@ pub fn find_devtools_port() -> Option<DevToolsPortInfo> {
     None
 }
 
-// ── Browser installation detection (v2 setup) ────────────────────────────────
+// ── Browser installation detection ───────────────────────────────────────────
 
 /// Result of detecting installed browsers.
 pub enum BrowserDetection {

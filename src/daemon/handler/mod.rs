@@ -223,7 +223,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn dispatch_wait_uses_v2_session_handler() {
+    async fn dispatch_wait_uses_session_handler() {
         let state = Arc::new(DaemonState::new());
         let req = Request {
             cmd: "wait".into(),

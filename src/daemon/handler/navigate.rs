@@ -1,4 +1,4 @@
-// Handler for the v2 `navigate` command.
+// Handler for the `navigate` command.
 //
 // Unified navigation: goto URL, back, forward, reload.
 // Uses existing page::navigation functions for CDP interaction.

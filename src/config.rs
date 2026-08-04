@@ -31,9 +31,9 @@ pub struct DaemonConfig {
 pub struct LimitsConfig {
     /// JavaScript execution timeout in seconds (0 = no timeout).
     pub js_timeout_seconds: u64,
-    /// Maximum number of v2 sessions allowed (0 = unlimited).
+    /// Maximum number of sessions allowed (0 = unlimited).
     pub max_sessions: usize,
-    /// Maximum number of tabs per v2 session (0 = unlimited).
+    /// Maximum number of tabs per session (0 = unlimited).
     pub max_tabs_per_session: usize,
     /// Session inactivity timeout in hours before auto-cleanup.
     pub session_timeout_hours: u64,
@@ -149,7 +149,7 @@ cleanup_interval_seconds = 45
     }
 
     #[test]
-    fn parse_v2_limits_config() {
+    fn parse_limits_config() {
         let toml = r#"
 [limits]
 max_sessions = 10
@@ -163,7 +163,7 @@ session_timeout_hours = 72
     }
 
     #[test]
-    fn parse_v2_limits_custom_values() {
+    fn parse_limits_custom_values() {
         let toml = r#"
 [limits]
 max_sessions = 20

@@ -1,4 +1,4 @@
-// Session: v2 isolation unit (will eventually replace workspace in Phase 3).
+// Session: browser activity, isolation, and persistence boundary.
 //
 // A Session represents a browser context (default or isolated) with its own set of tabs.
 // Default mode shares the browser's default context; Isolated mode creates a dedicated
@@ -76,7 +76,7 @@ pub fn new_console_log() -> ConsoleLog {
     Arc::new(parking_lot::Mutex::new(VecDeque::with_capacity(200)))
 }
 
-/// Session: the v2 isolation unit replacing workspace.
+/// Browser activity, isolation, and persistence boundary.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Session {
     pub name: String,

@@ -94,7 +94,7 @@ pub struct Cli {
 #[derive(Subcommand)]
 pub enum Command {
     // ══════════════════════════════════════════════════════════════
-    // V2 PRIMARY COMMANDS
+    // PRIMARY COMMANDS
     // ══════════════════════════════════════════════════════════════
     /// Set up Chrome remote debugging (interactive, one-time, no daemon needed)
     #[command(about = "Set up Chrome remote debugging (interactive, one-time)")]
@@ -193,14 +193,14 @@ pub enum Command {
 
     /// Open URL in new tab
     #[command(about = "Open URL in new tab", name = "open")]
-    OpenV2 {
+    Open {
         /// URL to open
         url: String,
     },
 
     /// Close tab
     #[command(about = "Close tab", name = "close")]
-    CloseV2,
+    Close,
 
     /// List tabs in session
     #[command(about = "List tabs")]
@@ -231,7 +231,7 @@ pub enum Command {
 
     /// Take screenshot
     #[command(about = "Take screenshot", name = "screenshot")]
-    ScreenshotV2 {
+    Screenshot {
         /// Output file path
         #[arg(long)]
         output: Option<String>,
@@ -248,7 +248,7 @@ pub enum Command {
 
     /// Wait for condition
     #[command(about = "Wait for condition", name = "wait")]
-    WaitV2 {
+    Wait {
         /// CSS selector to wait for
         #[arg(long)]
         selector: Option<String>,
@@ -280,7 +280,7 @@ pub enum Command {
 
     /// Connection status
     #[command(about = "Show connection status", name = "status")]
-    StatusV2,
+    Status,
 
     /// Find elements by CSS selector
     Find {
@@ -363,7 +363,7 @@ pub enum Command {
     Completions { shell: clap_complete::Shell },
 }
 
-// ── V2 Session subcommands ────────────────────────────────────────
+// ── Session subcommands ───────────────────────────────────────────
 
 #[derive(Subcommand)]
 pub enum SessionAction {
@@ -889,7 +889,7 @@ fn add_session_param(params: &mut serde_json::Value, cli: &Cli) {
 async fn dispatch(cli: &Cli, client: &mut DaemonClient) -> Result<(), String> {
     match &cli.command {
         // ══════════════════════════════════════════════════════════
-        // V2 PRIMARY COMMANDS
+        // PRIMARY COMMANDS
         // ══════════════════════════════════════════════════════════
         Command::Connect => {
             let mut params = json!({});
@@ -1036,7 +1036,7 @@ async fn dispatch(cli: &Cli, client: &mut DaemonClient) -> Result<(), String> {
             print_response(&resp);
         }
 
-        Command::OpenV2 { url } => {
+        Command::Open { url } => {
             let mut params = json!({"url": url});
             if let Some(s) = &cli.session {
                 params["session"] = json!(s);
@@ -1048,7 +1048,7 @@ async fn dispatch(cli: &Cli, client: &mut DaemonClient) -> Result<(), String> {
             print_response(&resp);
         }
 
-        Command::CloseV2 => {
+        Command::Close => {
             let mut params = json!({});
             if let Some(s) = &cli.session {
                 params["session"] = json!(s);
@@ -1130,7 +1130,7 @@ async fn dispatch(cli: &Cli, client: &mut DaemonClient) -> Result<(), String> {
             print_response(&resp);
         }
 
-        Command::ScreenshotV2 {
+        Command::Screenshot {
             output,
             full_page,
             selector,
@@ -1151,7 +1151,7 @@ async fn dispatch(cli: &Cli, client: &mut DaemonClient) -> Result<(), String> {
             handle_binary_response(&resp, output.as_deref(), "screenshot.png");
         }
 
-        Command::WaitV2 {
+        Command::Wait {
             selector,
             text,
             text_gone,
@@ -1275,7 +1275,7 @@ async fn dispatch(cli: &Cli, client: &mut DaemonClient) -> Result<(), String> {
             },
         },
 
-        Command::StatusV2 => {
+        Command::Status => {
             let resp = send_cmd(client, "daemon.status", json!({})).await?;
             print_response(&resp);
         }
@@ -1779,7 +1779,7 @@ mod tests {
         Cli::try_parse_from(args)
     }
 
-    // ── V2 commands ──────────────────────────────────────────────
+    // ── Primary commands ─────────────────────────────────────────
 
     #[test]
     fn cli_parses_connect() {
@@ -2062,7 +2062,7 @@ mod tests {
     #[test]
     fn cli_parses_open() {
         let cli = try_parse(&["bk", "open", "https://x.com"]).unwrap();
-        if let Command::OpenV2 { url } = &cli.command {
+        if let Command::Open { url } = &cli.command {
             assert_eq!(url, "https://x.com");
         } else {
             panic!("wrong variant");
@@ -2072,7 +2072,7 @@ mod tests {
     #[test]
     fn cli_parses_close() {
         let cli = try_parse(&["bk", "close"]).unwrap();
-        assert!(matches!(cli.command, Command::CloseV2));
+        assert!(matches!(cli.command, Command::Close));
     }
 
     #[test]
@@ -2344,7 +2344,7 @@ mod tests {
     #[test]
     fn cli_parses_screenshot() {
         let cli = try_parse(&["bk", "screenshot", "--full-page"]).unwrap();
-        if let Command::ScreenshotV2 { full_page, .. } = &cli.command {
+        if let Command::Screenshot { full_page, .. } = &cli.command {
             assert!(*full_page);
         } else {
             panic!("wrong variant");
@@ -2354,7 +2354,7 @@ mod tests {
     #[test]
     fn cli_parses_screenshot_selector_and_labels() {
         let cli = try_parse(&["bk", "screenshot", "--selector", "#app", "--labels"]).unwrap();
-        if let Command::ScreenshotV2 {
+        if let Command::Screenshot {
             selector, labels, ..
         } = &cli.command
         {
@@ -2401,7 +2401,7 @@ mod tests {
     #[test]
     fn cli_parses_status() {
         let cli = try_parse(&["bk", "status"]).unwrap();
-        assert!(matches!(cli.command, Command::StatusV2));
+        assert!(matches!(cli.command, Command::Status));
     }
 
     #[test]
