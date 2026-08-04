@@ -8,13 +8,15 @@
 
 | Option | Meaning |
 |---|---|
-| `--session <NAME>` | Target session, or set `BK_SESSION` |
-| `--target <ID>` | Target tab ID |
-| `--timeout <MS>` | Timeout in milliseconds |
-| `--no-state-diff` | Skip `state_diff` in act responses |
-| `--focus` | Bring the target tab to the foreground |
+| `--session <NAME>` | Session for commands that bind or operate on a session, or set `BK_SESSION` |
+| `--target <ID>` | Tab for commands that operate on one target |
+| `--timeout <MS>` | Timeout for `snapshot`, `act`, `navigate`, `evaluate`, `wait`, `network watch`, and `download` |
+| `--no-state-diff` | Skip `state_diff` in `act` responses; valid only with `act` |
 | `--help` | Print help |
 | `--version` | Print version |
+
+Unsupported option-command combinations are rejected locally before the CLI
+connects to or starts the daemon.
 
 ## Agent commands
 

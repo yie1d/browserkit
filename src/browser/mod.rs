@@ -1,4 +1,4 @@
-// Browser: Chrome instance management and CDP connection
+// Browser: Chrome/Edge discovery and CDP connection lifecycle.
 pub mod discover;
 pub mod finder;
 

@@ -44,12 +44,18 @@ pub enum WaitStrategy {
 
 impl WaitStrategy {
     /// Parse a wait strategy from an optional parameter string.
-    pub fn from_param(s: Option<&str>) -> Self {
+    pub fn from_param(s: Option<&str>) -> Result<Self, Response> {
         match s {
-            Some("networkidle") | Some("network-idle") => Self::NetworkIdle,
-            Some("none") => Self::None,
-            Some("dom-stable") | Some("domstable") => Self::DomStable,
-            _ => Self::DomStable, // default
+            Some("networkidle") => Ok(Self::NetworkIdle),
+            Some("none") => Ok(Self::None),
+            Some("dom-stable") | None => Ok(Self::DomStable),
+            Some(value) => Err(Response::error_detail(
+                ErrorCode::InvalidArgument,
+                format!(
+                    "snapshot 'wait' must be one of dom-stable, networkidle, or none; got '{value}'"
+                ),
+                None,
+            )),
         }
     }
 }
@@ -89,7 +95,7 @@ fn validate_snapshot_params(params: &serde_json::Value) -> Result<SnapshotParams
     Ok(SnapshotParams {
         session_name: session_name_param(params)?.into(),
         target: optional_string_param(params, "target")?.map(str::to_string),
-        wait_strategy: WaitStrategy::from_param(params.get("wait").and_then(|v| v.as_str())),
+        wait_strategy: WaitStrategy::from_param(params.get("wait").and_then(|v| v.as_str()))?,
         full: params
             .get("full")
             .and_then(|v| v.as_bool())
@@ -676,27 +682,34 @@ mod tests {
     #[test]
     fn wait_strategy_from_str() {
         assert_eq!(
-            WaitStrategy::from_param(Some("dom-stable")),
+            WaitStrategy::from_param(Some("dom-stable")).unwrap(),
             WaitStrategy::DomStable
         );
         assert_eq!(
-            WaitStrategy::from_param(Some("domstable")),
-            WaitStrategy::DomStable
-        );
-        assert_eq!(
-            WaitStrategy::from_param(Some("networkidle")),
+            WaitStrategy::from_param(Some("networkidle")).unwrap(),
             WaitStrategy::NetworkIdle
         );
         assert_eq!(
-            WaitStrategy::from_param(Some("network-idle")),
-            WaitStrategy::NetworkIdle
+            WaitStrategy::from_param(Some("none")).unwrap(),
+            WaitStrategy::None
         );
-        assert_eq!(WaitStrategy::from_param(Some("none")), WaitStrategy::None);
-        assert_eq!(WaitStrategy::from_param(None), WaitStrategy::DomStable);
         assert_eq!(
-            WaitStrategy::from_param(Some("invalid")),
+            WaitStrategy::from_param(None).unwrap(),
             WaitStrategy::DomStable
         );
+        assert!(WaitStrategy::from_param(Some("domstable")).is_err());
+        assert!(WaitStrategy::from_param(Some("network-idle")).is_err());
+        assert!(WaitStrategy::from_param(Some("invalid")).is_err());
+    }
+
+    #[test]
+    fn invalid_wait_strategy_is_rejected() {
+        let response = validate_snapshot_params(&serde_json::json!({"wait": "invalid"}))
+            .expect_err("unknown wait strategy must be rejected");
+        let json = serde_json::to_value(response).unwrap();
+
+        assert_eq!(json["error"]["code"], "INVALID_ARGUMENT");
+        assert!(json["error"]["message"].as_str().unwrap().contains("wait"));
     }
 
     #[test]

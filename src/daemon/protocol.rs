@@ -9,6 +9,7 @@ use crate::error::{BkError, ErrorCode};
 ///
 /// Transported as a single JSON line terminated by `\n`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct Request {
     pub cmd: String,
     #[serde(default)]
@@ -198,6 +199,14 @@ mod tests {
     fn request_without_token_field_defaults_to_none() {
         let req: Request = serde_json::from_str(r#"{"cmd":"ping","params":{}}"#).unwrap();
         assert_eq!(req.token, None);
+    }
+
+    #[test]
+    fn request_rejects_unknown_top_level_fields() {
+        let error = serde_json::from_str::<Request>(r#"{"cmd":"ping","params":{},"extra":true}"#)
+            .unwrap_err();
+
+        assert!(error.to_string().contains("unknown field"));
     }
 
     #[test]

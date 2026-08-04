@@ -1,4 +1,4 @@
-// Browser management handlers: connect, list, disconnect
+// Browser connection handlers: connect, list, disconnect.
 
 use std::collections::HashSet;
 use std::sync::Arc;

@@ -1,6 +1,6 @@
 // State persistence: schema v1 session-only state.json.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -142,6 +142,143 @@ fn disabled_empty_result(reason: String) -> LoadStateResult {
     }
 }
 
+fn validate_persisted_state(state: &PersistedStateV1) -> Result<(), String> {
+    let mut session_names = HashSet::new();
+    let mut owned_targets = HashSet::new();
+
+    for session in &state.sessions {
+        let name = session.name.trim();
+        if name.is_empty() {
+            return Err("session name must not be empty".into());
+        }
+        if name != session.name {
+            return Err(format!(
+                "session name '{}' must not contain surrounding whitespace",
+                session.name
+            ));
+        }
+        if !session_names.insert(name) {
+            return Err(format!("duplicate session name: {}", session.name));
+        }
+        let browser_host = session.browser_host.trim();
+        if browser_host.is_empty() {
+            return Err(format!(
+                "session '{}' browser_host must not be empty",
+                session.name
+            ));
+        }
+        if browser_host != session.browser_host {
+            return Err(format!(
+                "session '{}' browser_host must not contain surrounding whitespace",
+                session.name
+            ));
+        }
+
+        match (session.name.as_str(), session.mode) {
+            ("default", SessionMode::Default) => {
+                if session.browser_context_id.is_some() {
+                    return Err("default session must not have a browser_context_id".into());
+                }
+            }
+            ("default", SessionMode::Isolated) => {
+                return Err("default session must use default mode".into());
+            }
+            (_, SessionMode::Default) => {
+                return Err(format!(
+                    "named session '{}' must use isolated mode",
+                    session.name
+                ));
+            }
+            (_, SessionMode::Isolated) => {
+                let Some(context) = session.browser_context_id.as_deref() else {
+                    return Err(format!(
+                        "isolated session '{}' requires browser_context_id",
+                        session.name
+                    ));
+                };
+                if context.trim().is_empty() {
+                    return Err(format!(
+                        "isolated session '{}' requires browser_context_id",
+                        session.name
+                    ));
+                }
+                if context.trim() != context {
+                    return Err(format!(
+                        "isolated session '{}' browser_context_id must not contain surrounding whitespace",
+                        session.name
+                    ));
+                }
+            }
+        }
+
+        let mut session_targets = HashSet::new();
+        for tab in &session.tabs {
+            let target_id = tab.target_id.trim();
+            if target_id.is_empty() {
+                return Err(format!(
+                    "session '{}' tab target_id must not be empty",
+                    session.name
+                ));
+            }
+            if target_id != tab.target_id {
+                return Err(format!(
+                    "session '{}' tab target_id must not contain surrounding whitespace",
+                    session.name
+                ));
+            }
+            if !session_targets.insert(target_id) {
+                return Err(format!(
+                    "duplicate tab target_id '{}' in session '{}'",
+                    tab.target_id, session.name
+                ));
+            }
+            if !owned_targets.insert(target_id) {
+                return Err(format!(
+                    "target_id '{}' belongs to multiple sessions",
+                    tab.target_id
+                ));
+            }
+            if session.mode == SessionMode::Isolated && tab.ownership == TabOwnership::Attached {
+                return Err(format!(
+                    "isolated session '{}' contains attached tab '{}'",
+                    session.name, tab.target_id
+                ));
+            }
+        }
+
+        match session.active_target.as_deref() {
+            Some(active) if active.trim().is_empty() => {
+                return Err(format!(
+                    "session '{}' active_target must not be empty",
+                    session.name
+                ));
+            }
+            Some(active) if active.trim() != active => {
+                return Err(format!(
+                    "session '{}' active_target must not contain surrounding whitespace",
+                    session.name
+                ));
+            }
+            Some(active) if session_targets.contains(active) => {}
+            Some(active) => {
+                return Err(format!(
+                    "session '{}' active_target '{}' is not in tabs",
+                    session.name, active
+                ));
+            }
+            None if !session.tabs.is_empty() => {
+                return Err(format!(
+                    "session '{}' active_target is required when tabs are present",
+                    session.name
+                ));
+            }
+            None => {}
+        }
+    }
+
+    Ok(())
+}
+
 pub fn load_state_from_path(path: &Path) -> LoadStateResult {
     let content = match std::fs::read_to_string(path) {
         Ok(content) => content,
@@ -171,10 +308,15 @@ pub fn load_state_from_path(path: &Path) -> LoadStateResult {
     }
 
     match serde_json::from_value::<PersistedStateV1>(value) {
-        Ok(state) => LoadStateResult {
-            state,
-            persist_disabled: false,
-            persist_disabled_reason: None,
+        Ok(state) => match validate_persisted_state(&state) {
+            Ok(()) => LoadStateResult {
+                state,
+                persist_disabled: false,
+                persist_disabled_reason: None,
+            },
+            Err(error) => {
+                disabled_empty_result(format!("state.json is not valid schema v1: {error}"))
+            }
         },
         Err(error) => disabled_empty_result(format!("state.json is not valid schema v1: {error}")),
     }
@@ -477,6 +619,149 @@ mod tests {
         let loaded = load_state_from_path(&path);
 
         assert!(loaded.persist_disabled);
+    }
+
+    fn valid_default_session_json() -> serde_json::Value {
+        serde_json::json!({
+            "version": 1,
+            "sessions": [{
+                "name": "default",
+                "mode": "default",
+                "browser_host": "localhost:9222",
+                "browser_context_id": null,
+                "tabs": [{
+                    "target_id": "T1",
+                    "url": "https://example.test",
+                    "title": "Example",
+                    "ownership": "owned"
+                }],
+                "active_target": "T1",
+                "created_at": 1,
+                "last_active": 2,
+                "disconnected": true
+            }]
+        })
+    }
+
+    fn assert_semantic_state_is_disabled(value: serde_json::Value, expected: &str) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.json");
+        std::fs::write(&path, serde_json::to_vec(&value).unwrap()).unwrap();
+
+        let loaded = load_state_from_path(&path);
+
+        assert!(
+            loaded.persist_disabled,
+            "state unexpectedly accepted: {value}"
+        );
+        assert!(
+            loaded
+                .persist_disabled_reason
+                .as_deref()
+                .unwrap()
+                .contains(expected),
+            "unexpected reason: {:?}",
+            loaded.persist_disabled_reason
+        );
+    }
+
+    #[test]
+    fn semantic_state_rejects_session_mode_and_context_inconsistencies() {
+        let mut named_default = valid_default_session_json();
+        named_default["sessions"][0]["name"] = serde_json::json!("agent");
+        assert_semantic_state_is_disabled(named_default, "named session");
+
+        let mut isolated_default = valid_default_session_json();
+        isolated_default["sessions"][0]["mode"] = serde_json::json!("isolated");
+        isolated_default["sessions"][0]["browser_context_id"] = serde_json::json!("CTX");
+        assert_semantic_state_is_disabled(isolated_default, "default session");
+
+        let mut missing_context = valid_default_session_json();
+        missing_context["sessions"][0]["name"] = serde_json::json!("agent");
+        missing_context["sessions"][0]["mode"] = serde_json::json!("isolated");
+        assert_semantic_state_is_disabled(missing_context, "browser_context_id");
+
+        let mut attached_isolated = valid_default_session_json();
+        attached_isolated["sessions"][0]["name"] = serde_json::json!("agent");
+        attached_isolated["sessions"][0]["mode"] = serde_json::json!("isolated");
+        attached_isolated["sessions"][0]["browser_context_id"] = serde_json::json!("CTX");
+        attached_isolated["sessions"][0]["tabs"][0]["ownership"] = serde_json::json!("attached");
+        assert_semantic_state_is_disabled(attached_isolated, "attached tab");
+    }
+
+    #[test]
+    fn semantic_state_rejects_duplicate_and_dangling_identifiers() {
+        let mut duplicate_sessions = valid_default_session_json();
+        let duplicate = duplicate_sessions["sessions"][0].clone();
+        duplicate_sessions["sessions"]
+            .as_array_mut()
+            .unwrap()
+            .push(duplicate);
+        assert_semantic_state_is_disabled(duplicate_sessions, "duplicate session");
+
+        let mut duplicate_tabs = valid_default_session_json();
+        let duplicate = duplicate_tabs["sessions"][0]["tabs"][0].clone();
+        duplicate_tabs["sessions"][0]["tabs"]
+            .as_array_mut()
+            .unwrap()
+            .push(duplicate);
+        assert_semantic_state_is_disabled(duplicate_tabs, "duplicate tab");
+
+        let mut missing_active = valid_default_session_json();
+        missing_active["sessions"][0]["active_target"] = serde_json::json!("MISSING");
+        assert_semantic_state_is_disabled(missing_active, "active_target");
+
+        let mut no_active = valid_default_session_json();
+        no_active["sessions"][0]["active_target"] = serde_json::Value::Null;
+        assert_semantic_state_is_disabled(no_active, "active_target");
+
+        let mut duplicate_global_target = valid_default_session_json();
+        let mut isolated = duplicate_global_target["sessions"][0].clone();
+        isolated["name"] = serde_json::json!("agent");
+        isolated["mode"] = serde_json::json!("isolated");
+        isolated["browser_context_id"] = serde_json::json!("CTX");
+        duplicate_global_target["sessions"]
+            .as_array_mut()
+            .unwrap()
+            .push(isolated);
+        assert_semantic_state_is_disabled(duplicate_global_target, "multiple sessions");
+    }
+
+    #[test]
+    fn semantic_state_rejects_empty_session_and_tab_identifiers() {
+        for (pointer, expected) in [
+            ("/sessions/0/name", "session name"),
+            ("/sessions/0/browser_host", "browser_host"),
+            ("/sessions/0/tabs/0/target_id", "target_id"),
+        ] {
+            let mut value = valid_default_session_json();
+            *value.pointer_mut(pointer).unwrap() = serde_json::json!("   ");
+            assert_semantic_state_is_disabled(value, expected);
+        }
+    }
+
+    #[test]
+    fn semantic_state_rejects_padded_identifiers() {
+        for (pointer, value, expected) in [
+            ("/sessions/0/name", " default", "session name"),
+            (
+                "/sessions/0/browser_host",
+                "localhost:9222 ",
+                "browser_host",
+            ),
+            ("/sessions/0/tabs/0/target_id", " T1", "target_id"),
+            ("/sessions/0/active_target", "T1 ", "active_target"),
+        ] {
+            let mut state = valid_default_session_json();
+            *state.pointer_mut(pointer).unwrap() = serde_json::json!(value);
+            assert_semantic_state_is_disabled(state, expected);
+        }
+
+        let mut isolated = valid_default_session_json();
+        isolated["sessions"][0]["name"] = serde_json::json!("agent");
+        isolated["sessions"][0]["mode"] = serde_json::json!("isolated");
+        isolated["sessions"][0]["browser_context_id"] = serde_json::json!(" CTX");
+        assert_semantic_state_is_disabled(isolated, "browser_context_id");
     }
 
     #[test]

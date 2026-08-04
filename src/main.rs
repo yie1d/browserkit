@@ -40,11 +40,10 @@ Primary:
   debug       Request blocking and raw CDP
 
 Options:
-      --session <NAME>    Target session (or BK_SESSION env var)
-      --target <ID>       Target tab (targetId)
-      --timeout <MS>      Timeout in milliseconds [default: 30000]
-      --no-state-diff     Skip state_diff in act responses
-      --focus             Bring tab to foreground
+      --session <NAME>    Session for commands that bind or operate on a session (or BK_SESSION)
+      --target <ID>       Tab for commands that operate on one target (targetId)
+      --timeout <MS>      Timeout for snapshot/act/navigate/evaluate/wait/network watch/download
+      --no-state-diff     Skip state_diff in act responses (act only)
   -h, --help              Print help
       --version           Print version
 
@@ -65,25 +64,21 @@ use browserkit::error::ErrorCode;
     version
 )]
 pub struct Cli {
-    /// Target session name (or set BK_SESSION env var)
+    /// Session for commands that bind or operate on a session (or set BK_SESSION)
     #[arg(long = "session", global = true, env = "BK_SESSION")]
     pub session: Option<String>,
 
-    /// Target tab (targetId)
+    /// Tab for commands that operate on one target (targetId)
     #[arg(long = "target", global = true)]
     pub target: Option<String>,
 
-    /// Timeout in milliseconds
+    /// Timeout for snapshot/act/navigate/evaluate/wait/network watch/download
     #[arg(long = "timeout", global = true)]
     pub timeout: Option<u64>,
 
-    /// Skip state_diff in act responses
+    /// Skip state_diff in act responses (act only)
     #[arg(long = "no-state-diff", global = true)]
     pub no_state_diff: bool,
-
-    /// Bring tab to foreground
-    #[arg(long = "focus", global = true)]
-    pub focus: bool,
 
     #[command(subcommand)]
     pub command: Command,
@@ -337,7 +332,7 @@ pub enum Command {
     },
 
     // ── Management ────────────────────────────────────────────────
-    /// Browser management
+    /// Browser connection management
     Browser {
         #[command(subcommand)]
         action: BrowserAction,
@@ -570,6 +565,11 @@ async fn async_main() {
 
     let cli = Cli::parse();
 
+    if let Err(message) = validate_cli_option_scope(&cli) {
+        eprintln!("error: {message}");
+        std::process::exit(2);
+    }
+
     // daemon start is special — runs the server in foreground
     if let Command::Daemon {
         action: DaemonAction::Start,
@@ -760,6 +760,144 @@ async fn run_setup() {
 
 // ── Command dispatch ───────────────────────────────────────────
 
+fn command_name(command: &Command) -> &'static str {
+    match command {
+        Command::Setup => "setup",
+        Command::Connect => "connect",
+        Command::Snapshot { .. } => "snapshot",
+        Command::Act { .. } => "act",
+        Command::Navigate { .. } => "navigate",
+        Command::Open { .. } => "open",
+        Command::Close => "close",
+        Command::Tabs => "tabs",
+        Command::Attach { .. } => "attach",
+        Command::Evaluate { .. } => "evaluate",
+        Command::Screenshot { .. } => "screenshot",
+        Command::Wait { .. } => "wait",
+        Command::Session { action } => match action {
+            SessionAction::Close => "session close",
+            SessionAction::List => "session list",
+            SessionAction::Cookies { .. } => "session cookies",
+            SessionAction::Storage { .. } => "session storage",
+        },
+        Command::Status => "status",
+        Command::Find { .. } => "find",
+        Command::Search { .. } => "search",
+        Command::Html { .. } => "html",
+        Command::Console { .. } => "console",
+        Command::Network { .. } => "network watch",
+        Command::Download { .. } => "download",
+        Command::Pdf { .. } => "pdf",
+        Command::Browser { action } => match action {
+            BrowserAction::Connect { .. } => "browser connect",
+            BrowserAction::Discover { .. } => "browser discover",
+            BrowserAction::List => "browser list",
+            BrowserAction::Disconnect { .. } => "browser disconnect",
+        },
+        Command::Daemon { action } => match action {
+            DaemonAction::Start => "daemon start",
+            DaemonAction::Stop => "daemon stop",
+            DaemonAction::Status => "daemon status",
+        },
+        Command::Dialog { action } => match action {
+            DialogAction::List => "dialog list",
+            DialogAction::Accept { .. } => "dialog accept",
+            DialogAction::Dismiss => "dialog dismiss",
+            DialogAction::Policy { .. } => "dialog policy",
+        },
+        Command::Debug { action } => match action {
+            DebugAction::Block { .. } => "debug block",
+            DebugAction::Unblock => "debug unblock",
+            DebugAction::Cdp { .. } => "debug cdp",
+        },
+        Command::Completions { .. } => "completions",
+    }
+}
+
+fn command_uses_session(command: &Command) -> bool {
+    !matches!(
+        command,
+        Command::Setup
+            | Command::Status
+            | Command::Session {
+                action: SessionAction::List
+            }
+            | Command::Daemon { .. }
+            | Command::Browser {
+                action: BrowserAction::List | BrowserAction::Disconnect { .. }
+            }
+            | Command::Completions { .. }
+    )
+}
+
+fn command_uses_target(command: &Command) -> bool {
+    matches!(
+        command,
+        Command::Snapshot { .. }
+            | Command::Act { .. }
+            | Command::Navigate { .. }
+            | Command::Close
+            | Command::Attach { .. }
+            | Command::Evaluate { .. }
+            | Command::Screenshot { .. }
+            | Command::Wait { .. }
+            | Command::Session {
+                action: SessionAction::Storage { .. }
+            }
+            | Command::Find { .. }
+            | Command::Search { .. }
+            | Command::Html { .. }
+            | Command::Console { .. }
+            | Command::Network { .. }
+            | Command::Download { .. }
+            | Command::Pdf { .. }
+            | Command::Dialog {
+                action: DialogAction::Accept { .. } | DialogAction::Dismiss
+            }
+            | Command::Debug { .. }
+    )
+}
+
+fn command_uses_timeout(command: &Command) -> bool {
+    matches!(
+        command,
+        Command::Snapshot { .. }
+            | Command::Act { .. }
+            | Command::Navigate { .. }
+            | Command::Evaluate { .. }
+            | Command::Wait { .. }
+            | Command::Network { .. }
+            | Command::Download { .. }
+    )
+}
+
+fn validate_cli_option_scope(cli: &Cli) -> Result<(), String> {
+    let command = command_name(&cli.command);
+    if cli.session.is_some() && !command_uses_session(&cli.command) {
+        return Err(format!("--session is not supported by 'bk {command}'"));
+    }
+    if cli.target.is_some() && !command_uses_target(&cli.command) {
+        return Err(format!("--target is not supported by 'bk {command}'"));
+    }
+    if cli.timeout.is_some() && !command_uses_timeout(&cli.command) {
+        return Err(format!("--timeout is not supported by 'bk {command}'"));
+    }
+    if cli.no_state_diff && !matches!(cli.command, Command::Act { .. }) {
+        return Err(format!(
+            "--no-state-diff is not supported by 'bk {command}'"
+        ));
+    }
+    Ok(())
+}
+
+fn build_open_params(url: &str, cli: &Cli) -> serde_json::Value {
+    let mut params = json!({"url": url});
+    if let Some(session) = &cli.session {
+        params["session"] = json!(session);
+    }
+    params
+}
+
 fn build_navigate_params(
     url: Option<&String>,
     back: bool,
@@ -884,6 +1022,12 @@ fn add_session_param(params: &mut serde_json::Value, cli: &Cli) {
     if let Some(session) = &cli.session {
         params["session"] = json!(session);
     }
+}
+
+fn build_session_only_params(cli: &Cli) -> serde_json::Value {
+    let mut params = json!({});
+    add_session_param(&mut params, cli);
+    params
 }
 
 async fn dispatch(cli: &Cli, client: &mut DaemonClient) -> Result<(), String> {
@@ -1025,14 +1169,7 @@ async fn dispatch(cli: &Cli, client: &mut DaemonClient) -> Result<(), String> {
         }
 
         Command::Open { url } => {
-            let mut params = json!({"url": url});
-            if let Some(s) = &cli.session {
-                params["session"] = json!(s);
-            }
-            if let Some(to) = cli.timeout {
-                params["timeout"] = json!(to);
-            }
-            let resp = send_cmd(client, "open", params).await?;
+            let resp = send_cmd(client, "open", build_open_params(url, cli)).await?;
             print_response(&resp);
         }
 
@@ -1383,8 +1520,7 @@ async fn dispatch(cli: &Cli, client: &mut DaemonClient) -> Result<(), String> {
         // ── Management (Dialog) ───────────────────────────
         Command::Dialog { action } => match action {
             DialogAction::List => {
-                let mut params = json!({});
-                add_session_target_params(&mut params, cli);
+                let params = build_session_only_params(cli);
                 let resp = send_cmd(client, "dialog.list", params).await?;
                 print_response(&resp);
             }
@@ -1404,8 +1540,7 @@ async fn dispatch(cli: &Cli, client: &mut DaemonClient) -> Result<(), String> {
                 print_response(&resp);
             }
             DialogAction::Policy { policy } => {
-                let mut params = json!({});
-                add_session_target_params(&mut params, cli);
+                let mut params = build_session_only_params(cli);
                 if let Some(p) = policy {
                     params["policy"] = json!(p);
                 }
@@ -2414,6 +2549,81 @@ mod tests {
     fn cli_global_no_state_diff_param() {
         let cli = try_parse(&["bk", "--no-state-diff", "act", "click", "--ref", "5"]).unwrap();
         assert!(cli.no_state_diff);
+    }
+
+    #[test]
+    fn cli_scope_rejects_options_that_do_not_affect_the_command() {
+        for (args, option) in [
+            (&["bk", "--session", "agent", "status"][..], "--session"),
+            (&["bk", "--target", "T1", "tabs"][..], "--target"),
+            (
+                &["bk", "--timeout", "1000", "open", "https://example.test"][..],
+                "--timeout",
+            ),
+            (
+                &["bk", "--no-state-diff", "snapshot"][..],
+                "--no-state-diff",
+            ),
+        ] {
+            let cli = try_parse(args).unwrap();
+            let error = validate_cli_option_scope(&cli).unwrap_err();
+            assert!(error.contains(option), "unexpected error: {error}");
+        }
+    }
+
+    #[test]
+    fn cli_scope_accepts_options_that_affect_the_command() {
+        for args in [
+            &["bk", "--session", "agent", "connect"][..],
+            &["bk", "--target", "T1", "snapshot"][..],
+            &["bk", "--timeout", "1000", "wait", "--time", "1"][..],
+            &["bk", "--no-state-diff", "act", "click", "--ref", "1"][..],
+        ] {
+            let cli = try_parse(args).unwrap();
+            assert!(validate_cli_option_scope(&cli).is_ok(), "args: {args:?}");
+        }
+    }
+
+    #[test]
+    fn session_only_params_never_include_global_target() {
+        let cli = try_parse(&[
+            "bk",
+            "--session",
+            "agent",
+            "--target",
+            "T1",
+            "dialog",
+            "list",
+        ])
+        .unwrap();
+        let params = build_session_only_params(&cli);
+
+        assert_eq!(params["session"], "agent");
+        assert!(params.get("target").is_none());
+    }
+
+    #[test]
+    fn cli_rejects_unimplemented_global_focus_option() {
+        assert!(try_parse(&["bk", "--focus", "tabs"]).is_err());
+    }
+
+    #[test]
+    fn open_request_omits_unsupported_global_timeout() {
+        let cli = try_parse(&[
+            "bk",
+            "--session",
+            "agent",
+            "--timeout",
+            "1000",
+            "open",
+            "https://example.test",
+        ])
+        .unwrap();
+        let params = build_open_params("https://example.test", &cli);
+
+        assert_eq!(params["url"], "https://example.test");
+        assert_eq!(params["session"], "agent");
+        assert!(params.get("timeout").is_none());
     }
 
     #[test]

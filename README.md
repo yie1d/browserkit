@@ -19,7 +19,7 @@ The `bk` CLI is the default client. Under the hood, it talks to the daemon over 
 │ browserkit runtime                                  │
 │                                                     │
 │   daemon      sessions      tabs      persistence   │
-│   observe     act           browser manager         │
+│   observe     act           browser connections     │
 └──────────────────────┬──────────────────────────────┘
                        │ typed CDP commands/events
 ┌──────────────────────▼──────────────────────────────┐
@@ -358,13 +358,15 @@ restrictions still apply.
 
 | Option | Description |
 |--------|-------------|
-| `--session <NAME>` | Target session (or `BK_SESSION` env var) |
-| `--target <ID>` | Target tab (targetId) |
-| `--timeout <MS>` | Timeout in milliseconds (default: 30000) |
-| `--no-state-diff` | Skip state_diff in act responses |
-| `--focus` | Bring tab to foreground |
+| `--session <NAME>` | Session for commands that bind or operate on a session (or `BK_SESSION` env var) |
+| `--target <ID>` | Tab for commands that operate on one target (targetId) |
+| `--timeout <MS>` | Timeout for `snapshot`, `act`, `navigate`, `evaluate`, `wait`, `network watch`, and `download` |
+| `--no-state-diff` | Skip `state_diff` in `act` responses; valid only with `act` |
 | `-h, --help` | Print help |
 | `--version` | Print version |
+
+Supplying one of these options to a command that does not consume it is an
+error; the CLI does not silently ignore unsupported option-command combinations.
 
 ## Environment Variables
 

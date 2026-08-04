@@ -38,6 +38,9 @@ pub async fn handle_request(
     ctx: &HandlerContext,
 ) -> Response {
     state.inc_request_count();
+    if let Err(response) = validate_request_fields(req) {
+        return response;
+    }
 
     if let Some(session_name) = request_session_name(req) {
         let lifecycle_lock = state.session_lifecycle_lock(&session_name);
@@ -60,6 +63,281 @@ pub async fn handle_request(
     }
 
     dispatch_request(req, state, ctx).await
+}
+
+#[derive(Clone, Copy)]
+enum RequestFieldType {
+    String,
+    Bool,
+    U64,
+    I64,
+    Object,
+    Array,
+    StringArray,
+}
+
+impl RequestFieldType {
+    fn accepts(self, value: &serde_json::Value) -> bool {
+        match self {
+            Self::String => value.is_string(),
+            Self::Bool => value.is_boolean(),
+            Self::U64 => value.as_u64().is_some(),
+            Self::I64 => value.as_i64().is_some(),
+            Self::Object => value.is_object(),
+            Self::Array => value.is_array(),
+            Self::StringArray => value
+                .as_array()
+                .is_some_and(|items| items.iter().all(serde_json::Value::is_string)),
+        }
+    }
+
+    fn description(self) -> &'static str {
+        match self {
+            Self::String => "a string",
+            Self::Bool => "a boolean",
+            Self::U64 => "an unsigned integer",
+            Self::I64 => "an integer",
+            Self::Object => "an object",
+            Self::Array => "an array",
+            Self::StringArray => "an array of strings",
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct RequestField {
+    name: &'static str,
+    field_type: RequestFieldType,
+}
+
+const fn request_field(name: &'static str, field_type: RequestFieldType) -> RequestField {
+    RequestField { name, field_type }
+}
+
+fn allowed_request_fields(command: &str) -> Option<Vec<RequestField>> {
+    use RequestFieldType::{Array, Bool, Object, String, StringArray, I64, U64};
+
+    let fields: &[RequestField] = match command {
+        "ping" | "session.list" | "daemon.status" | "daemon.stop" | "browser.list" => &[],
+        "connect"
+        | "tabs"
+        | "session.close"
+        | "session.cookies.get"
+        | "session.cookies.clear"
+        | "dialog.list" => &[request_field("session", String)],
+        "open" => &[
+            request_field("url", String),
+            request_field("session", String),
+        ],
+        "snapshot" => &[
+            request_field("session", String),
+            request_field("target", String),
+            request_field("wait", String),
+            request_field("full", Bool),
+            request_field("no_page_text", Bool),
+            request_field("timeout", U64),
+            request_field("max_tokens", U64),
+        ],
+        "navigate" => &[
+            request_field("url", String),
+            request_field("back", Bool),
+            request_field("forward", Bool),
+            request_field("reload", Bool),
+            request_field("session", String),
+            request_field("target", String),
+            request_field("timeout", U64),
+        ],
+        "attach" => &[
+            request_field("session", String),
+            request_field("target", String),
+            request_field("pattern", String),
+        ],
+        "close" => &[
+            request_field("session", String),
+            request_field("target", String),
+        ],
+        "session.cookies.set" => &[
+            request_field("session", String),
+            request_field("file", String),
+            request_field("cookies", Array),
+        ],
+        "session.storage.local.get" => &[
+            request_field("session", String),
+            request_field("target", String),
+            request_field("key", String),
+        ],
+        "session.storage.local.set" => &[
+            request_field("session", String),
+            request_field("target", String),
+            request_field("key", String),
+            request_field("value", String),
+        ],
+        "session.storage.export" => &[
+            request_field("session", String),
+            request_field("target", String),
+        ],
+        "session.storage.import" => &[
+            request_field("session", String),
+            request_field("target", String),
+            request_field("state", Object),
+        ],
+        "evaluate" => &[
+            request_field("session", String),
+            request_field("target", String),
+            request_field("expression", String),
+            request_field("timeout", U64),
+            request_field("await_promise", Bool),
+        ],
+        "screenshot" => &[
+            request_field("session", String),
+            request_field("target", String),
+            request_field("full_page", Bool),
+            request_field("output", String),
+            request_field("selector", String),
+            request_field("labels", Bool),
+        ],
+        "wait" => &[
+            request_field("session", String),
+            request_field("target", String),
+            request_field("time", U64),
+            request_field("selector", String),
+            request_field("text", String),
+            request_field("text_gone", String),
+            request_field("url", String),
+            request_field("load_state", String),
+            request_field("fn", String),
+            request_field("timeout", U64),
+        ],
+        "find" => &[
+            request_field("session", String),
+            request_field("target", String),
+            request_field("selector", String),
+            request_field("attributes", StringArray),
+            request_field("max", U64),
+            request_field("include_text", Bool),
+        ],
+        "search" => &[
+            request_field("session", String),
+            request_field("target", String),
+            request_field("text", String),
+            request_field("regex", Bool),
+            request_field("scope", String),
+            request_field("context", U64),
+            request_field("max", U64),
+        ],
+        "html" => &[
+            request_field("session", String),
+            request_field("target", String),
+            request_field("selector", String),
+        ],
+        "console" => &[
+            request_field("session", String),
+            request_field("target", String),
+            request_field("level", String),
+            request_field("limit", U64),
+        ],
+        "pdf" => &[
+            request_field("session", String),
+            request_field("target", String),
+            request_field("output", String),
+            request_field("landscape", Bool),
+            request_field("background", Bool),
+        ],
+        "browser.connect" => &[
+            request_field("host", String),
+            request_field("session", String),
+        ],
+        "browser.discover" => &[
+            request_field("path", String),
+            request_field("session", String),
+        ],
+        "browser.disconnect" => &[request_field("host", String)],
+        "debug.block" => &[
+            request_field("session", String),
+            request_field("target", String),
+            request_field("pattern", String),
+        ],
+        "debug.unblock" => &[
+            request_field("session", String),
+            request_field("target", String),
+        ],
+        "network.watch" => &[
+            request_field("session", String),
+            request_field("target", String),
+            request_field("pattern", String),
+            request_field("count", U64),
+            request_field("timeout", U64),
+        ],
+        "download" => &[
+            request_field("session", String),
+            request_field("target", String),
+            request_field("ref", I64),
+            request_field("output_dir", String),
+            request_field("timeout", U64),
+        ],
+        "debug.cdp" => &[
+            request_field("session", String),
+            request_field("target", String),
+            request_field("method", String),
+            request_field("params", Object),
+        ],
+        "dialog.accept" => &[
+            request_field("session", String),
+            request_field("target", String),
+            request_field("text", String),
+        ],
+        "dialog.dismiss" => &[
+            request_field("session", String),
+            request_field("target", String),
+        ],
+        "dialog.policy" => &[
+            request_field("session", String),
+            request_field("policy", String),
+        ],
+        "act" => return None,
+        _ => return None,
+    };
+    Some(fields.to_vec())
+}
+
+fn validate_request_fields(req: &Request) -> Result<(), Response> {
+    let allowed = allowed_request_fields(&req.cmd);
+    if req.cmd != "act" && allowed.is_none() {
+        return Ok(());
+    }
+    let object = req.params.as_object().ok_or_else(|| {
+        Response::error_detail(
+            ErrorCode::InvalidArgument,
+            format!("{} params must be an object", req.cmd),
+            None,
+        )
+    })?;
+    let Some(allowed) = allowed else {
+        return Ok(());
+    };
+
+    for (field, value) in object {
+        let Some(spec) = allowed.iter().find(|spec| spec.name == field) else {
+            return Err(Response::error_detail(
+                ErrorCode::InvalidArgument,
+                format!("unexpected field '{}' for command '{}'", field, req.cmd),
+                None,
+            ));
+        };
+        if !spec.field_type.accepts(value) {
+            return Err(Response::error_detail(
+                ErrorCode::InvalidArgument,
+                format!(
+                    "field '{}' for command '{}' must be {}",
+                    field,
+                    req.cmd,
+                    spec.field_type.description()
+                ),
+                None,
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn request_session_name(req: &Request) -> Option<String> {
@@ -231,6 +509,237 @@ mod tests {
         let response = handle_request(&request, &state, &test_context()).await;
         let value = serde_json::to_value(response).unwrap();
         assert_unknown_error(&value, command);
+    }
+
+    #[test]
+    fn canonical_request_fields_accept_current_contract() {
+        let contracts: &[(&str, &[&str])] = &[
+            ("ping", &[]),
+            ("connect", &["session"]),
+            ("open", &["url", "session"]),
+            (
+                "snapshot",
+                &[
+                    "session",
+                    "target",
+                    "wait",
+                    "full",
+                    "no_page_text",
+                    "timeout",
+                    "max_tokens",
+                ],
+            ),
+            (
+                "navigate",
+                &[
+                    "url", "back", "forward", "reload", "session", "target", "timeout",
+                ],
+            ),
+            ("attach", &["session", "target", "pattern"]),
+            ("tabs", &["session"]),
+            ("close", &["session", "target"]),
+            ("session.close", &["session"]),
+            ("session.list", &[]),
+            ("session.cookies.get", &["session"]),
+            ("session.cookies.set", &["session", "file", "cookies"]),
+            ("session.cookies.clear", &["session"]),
+            ("session.storage.local.get", &["session", "target", "key"]),
+            (
+                "session.storage.local.set",
+                &["session", "target", "key", "value"],
+            ),
+            ("session.storage.export", &["session", "target"]),
+            ("session.storage.import", &["session", "target", "state"]),
+            (
+                "evaluate",
+                &[
+                    "session",
+                    "target",
+                    "expression",
+                    "timeout",
+                    "await_promise",
+                ],
+            ),
+            (
+                "screenshot",
+                &[
+                    "session",
+                    "target",
+                    "full_page",
+                    "output",
+                    "selector",
+                    "labels",
+                ],
+            ),
+            (
+                "wait",
+                &[
+                    "session",
+                    "target",
+                    "time",
+                    "selector",
+                    "text",
+                    "text_gone",
+                    "url",
+                    "load_state",
+                    "fn",
+                    "timeout",
+                ],
+            ),
+            (
+                "find",
+                &[
+                    "session",
+                    "target",
+                    "selector",
+                    "attributes",
+                    "max",
+                    "include_text",
+                ],
+            ),
+            (
+                "search",
+                &[
+                    "session", "target", "text", "regex", "scope", "context", "max",
+                ],
+            ),
+            ("html", &["session", "target", "selector"]),
+            ("console", &["session", "target", "level", "limit"]),
+            (
+                "pdf",
+                &["session", "target", "output", "landscape", "background"],
+            ),
+            ("daemon.status", &[]),
+            ("daemon.stop", &[]),
+            ("browser.connect", &["host", "session"]),
+            ("browser.discover", &["path", "session"]),
+            ("browser.list", &[]),
+            ("browser.disconnect", &["host"]),
+            ("debug.block", &["session", "target", "pattern"]),
+            ("debug.unblock", &["session", "target"]),
+            (
+                "network.watch",
+                &["session", "target", "pattern", "count", "timeout"],
+            ),
+            (
+                "download",
+                &["session", "target", "ref", "output_dir", "timeout"],
+            ),
+            ("debug.cdp", &["session", "target", "method", "params"]),
+            ("dialog.list", &["session"]),
+            ("dialog.accept", &["session", "target", "text"]),
+            ("dialog.dismiss", &["session", "target"]),
+            ("dialog.policy", &["session", "policy"]),
+        ];
+
+        for (cmd, fields) in contracts {
+            let params = fields
+                .iter()
+                .map(|field| {
+                    let value = match *field {
+                        "full" | "no_page_text" | "back" | "forward" | "reload"
+                        | "await_promise" | "full_page" | "labels" | "include_text" | "regex"
+                        | "landscape" | "background" => serde_json::json!(true),
+                        "timeout" | "max_tokens" | "time" | "max" | "context" | "limit"
+                        | "count" | "ref" => serde_json::json!(1),
+                        "params" | "state" => serde_json::json!({}),
+                        "cookies" => serde_json::json!([]),
+                        "attributes" => serde_json::json!(["id"]),
+                        _ => serde_json::json!("value"),
+                    };
+                    ((*field).to_string(), value)
+                })
+                .collect();
+            let req = Request {
+                cmd: (*cmd).into(),
+                params: serde_json::Value::Object(params),
+                token: None,
+            };
+            assert!(validate_request_fields(&req).is_ok(), "{cmd}");
+        }
+
+        let act = Request {
+            cmd: "act".into(),
+            params: serde_json::json!({"kind": "click", "ref": 1}),
+            token: None,
+        };
+        assert!(validate_request_fields(&act).is_ok());
+    }
+
+    #[test]
+    fn canonical_request_fields_reject_old_unknown_and_non_object_params() {
+        for field in ["wid", "tid", "index", "sesion"] {
+            let mut params = serde_json::json!({"url": "https://example.test"});
+            params[field] = serde_json::json!(1);
+            let req = Request {
+                cmd: "open".into(),
+                params,
+                token: None,
+            };
+            let value = serde_json::to_value(validate_request_fields(&req).unwrap_err()).unwrap();
+            assert_eq!(value["error"]["code"], "INVALID_ARGUMENT", "{field}");
+            assert!(value["error"]["message"].as_str().unwrap().contains(field));
+        }
+
+        let req = Request {
+            cmd: "tabs".into(),
+            params: serde_json::json!([]),
+            token: None,
+        };
+        assert!(validate_request_fields(&req).is_err());
+    }
+
+    #[test]
+    fn canonical_request_fields_reject_wrong_json_types() {
+        for (command, field, value) in [
+            ("open", "url", serde_json::json!(1)),
+            ("snapshot", "full", serde_json::json!("true")),
+            ("snapshot", "timeout", serde_json::json!("30000")),
+            ("download", "ref", serde_json::json!("1")),
+            ("debug.cdp", "params", serde_json::json!([])),
+            ("session.cookies.set", "cookies", serde_json::json!({})),
+            ("find", "attributes", serde_json::json!(["id", 1])),
+            ("connect", "session", serde_json::Value::Null),
+        ] {
+            let req = Request {
+                cmd: command.into(),
+                params: serde_json::json!({field: value}),
+                token: None,
+            };
+            let response = validate_request_fields(&req).unwrap_err();
+            let json = serde_json::to_value(response).unwrap();
+
+            assert_eq!(json["error"]["code"], "INVALID_ARGUMENT");
+            assert!(
+                json["error"]["message"].as_str().unwrap().contains(field),
+                "unexpected error for {command}.{field}: {json}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn non_canonical_route_families_remain_outside_the_protocol() {
+        let state = Arc::new(DaemonState::new());
+        for command in [
+            "v2.open",
+            "ws.list",
+            "tab.list",
+            "nav.goto",
+            "page.wait",
+            "storage.local.get",
+            "network.monitor",
+            "cdp.events",
+        ] {
+            let request = Request {
+                cmd: command.into(),
+                params: serde_json::json!({}),
+                token: None,
+            };
+            let value =
+                serde_json::to_value(handle_request(&request, &state, &test_context()).await)
+                    .unwrap();
+            assert_unknown_error(&value, command);
+        }
     }
 
     #[tokio::test]
