@@ -11,7 +11,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::config::Config;
 use crate::daemon::dialog::DialogState;
-use crate::daemon::persist::{MigrationReport, PersistTx};
+use crate::daemon::persist::PersistTx;
 use crate::daemon::session::Session;
 use crate::daemon::target_lifecycle::TargetLifecycleEvent;
 
@@ -72,8 +72,6 @@ pub struct DaemonState {
     pub persist_disabled_reason: Mutex<Option<String>>,
     /// Most recent recoverable runtime persistence error. Cleared after a successful write.
     pub persist_last_error: Mutex<Option<String>>,
-    /// Report from a v2 -> v3 startup migration, retained for status and future persists.
-    pub migration_report: Mutex<Option<MigrationReport>>,
     /// Sessions: name -> Session.
     pub sessions: DashMap<String, Session>,
 }
@@ -110,7 +108,6 @@ impl DaemonState {
             persist_disabled: AtomicBool::new(false),
             persist_disabled_reason: Mutex::new(None),
             persist_last_error: Mutex::new(None),
-            migration_report: Mutex::new(None),
             sessions: DashMap::new(),
         }
     }

@@ -20,7 +20,6 @@ pub fn handle_ping() -> Response {
 pub async fn handle_daemon_status(state: &Arc<DaemonState>, ctx: &HandlerContext) -> Response {
     let now = now_ts();
     let uptime_seconds = now.saturating_sub(state.started_at);
-    let migration = state.migration_report.lock().clone();
     let persistence_enabled = !state
         .persist_disabled
         .load(std::sync::atomic::Ordering::Relaxed);
@@ -34,7 +33,6 @@ pub async fn handle_daemon_status(state: &Arc<DaemonState>, ctx: &HandlerContext
         "sessions": state.sessions.len(),
         "uptime_seconds": uptime_seconds,
         "request_count": state.request_count.load(std::sync::atomic::Ordering::Relaxed),
-        "migration": migration,
         "persistence": {
             "enabled": persistence_enabled,
             "disabled_reason": persistence_disabled_reason,
@@ -144,34 +142,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn daemon_status_exposes_migration_report() {
+    async fn daemon_status_has_no_migration_surface() {
         let state = Arc::new(DaemonState::new());
-        let migrated_key = [
-            "isolated".to_string(),
-            ["work", "spaces"].concat(),
-            "migrated".into(),
-        ]
-        .join("_");
-        let mut report = serde_json::json!({
-            "source_version": 2,
-            "backup_path": "state.v2.backup.json",
-            "existing_sessions_preserved": 1,
-            "attached_tabs_merged": 2,
-            "duplicate_targets_dropped": 1,
-            "conflicting_hosts_dropped": 1,
-            "warnings": ["dropped duplicate"],
-        });
-        report[&migrated_key] = serde_json::json!(1);
-        *state.migration_report.lock() = Some(
-            serde_json::from_value::<crate::daemon::persist::migrate_v2::MigrationReport>(report)
-                .unwrap(),
-        );
-
         let value =
             serde_json::to_value(handle_daemon_status(&state, &test_context()).await).unwrap();
 
-        assert_eq!(value["data"]["migration"]["source_version"], 2);
-        assert_eq!(value["data"]["migration"]["duplicate_targets_dropped"], 1);
+        assert!(value["data"].get("migration").is_none());
+        assert!(value["data"].get("persistence").is_some());
     }
 
     #[tokio::test]
