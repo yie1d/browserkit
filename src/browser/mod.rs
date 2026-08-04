@@ -96,26 +96,6 @@ pub fn build_ws_url(host: &str, ws_path: &str) -> String {
     format!("ws://{}{}", host, ws_path)
 }
 
-fn merge_browser_management(
-    current_managed: bool,
-    current_pid: Option<u32>,
-    requested_managed: bool,
-    requested_pid: Option<u32>,
-) -> (bool, Option<u32>) {
-    let managed = current_managed || requested_managed;
-    let pid = if requested_managed {
-        requested_pid.or(current_pid)
-    } else {
-        current_pid
-    };
-    (managed, pid)
-}
-
-fn upgrade_browser_management(browser: &mut Browser, managed: bool, pid: Option<u32>) {
-    (browser.managed, browser.pid) =
-        merge_browser_management(browser.managed, browser.pid, managed, pid);
-}
-
 impl DaemonState {
     /// Get an existing CDP connection for `key`, or create a new one using
     /// the given `connect_target`.
@@ -130,22 +110,18 @@ impl DaemonState {
         self: &Arc<Self>,
         key: &str,
         connect_target: Option<&str>,
-        managed: bool,
-        pid: Option<u32>,
     ) -> Result<Arc<CDP>, BkError> {
         // Reuse existing connection if available.
-        if let Some(mut browser) = self.browsers.get_mut(key) {
+        if let Some(browser) = self.browsers.get(key) {
             tracing::debug!(key = key, "Reusing existing browser connection");
-            upgrade_browser_management(&mut browser, managed, pid);
             let cdp = Arc::clone(&browser.cdp);
             drop(browser);
             ensure_target_watcher(self, key, Arc::clone(&cdp));
             return Ok(cdp);
         }
 
-        let _connect_guard = self.browser_launch_lock.lock().await;
-        if let Some(mut browser) = self.browsers.get_mut(key) {
-            upgrade_browser_management(&mut browser, managed, pid);
+        let _connect_guard = self.browser_connect_lock.lock().await;
+        if let Some(browser) = self.browsers.get(key) {
             let cdp = Arc::clone(&browser.cdp);
             drop(browser);
             ensure_target_watcher(self, key, Arc::clone(&cdp));
@@ -158,9 +134,6 @@ impl DaemonState {
         let browser = Browser {
             host: key.to_string(),
             cdp: Arc::clone(&cdp),
-            managed,
-            pid,
-            child: None,
         };
         self.browsers.insert(key.to_string(), browser);
         ensure_target_watcher(self, key, Arc::clone(&cdp));
@@ -174,14 +147,8 @@ impl DaemonState {
     /// instance share a single `Arc<CDP>` WebSocket connection.
     ///
     /// Uses DashMap's interior mutability — no `&mut self` needed.
-    pub async fn get_or_connect_browser(
-        self: &Arc<Self>,
-        host: &str,
-        managed: bool,
-        pid: Option<u32>,
-    ) -> Result<Arc<CDP>, BkError> {
-        self.get_or_connect_browser_with_url(host, None, managed, pid)
-            .await
+    pub async fn get_or_connect_browser(self: &Arc<Self>, host: &str) -> Result<Arc<CDP>, BkError> {
+        self.get_or_connect_browser_with_url(host, None).await
     }
 }
 
@@ -235,18 +202,6 @@ mod tests {
         // When ws_path is empty, the URL is just ws://host (will go to /json/version via cdpkit)
         let url = build_ws_url("localhost:9222", "");
         assert_eq!(url, "ws://localhost:9222");
-    }
-
-    #[test]
-    fn managed_restore_upgrades_reused_browser_metadata_without_downgrade() {
-        assert_eq!(
-            merge_browser_management(false, None, true, Some(42)),
-            (true, Some(42))
-        );
-        assert_eq!(
-            merge_browser_management(true, Some(42), false, None),
-            (true, Some(42))
-        );
     }
 
     // ─── normalize_browser_key tests ──────────────────────────────────────

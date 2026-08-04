@@ -24,7 +24,7 @@ fn same_connection<T>(current: &Arc<T>, disconnected: &Arc<T>) -> bool {
 /// All mutable state uses interior-mutability primitives:
 /// - `browsers` / `sessions`: `DashMap` — lock-free concurrent reads and per-key writes.
 /// - `request_count`: `AtomicU64` — lock-free counter.
-/// - `browser_launch_lock`: `tokio::sync::Mutex` — serializes Chrome launch.
+/// - `browser_connect_lock`: `tokio::sync::Mutex` — serializes connection creation.
 /// - `persist_tx`: `mpsc::Sender` — non-blocking signal to background persist task.
 ///
 /// There is no outer `RwLock`. Callers hold `Arc<DaemonState>` directly.
@@ -38,10 +38,9 @@ pub struct DaemonState {
     pub request_count: AtomicU64,
     /// Timestamp when the daemon started (Unix seconds).
     pub started_at: u64,
-    /// Serializes Chrome launch to prevent concurrent launch requests
-    /// from starting multiple Chrome processes simultaneously.
+    /// Serializes first connection creation for a normalized browser key.
     /// Wrapped in `Arc` so it can be cloned out of a read-locked state.
-    pub browser_launch_lock: Arc<AsyncMutex<()>>,
+    pub browser_connect_lock: Arc<AsyncMutex<()>>,
     /// Serializes session creation and reconnect so concurrent clients cannot
     /// create duplicate BrowserContexts for the same session name.
     pub session_bind_lock: Arc<AsyncMutex<()>>,
@@ -95,7 +94,7 @@ impl DaemonState {
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_secs(),
-            browser_launch_lock: Arc::new(AsyncMutex::new(())),
+            browser_connect_lock: Arc::new(AsyncMutex::new(())),
             session_bind_lock: Arc::new(AsyncMutex::new(())),
             session_lifecycle_locks: DashMap::new(),
             persist_tx,
@@ -220,24 +219,6 @@ pub struct Browser {
     pub host: String,
     /// Shared CDP connection (one WebSocket per Chrome instance)
     pub cdp: Arc<CDP>,
-    /// `true` if the daemon launched this browser automatically
-    pub managed: bool,
-    /// PID of the managed Chrome process (None for unmanaged)
-    pub pid: Option<u32>,
-    /// Handle to the managed Chrome child process (None for unmanaged).
-    /// Stored here so the process is properly cleaned up on drop.
-    pub child: Option<std::process::Child>,
-}
-
-impl Drop for Browser {
-    fn drop(&mut self) {
-        if let Some(ref mut child) = self.child {
-            if let Err(e) = child.kill() {
-                tracing::debug!(pid = ?self.pid, error = %e, "failed to kill managed browser process");
-            }
-            let _ = child.wait();
-        }
-    }
 }
 
 #[cfg(test)]

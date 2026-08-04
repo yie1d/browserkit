@@ -152,8 +152,8 @@ pub struct DaemonStartResult {
 /// an error. The lock is automatically released by the OS when the process exits
 /// (including crashes), so there is no stale-lock problem.
 ///
-/// Browser state restoration (reconnecting to managed browsers and re-attaching
-/// tabs) runs in a background task and does not block daemon readiness.
+/// Persisted sessions are loaded as disconnected before readiness. A client
+/// must explicitly bind them to a live browser connection.
 pub async fn start_daemon() -> Result<DaemonStartResult, crate::error::BkError> {
     // Acquire OS-level exclusive lock — this is the authoritative single-instance check.
     let lock_file = match try_acquire_daemon_lock() {

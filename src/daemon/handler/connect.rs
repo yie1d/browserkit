@@ -390,7 +390,7 @@ async fn discover_and_connect(
     let host = format!("127.0.0.1:{}", port_info.port);
 
     let cdp = state
-        .get_or_connect_browser_with_url(&host, Some(&ws_url), false, None)
+        .get_or_connect_browser_with_url(&host, Some(&ws_url))
         .await
         .map_err(|error| {
             Response::error_detail(

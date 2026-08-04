@@ -52,16 +52,15 @@ async fn do_browser_connect(req: &Request, state: &Arc<DaemonState>) -> Result<R
     let connect_target = if arg != key { Some(arg.as_str()) } else { None };
 
     let cdp = state
-        .get_or_connect_browser_with_url(&key, connect_target, false, None)
+        .get_or_connect_browser_with_url(&key, connect_target)
         .await
         .map_err(Response::from)?;
     let bound = bind_session_to_browser(state, session_name, &key, &cdp).await?;
     state.request_persist();
-    info!(key = %key, "connected to unmanaged browser");
+    info!(key = %key, "connected to browser");
 
     Ok(Response::ok(json!({
         "host": key,
-        "managed": false,
         "browser_status": if already_connected { "already_connected" } else { "connected" },
         "status": bound.status.as_str(),
         "session": session_name,
@@ -103,7 +102,7 @@ async fn do_browser_discover(
     };
 
     let cdp = state
-        .get_or_connect_browser_with_url(&discovered.host, connect_target.as_deref(), false, None)
+        .get_or_connect_browser_with_url(&discovered.host, connect_target.as_deref())
         .await
         .map_err(|e| {
             Response::from(BkError::Other(format!(
@@ -120,7 +119,6 @@ async fn do_browser_discover(
     Ok(Response::ok(json!({
         "host": discovered.host,
         "ws_path": discovered.ws_path,
-        "managed": false,
         "browser_status": if already_connected { "already_connected" } else { "connected" },
         "status": bound.status.as_str(),
         "session": session_name,
@@ -135,12 +133,7 @@ pub async fn handle_browser_list(state: &Arc<DaemonState>) -> Response {
         .map(|entry| {
             let browser = entry.value();
             let session_count = session_count_for_host(state, &browser.host);
-            json!({
-                "host": browser.host,
-                "managed": browser.managed,
-                "sessions": session_count,
-                "pid": browser.pid,
-            })
+            browser_summary(&browser.host, session_count)
         })
         .collect();
     Response::ok(json!(browsers))
@@ -233,6 +226,10 @@ fn session_names_for_host(state: &DaemonState, host: &str) -> Vec<String> {
         .filter(|entry| entry.value().browser_host == host)
         .map(|entry| entry.key().clone())
         .collect()
+}
+
+fn browser_summary(host: &str, sessions: usize) -> serde_json::Value {
+    json!({ "host": host, "sessions": sessions })
 }
 
 fn cleanup_plan_for_session_if_host(
@@ -428,10 +425,8 @@ async fn do_browser_disconnect(
 
     let report = cleanup_browser_sessions_for_host(state, &host).await;
 
-    // Remove the browser entry. Safety: Browser.managed=false for user-connected
-    // browsers means child=None, so Browser::drop won't kill anything.
-    // Browser.managed=true (bk-launched) means child=Some and drop will kill —
-    // which is correct since we're explicitly disconnecting.
+    // Browser stores only the CDP connection, so removing it cannot terminate
+    // the external browser process.
     state.browsers.remove(&host);
     cdp.close().await;
     state.request_persist();
@@ -478,6 +473,21 @@ mod tests {
             Session::new_isolated("b".into(), "localhost:9222".into(), "CTX".into()),
         );
         assert_eq!(session_count_for_host(&state, "localhost:9222"), 2);
+    }
+
+    #[test]
+    fn browser_summary_omits_process_metadata() {
+        let value = browser_summary("localhost:9222", 2);
+
+        assert_eq!(
+            value,
+            serde_json::json!({
+                "host": "localhost:9222",
+                "sessions": 2,
+            })
+        );
+        assert!(value.get("managed").is_none());
+        assert!(value.get("pid").is_none());
     }
 
     #[tokio::test]
