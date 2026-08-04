@@ -232,7 +232,7 @@ mod tests {
     fn validate_navigate_params_url() {
         let params = serde_json::json!({"url": "https://example.com"});
         let p = validate_navigate_params(&params).unwrap();
-        assert_eq!(p.action, NavAction::Goto("https://example.com".into()));
+        assert_eq!(p.action, NavAction::Goto("https://example.com/".into()));
         assert_eq!(p.session_name, "default");
     }
 

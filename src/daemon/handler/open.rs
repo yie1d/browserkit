@@ -262,7 +262,7 @@ mod tests {
     fn validate_open_params_accepts_url() {
         let params = serde_json::json!({"url": "https://example.com"});
         let result = validate_open_params(&params).unwrap();
-        assert_eq!(result.url, "https://example.com");
+        assert_eq!(result.url, "https://example.com/");
         assert_eq!(result.session_name, "default");
     }
 

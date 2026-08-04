@@ -118,10 +118,6 @@ impl PersistedStateV1 {
     }
 }
 
-pub type PersistedSessionTab = PersistedSessionTabV1;
-pub type PersistedSession = PersistedSessionV1;
-pub type PersistedState = PersistedStateV1;
-
 #[derive(Debug, Clone, PartialEq)]
 pub struct LoadStateResult {
     pub state: PersistedStateV1,

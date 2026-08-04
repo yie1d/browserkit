@@ -33,5 +33,5 @@
 4. Add new transports or SDKs only when they reuse the same daemon/runtime
    contract rather than creating a parallel automation model.
 
-Completed implementation records under `docs/superpowers/` are historical
-evidence; they are not maintained as the current command or behavior contract.
+Completed implementation history remains available in Git; it is not maintained
+as the current command or behavior contract.

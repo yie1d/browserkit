@@ -15,17 +15,9 @@ pub enum BkError {
     #[error("Browser connection failed: {0}")]
     BrowserConnectionFailed(String),
 
-    /// Chrome process did not become ready within the timeout.
-    #[error("Browser startup timeout (5s)")]
-    BrowserStartupTimeout,
-
     /// CDP connection attempt timed out.
     #[error("Browser connection timeout ({0}s): {1}")]
     BrowserConnectionTimeout(u64, String),
-
-    /// Element index exceeds the available element count.
-    #[error("element index {0} out of range (max: {1})")]
-    ElementIndexOutOfRange(usize, usize),
 
     // ── Daemon related ───────────────────────────────────────────────
     /// The incoming request could not be parsed.
@@ -61,10 +53,6 @@ pub enum BkError {
     #[error("timeout: {0}")]
     Timeout(String),
 
-    /// An element index was not found in the current page state.
-    #[error("element not found at index {0}")]
-    ElementNotFound(usize),
-
     // ── Catch-all ────────────────────────────────────────────────────
     /// Generic error for cases not covered by specific variants.
     #[error("{0}")]
@@ -75,12 +63,10 @@ impl BkError {
     pub fn error_code(&self) -> ErrorCode {
         match self {
             Self::BrowserNotFound(_) => ErrorCode::BrowserNotInstalled,
-            Self::BrowserConnectionFailed(_)
-            | Self::BrowserConnectionTimeout(_, _)
-            | Self::BrowserStartupTimeout => ErrorCode::NotConnected,
-            Self::ElementIndexOutOfRange(_, _)
-            | Self::ElementNotFound(_)
-            | Self::InvalidRequest(_) => ErrorCode::InvalidArgument,
+            Self::BrowserConnectionFailed(_) | Self::BrowserConnectionTimeout(_, _) => {
+                ErrorCode::NotConnected
+            }
+            Self::InvalidRequest(_) => ErrorCode::InvalidArgument,
             Self::NavigationFailed(_) => ErrorCode::NavigateFailed,
             Self::JsError(_) => ErrorCode::JsError,
             Self::Timeout(_) => ErrorCode::Timeout,
@@ -102,19 +88,14 @@ pub enum ErrorCode {
     RemoteDebugNotEnabled,
     ConnectionRefused,
     BrowserNotRunning,
-    BrowserVersionTooOld,
     BrowserNotInstalled,
     ChromeDisconnected,
     SessionNotFound,
     SessionNoTab,
-    DialogBlocking,
     NavigateFailed,
     Timeout,
-    ElementNotVisible,
-    ElementNotInteractable,
     TargetNotFound,
     TargetAlreadyAttached,
-    TargetCrashed,
     JsError,
     InvalidArgument,
     DaemonError,
@@ -141,23 +122,14 @@ impl ErrorCode {
                 "check if Chrome showed an authorization dialog and click Allow, then retry"
             }
             Self::BrowserNotRunning => "manually open Chrome/Edge, then retry bk connect",
-            Self::BrowserVersionTooOld => "upgrade Chrome/Edge to version 112 or later",
             Self::BrowserNotInstalled => "install Google Chrome from https://www.google.com/chrome",
             Self::ChromeDisconnected => "Chrome may have closed; run bk connect to reconnect",
             Self::SessionNotFound => "session may have expired or been closed; create a new one",
             Self::SessionNoTab => "use bk open to create a tab first",
-            Self::DialogBlocking => {
-                "handle the dialog first: bk dialog accept or bk dialog dismiss"
-            }
             Self::NavigateFailed => "check URL is valid and accessible",
             Self::Timeout => "increase --timeout or check if page is responsive",
-            Self::ElementNotVisible => {
-                "element may be hidden or overlapped; try scrolling or waiting"
-            }
-            Self::ElementNotInteractable => "element is disabled; check page state",
             Self::TargetNotFound => "tab may have been closed; run bk tabs to see available tabs",
             Self::TargetAlreadyAttached => "detach the target from its current session first",
-            Self::TargetCrashed => "tab has crashed and cannot recover",
             Self::JsError => "check expression syntax",
             Self::InvalidArgument => "check command syntax",
             Self::DaemonError => "restart daemon: bk daemon stop && bk daemon start",
@@ -174,13 +146,7 @@ impl ErrorCode {
 
     /// Whether this error is potentially recoverable by the caller retrying or taking action.
     pub fn recoverable(&self) -> bool {
-        !matches!(
-            self,
-            Self::BrowserVersionTooOld
-                | Self::BrowserNotInstalled
-                | Self::TargetCrashed
-                | Self::DaemonError
-        )
+        !matches!(self, Self::BrowserNotInstalled | Self::DaemonError)
     }
 }
 
@@ -220,8 +186,7 @@ mod error_code_tests {
     fn error_code_recoverable_classification() {
         assert!(ErrorCode::NotConnected.recoverable());
         assert!(ErrorCode::RefNotFound.recoverable());
-        assert!(!ErrorCode::BrowserVersionTooOld.recoverable());
-        assert!(!ErrorCode::TargetCrashed.recoverable());
+        assert!(!ErrorCode::BrowserNotInstalled.recoverable());
         assert!(!ErrorCode::DaemonError.recoverable());
     }
 

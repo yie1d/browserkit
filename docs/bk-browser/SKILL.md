@@ -12,9 +12,9 @@ tags: [浏览器自动化, 网页交互, RPA, AI-Agent, 数据抽取]
 
 # 用 bk CLI 操作 browserkit 持久浏览器运行时
 
-`bk` 是 browserkit runtime 的默认 CLI client，通过后台 daemon 维持持久 CDP 连接。所有输出为 JSON。
+`bk` 是 browserkit runtime 的默认 CLI client，通过后台 daemon 维持持久 CDP 连接。运行时命令结果为 JSON；帮助和 shell completions 是文本。
 
-> **必须使用用户自己的浏览器（接管模式）。** bk 连接用户已运行的 Chrome，在用户可见窗口操作，复用已登录的 cookie 和会话，无需重新登录。**禁止启动隔离的无头浏览器。**
+> **必须使用用户自己的浏览器（接管模式）。** bk 连接用户已运行的 Chrome/Edge，在用户可见窗口操作，复用已登录的 cookie 和会话，无需重新登录。**禁止启动隔离的无头浏览器。**
 
 ---
 
@@ -183,6 +183,12 @@ bk download --ref <N> --output-dir ./downloads --timeout 30000
 bk screenshot --output page.png
 bk screenshot --full-page --output full.png
 
+# PDF
+bk pdf --output page.pdf
+bk pdf --landscape --background
+
+# screenshot/PDF 的相对输出路径由 CLI 规范化，实际文件由 daemon 写入
+
 # Session 管理
 bk session list                       # 列出所有 session
 bk session close                      # 关闭当前 session
@@ -314,7 +320,7 @@ bk act press --keys Shift+Enter
 | connect 失败 | 运行 `bk setup` 引导开启远程调试 |
 | session not found | `bk session list` 查看，`bk connect` 重新连接 |
 | 找不到元素 | 页面可能未完全加载，先 `bk wait --idle` 再 `bk snapshot` |
-| daemon 异常 | `bk session close`，再重新 `bk connect` |
+| daemon 异常 | 先运行 `bk daemon status` 并检查 `~/.bk/daemon.log.YYYY-MM-DD`；可响应时用 `bk daemon stop` 后重试普通命令触发自启；仅浏览器断连时运行 `bk connect` |
 | ref 对不上 | 页面发生了导航或大量 DOM 变化，重新 `bk snapshot` |
 | attach 匹配多个 tab | 换更唯一的 URL/title 片段，或显式 `--target <targetId>` |
 

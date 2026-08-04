@@ -1,6 +1,6 @@
 // Capture: screenshot, PDF, HTML
 
-use std::path::Path;
+use std::path::{Component, Path};
 use std::sync::Arc;
 
 use cdpkit::CDP;
@@ -166,47 +166,61 @@ pub async fn capture_pdf(cdp: &Arc<CDP>, session_id: &str) -> Result<String, BkE
     Ok(resp.data)
 }
 
-/// Validate that a PDF output path is safe for daemon-side writes.
-///
-/// The PDF command only accepts relative paths without parent traversal.
-pub fn validate_pdf_output_path(path: &str) -> Result<(), BkError> {
+/// Validate an absolute artifact destination before the daemon writes it.
+pub fn validate_artifact_output_path(path: &str, format: &str) -> Result<(), BkError> {
     let p = Path::new(path);
-    for component in p.components() {
-        match component {
-            std::path::Component::Prefix(_) | std::path::Component::RootDir => {
-                return Err(BkError::InvalidRequest(format!(
-                    "output path '{}' must be a relative path",
-                    path
-                )));
-            }
-            std::path::Component::ParentDir => {
-                return Err(BkError::InvalidRequest(format!(
-                    "output path '{}' contains '..' (path traversal not allowed)",
-                    path
-                )));
-            }
-            _ => {}
-        }
-    }
     if p.is_absolute() {
+        if p.components()
+            .any(|component| component == Component::ParentDir)
+        {
+            return Err(BkError::InvalidRequest(format!(
+                "output path '{path}' contains parent traversal"
+            )));
+        }
+    } else {
         return Err(BkError::InvalidRequest(format!(
-            "output path '{}' must be a relative path",
-            path
+            "output path '{path}' must be an absolute path"
+        )));
+    }
+    if !p
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case(format))
+    {
+        return Err(BkError::InvalidRequest(format!(
+            "output path '{path}' must use the .{format} extension"
+        )));
+    }
+    if !p.parent().is_some_and(Path::is_dir) {
+        return Err(BkError::InvalidRequest(format!(
+            "output path '{path}' parent directory does not exist"
         )));
     }
     Ok(())
 }
 
-/// Decode base64 PDF data and write it to a validated output path.
-pub async fn save_pdf_output(data: &str, path: &str) -> Result<usize, BkError> {
-    validate_pdf_output_path(path)?;
-    use base64::Engine;
-    let bytes = base64::engine::general_purpose::STANDARD
-        .decode(data)
-        .map_err(|e| BkError::Other(format!("base64 decode error: {}", e)))?;
-    let size = bytes.len();
-    tokio::fs::write(path, &bytes).await?;
-    Ok(size)
+/// Build the canonical inline-or-saved response for a base64 artifact.
+pub async fn artifact_output_response(
+    data: String,
+    output: Option<&str>,
+    format: &str,
+) -> Result<serde_json::Value, BkError> {
+    if let Some(path) = output {
+        validate_artifact_output_path(path, format)?;
+        use base64::Engine;
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(data)
+            .map_err(|error| BkError::Other(format!("base64 decode error: {error}")))?;
+        let size = bytes.len();
+        tokio::fs::write(path, bytes).await?;
+        Ok(serde_json::json!({ "file": path, "size": size }))
+    } else {
+        Ok(serde_json::json!({
+            "data": data,
+            "encoding": "base64",
+            "format": format,
+        }))
+    }
 }
 
 /// Generate a PDF with landscape/background options.
@@ -732,50 +746,60 @@ mod tests {
     }
 
     #[test]
-    fn pdf_output_path_rejects_parent_traversal() {
-        let err = super::validate_pdf_output_path("../page.pdf").unwrap_err();
+    fn artifact_output_path_rejects_relative_path() {
+        let err = super::validate_artifact_output_path("out/page.pdf", "pdf").unwrap_err();
         assert!(
-            err.to_string().contains("path traversal"),
+            err.to_string().contains("absolute path"),
             "unexpected error: {err}"
         );
     }
 
     #[test]
-    fn pdf_output_path_rejects_absolute_path() {
-        let path = if cfg!(windows) {
-            "C:\\temp\\page.pdf"
-        } else {
-            "/tmp/page.pdf"
-        };
-        let err = super::validate_pdf_output_path(path).unwrap_err();
+    fn artifact_output_path_rejects_missing_parent() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("missing").join("page.pdf");
+        let err = super::validate_artifact_output_path(path.to_str().unwrap(), "pdf").unwrap_err();
         assert!(
-            err.to_string().contains("must be a relative path"),
-            "unexpected error: {err}"
-        );
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn pdf_output_path_rejects_windows_rooted_path() {
-        let err = super::validate_pdf_output_path("\\temp\\page.pdf").unwrap_err();
-        assert!(
-            err.to_string().contains("must be a relative path"),
-            "unexpected error: {err}"
-        );
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn pdf_output_path_rejects_windows_drive_relative_path() {
-        let err = super::validate_pdf_output_path("C:page.pdf").unwrap_err();
-        assert!(
-            err.to_string().contains("must be a relative path"),
+            err.to_string().contains("parent directory"),
             "unexpected error: {err}"
         );
     }
 
     #[test]
-    fn pdf_output_path_allows_relative_file() {
-        super::validate_pdf_output_path("out/page.pdf").unwrap();
+    fn artifact_output_path_rejects_wrong_extension() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("page.png");
+        let err = super::validate_artifact_output_path(path.to_str().unwrap(), "pdf").unwrap_err();
+        assert!(err.to_string().contains(".pdf"), "unexpected error: {err}");
+    }
+
+    #[tokio::test]
+    async fn saved_artifact_response_has_file_and_size_without_data() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("page.pdf");
+        let result = super::artifact_output_response(
+            "aGVsbG8=".to_string(),
+            Some(path.to_str().unwrap()),
+            "pdf",
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result["file"], path.to_string_lossy().as_ref());
+        assert_eq!(result["size"], 5);
+        assert!(result.get("data").is_none());
+        assert_eq!(std::fs::read(path).unwrap(), b"hello");
+    }
+
+    #[tokio::test]
+    async fn inline_artifact_response_has_base64_contract() {
+        let result = super::artifact_output_response("aGVsbG8=".to_string(), None, "png")
+            .await
+            .unwrap();
+
+        assert_eq!(result["data"], "aGVsbG8=");
+        assert_eq!(result["encoding"], "base64");
+        assert_eq!(result["format"], "png");
+        assert!(result.get("file").is_none());
     }
 }

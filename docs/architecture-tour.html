@@ -208,19 +208,20 @@
 
       <section id="security" data-title="安全边界">
         <div class="eyebrow">08 / Security</div><h2>本地高权限自动化，需要明确边界</h2>
-        <div class="split"><div><h3>Daemon</h3><ul class="plain-list"><li>只监听 IPv4 loopback 随机端口</li><li>没有认证或 per-user transport isolation</li><li>请求上限 1 MiB</li><li>不得暴露或转发端口</li></ul></div><div><h3>URL policy</h3><ul class="plain-list"><li>允许 HTTP(S) 的公网、本机和局域网 host</li><li>允许标准本地/UNC <code>file:</code> URL 与 <code>about:blank</code></li><li>拒绝 javascript、data、browser-internal 与未知 scheme</li><li>Chrome 自身 CORS/file 权限仍然生效</li></ul></div></div>
+        <div class="split"><div><h3>Daemon</h3><ul class="plain-list"><li>只监听 IPv4 loopback 随机端口</li><li>没有认证或 per-user transport isolation</li><li>请求上限 1 MiB，空闲连接 60 秒后关闭</li><li>不得暴露或转发端口</li></ul></div><div><h3>URL policy</h3><ul class="plain-list"><li>允许 HTTP(S) 的公网、本机和局域网 host</li><li>允许标准本地/UNC <code>file:</code> URL 与 <code>about:blank</code></li><li>拒绝 javascript、data、browser-internal 与未知 scheme</li><li>浏览器自身 CORS/file 权限仍然生效</li></ul></div></div>
+        <p>客户端启动等待上限为 30 秒，TCP connect 与 ping handshake 各为 2 秒；业务请求至少等待 30 秒，在命令 timeout 外保留 5 秒 grace，最长 600 秒。ping 成功后直接复用同一条连接执行命令。</p>
         <div class="callout"><strong>本地信任边界：</strong>任何能访问该端口的本机进程都能调用这个高权限运行时，因此只适用于单用户工作站。若未来支持非 loopback transport，必须作为新设计同时引入正式认证。</div>
       </section>
 
       <section id="source-map" data-title="源码地图">
         <div class="eyebrow">09 / Source map</div><h2>从入口追到浏览器</h2>
-        <dl class="source-tree"><dt>src/main.rs</dt><dd>CLI、参数映射、本地文件输出</dd><dt>src/client.rs</dt><dd>daemon 发现、自启、请求发送</dd><dt>src/daemon/protocol.rs</dt><dd>newline-JSON 和结构化错误</dd><dt>src/daemon/server.rs</dt><dd>loopback TCP server、路由、idle cleanup</dd><dt>src/daemon/state.rs</dt><dd>共享状态、连接与锁</dd><dt>src/daemon/handler/mod.rs</dt><dd>canonical command 路由</dd><dt>src/daemon/session.rs</dt><dd>Session、Tab、ownership 模型</dd><dt>src/daemon/target_lifecycle.rs</dt><dd>Target watcher 与原子注册</dd><dt>src/daemon/persist.rs</dt><dd>schema v1、严格读取、防抖写入</dd><dt>src/browser/</dt><dd>DevToolsActivePort 发现与 CDP 连接</dd><dt>src/page/</dt><dd>navigation、interaction、state、capture、wait</dd></dl>
+        <dl class="source-tree"><dt>src/main.rs</dt><dd>CLI、参数映射、路径规范化与 evaluate 本地 append</dd><dt>src/client.rs</dt><dd>daemon 发现、自启、ping 与请求发送</dd><dt>src/daemon/protocol.rs</dt><dd>newline-JSON 和结构化错误</dd><dt>src/daemon/server.rs</dt><dd>loopback TCP server、路由、idle cleanup</dd><dt>src/daemon/state.rs</dt><dd>共享状态、连接与锁</dd><dt>src/daemon/handler/mod.rs</dt><dd>canonical command 路由</dd><dt>src/daemon/session.rs</dt><dd>Session、Tab、ownership 模型</dd><dt>src/daemon/target_lifecycle.rs</dt><dd>Target watcher 与原子注册</dd><dt>src/daemon/persist.rs</dt><dd>schema v1、严格读取、防抖写入</dd><dt>src/browser/</dt><dd>DevToolsActivePort 发现与 CDP 连接</dd><dt>src/page/</dt><dd>navigation、interaction、state、capture、wait 与产物落盘</dd></dl>
       </section>
 
       <section id="assessment" data-title="设计评价">
         <div class="eyebrow">10 / Assessment</div><h2>主架构已经收敛，剩余的是内部历史边缘</h2>
-        <div class="split"><div><h3>合理之处</h3><ul class="plain-list"><li>CLI 与持久运行时分离</li><li>browserkit 与 cdpkit 边界清晰</li><li>Session 是唯一隔离模型</li><li>ownership 保护用户 Tab</li><li>生命周期锁兼顾一致性与并发</li><li>磁盘和事件流都不阻塞主请求</li></ul></div><div><h3>当前边界</h3><ul class="plain-list"><li>只连接外部已运行的 Chrome/Edge</li><li>不保存或管理浏览器进程信息</li><li>daemon 重启后必须显式 <code>bk connect</code></li><li><code>Attached</code> 只 detach，<code>Owned</code> 才关闭 target</li><li>Windows token ACL 可继续加强</li></ul></div></div>
-        <p>最重要的架构主线已经稳定：daemon 管生命周期，Session 管隔离，ownership 管用户资源安全，cdpkit 管协议，CLI 只负责请求和本地输出。</p>
+        <div class="split"><div><h3>合理之处</h3><ul class="plain-list"><li>CLI 与持久运行时分离</li><li>browserkit 与 cdpkit 边界清晰</li><li>Session 是唯一隔离模型</li><li>ownership 保护用户 Tab</li><li>生命周期锁兼顾一致性与并发</li><li>磁盘和事件流都不阻塞主请求</li></ul></div><div><h3>当前边界</h3><ul class="plain-list"><li>只连接外部已运行的 Chrome/Edge</li><li>不保存或管理浏览器进程信息</li><li>daemon 重启后必须显式 <code>bk connect</code></li><li><code>Attached</code> 只 detach，<code>Owned</code> 才关闭 target</li><li>daemon 仅适用于单用户、不可转发端口的本地信任边界</li></ul></div></div>
+        <p>最重要的架构主线已经稳定：daemon 管生命周期和产物落盘，Session 管隔离，ownership 管用户资源安全，cdpkit 管协议，CLI 负责参数、路径规范化和请求。</p>
         <footer>内容基于当前仓库实现；命令合同仍以 <code>bk --help</code>、README 和 <code>docs/bk-browser/references/commands.md</code> 为准。</footer>
       </section>
     </main>
@@ -229,8 +230,8 @@
     'use strict';
     const ARCHITECTURE_NODES = Object.freeze({
       agent:{title:'AI Agent',role:'负责观察、决策和组合命令；运行时不嵌入模型规划。',inputs:'任务目标、上一条 JSON 响应',outputs:'一条 bk CLI 调用',files:'无运行时所有权'},
-      cli:{title:'bk CLI',role:'短生命周期客户端：解析参数、发送请求、格式化响应，并处理本地文件输出。',inputs:'命令行参数、daemon.port',outputs:'newline-JSON 请求或本地输出文件',files:'src/main.rs · src/client.rs'},
-      daemon:{title:'browserkit daemon',role:'长期持有浏览器连接、Session、事件订阅、清理和持久化状态。',inputs:'loopback TCP 请求、Chrome 事件',outputs:'结构化 JSON 响应、状态变更',files:'src/daemon/mod.rs · src/daemon/server.rs'},
+      cli:{title:'bk CLI',role:'短生命周期客户端：解析参数、规范化输出路径、发送请求并格式化响应；只有 evaluate --append-to 在 CLI 本地写文件。',inputs:'命令行参数、daemon.port',outputs:'newline-JSON 请求或 completion 文本',files:'src/main.rs · src/client.rs'},
+      daemon:{title:'browserkit daemon',role:'长期持有浏览器连接、Session、事件订阅、清理和持久化状态，并写入 screenshot/PDF 产物。',inputs:'loopback TCP 请求、Chrome 事件',outputs:'结构化 JSON 响应、状态变更、产物文件',files:'src/daemon/mod.rs · src/daemon/server.rs'},
       handlers:{title:'Command handlers',role:'实现 Agent 可见的 canonical command 合同，并把请求路由到运行时和页面能力。',inputs:'Request.params、Session/Target 选择器',outputs:'Response、CDP 操作、状态更新',files:'src/daemon/handler/mod.rs · src/daemon/handler/'},
       page:{title:'Page capability layer',role:'提供导航、交互、页面状态、截图、等待和元素引用等确定性能力。',inputs:'attached CDP session、操作参数',outputs:'页面结果、state diff、稳定 ref',files:'src/page/'},
       cdpkit:{title:'cdpkit 0.5.0',role:'协议层：typed CDP、WebSocket、Sender 和 EventStream。',inputs:'浏览器级或页面级 CDP 命令',outputs:'typed response 与事件流',files:'Cargo.toml · external cdpkit-rs'},
@@ -240,7 +241,7 @@
       persist:{title:'state.json / schema v1',role:'保存可恢复的 Session 元数据与 ownership；不序列化活跃 WebSocket、浏览器进程和任务句柄。',inputs:'500ms 防抖后的状态快照',outputs:'原子 state.json 与 persistence health',files:'src/daemon/persist.rs'}
     });
     const RUNTIME_FLOWS = Object.freeze({
-      'auto-start':{title:'首次命令与 daemon 自启',summary:'CLI 先探测健康 daemon；缺失时后台启动，等待随机 loopback 端口和 ping 就绪后再发送业务请求。',steps:[['Agent','运行命令','发起 bk snapshot','normal'],['bk CLI','探测','读取 daemon.port 并 ping','normal'],['daemon process','自启','获取单实例锁，加载状态','normal'],['TCP server','就绪','绑定 127.0.0.1 并写入随机端口','normal'],['handler','执行','路由并返回 JSON','normal']]},
+      'auto-start':{title:'首次命令与 daemon 自启',summary:'CLI 先探测健康 daemon；缺失时后台启动，等待随机 loopback 端口和 ping 就绪，并复用已验证连接发送业务请求。',steps:[['Agent','运行命令','发起 bk snapshot','normal'],['bk CLI','探测','读取 daemon.port、连接并 ping','normal'],['daemon process','自启','获取单实例锁，加载状态','normal'],['TCP server','就绪','绑定 127.0.0.1 并写入随机端口','normal'],['handler','复用连接','路由业务请求并返回 JSON','normal']]},
       'open-tab':{title:'bk open 与 Owned Tab 注册',summary:'容量 reservation 在创建 Target 前完成，失败路径关闭新 Target 并释放名额。',steps:[['Agent','请求','bk open URL','normal'],['bk CLI','编码','发送 open 请求','normal'],['open handler','预留','检查 Session 与 tab 上限','normal'],['Chrome Target','创建','创建并 attach 页面 Target','normal'],['lifecycle registry','提交','reservation 转为 Owned Tab','normal']]},
       'new-tab':{title:'点击打开新 Tab',summary:'普通 act 与 watcher 共享生命周期读锁，因此 handler 等待新页面时 watcher 仍可完成注册。',steps:[['Agent','动作','act click --ref','normal'],['act handler','触发','先订阅再点击','normal'],['Chrome','事件','创建新的 page Target','normal'],['target watcher','归属','重验 Session 并 attach','destructive'],['Session','注册','记录 new_tab 与 active target','normal']]},
       'disconnect':{title:'Chrome WebSocket 断连',summary:'断连 monitor 只处理当前连接，随后独占各 Session 生命周期并将其降级为 disconnected。',steps:[['Chrome','断开','WebSocket closed','destructive'],['disconnect monitor','辨别','忽略旧连接的迟到通知','destructive'],['DaemonState','移除','删除 Browser，取消 watcher','destructive'],['Session cleanup','降级','取消订阅并标记 disconnected','destructive'],['persisted status','记录','防抖写入最新状态','normal']]}

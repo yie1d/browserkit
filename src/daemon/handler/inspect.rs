@@ -303,11 +303,9 @@ async fn do_pdf(req: &Request, state: &Arc<DaemonState>) -> Result<Response, Res
     .await
     .map_err(Response::from)?;
 
-    if let Some(path) = output {
-        crate::page::capture::save_pdf_output(&data, path)
-            .await
-            .map_err(Response::from)?;
-    }
+    let artifact = crate::page::capture::artifact_output_response(data, output, "pdf")
+        .await
+        .map_err(Response::from)?;
 
     touch_session(state, &ctx.session_name);
     info!(
@@ -316,16 +314,7 @@ async fn do_pdf(req: &Request, state: &Arc<DaemonState>) -> Result<Response, Res
         "pdf generated"
     );
 
-    let mut result = canonical_inspect_payload(
-        &ctx.session_name,
-        &ctx.target_id,
-        json!({
-        "data": data,
-        }),
-    )?;
-    if let Some(path) = output {
-        result["file"] = json!(path);
-    }
+    let result = canonical_inspect_payload(&ctx.session_name, &ctx.target_id, artifact)?;
     Ok(Response::ok(result))
 }
 

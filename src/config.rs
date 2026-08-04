@@ -6,7 +6,15 @@
 use std::path::PathBuf;
 
 use serde::Deserialize;
+use std::path::Path;
 
+use crate::error::BkError;
+
+const MAX_CLEANUP_INTERVAL_SECONDS: u64 = 3_600;
+const MAX_JS_TIMEOUT_SECONDS: u64 = 3_600;
+const MAX_SESSIONS: usize = 1_000;
+const MAX_TABS_PER_SESSION: usize = 1_000;
+const MAX_SESSION_TIMEOUT_HOURS: u64 = 8_760;
 /// Top-level configuration for browserkit.
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(default, deny_unknown_fields)]
@@ -60,28 +68,76 @@ impl Default for DaemonConfig {
 
 /// Load configuration from `~/.bk/config.toml`.
 ///
-/// Returns default config if the file doesn't exist or can't be parsed.
-/// Logs a warning on parse errors but never fails.
-pub fn load_config() -> Config {
-    let path = config_file_path();
-    match std::fs::read_to_string(&path) {
-        Ok(content) => match toml::from_str::<Config>(&content) {
-            Ok(mut config) => {
-                if config.daemon.cleanup_interval_seconds == 0 {
-                    tracing::warn!("cleanup_interval_seconds must be positive; using 60");
-                    config.daemon.cleanup_interval_seconds =
-                        DaemonConfig::default().cleanup_interval_seconds;
-                }
-                tracing::info!(?path, "loaded config");
-                config
-            }
-            Err(e) => {
-                tracing::warn!(?path, %e, "failed to parse config, using defaults");
-                Config::default()
-            }
-        },
-        Err(_) => Config::default(),
+/// Uses defaults only when the file does not exist. Existing invalid files are fatal.
+pub fn load_config() -> Result<Config, BkError> {
+    load_config_from_path(&config_file_path())
+}
+
+fn load_config_from_path(path: &Path) -> Result<Config, BkError> {
+    let content = match std::fs::read_to_string(path) {
+        Ok(content) => content,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Config::default()),
+        Err(error) => {
+            return Err(BkError::Other(format!(
+                "failed to read config '{}': {error}",
+                path.display()
+            )))
+        }
+    };
+    let config = toml::from_str::<Config>(&content).map_err(|error| {
+        BkError::Other(format!(
+            "failed to parse config '{}': {error}",
+            path.display()
+        ))
+    })?;
+    validate_config(&config)?;
+    tracing::info!(?path, "loaded config");
+    Ok(config)
+}
+
+fn validate_config(config: &Config) -> Result<(), BkError> {
+    validate_range(
+        "daemon.cleanup_interval_seconds",
+        config.daemon.cleanup_interval_seconds,
+        1,
+        MAX_CLEANUP_INTERVAL_SECONDS,
+    )?;
+    validate_range(
+        "limits.js_timeout_seconds",
+        config.limits.js_timeout_seconds,
+        0,
+        MAX_JS_TIMEOUT_SECONDS,
+    )?;
+    validate_range(
+        "limits.max_sessions",
+        config.limits.max_sessions,
+        0,
+        MAX_SESSIONS,
+    )?;
+    validate_range(
+        "limits.max_tabs_per_session",
+        config.limits.max_tabs_per_session,
+        0,
+        MAX_TABS_PER_SESSION,
+    )?;
+    validate_range(
+        "limits.session_timeout_hours",
+        config.limits.session_timeout_hours,
+        0,
+        MAX_SESSION_TIMEOUT_HOURS,
+    )
+}
+
+fn validate_range<T>(name: &str, value: T, min: T, max: T) -> Result<(), BkError>
+where
+    T: Copy + PartialOrd + std::fmt::Display,
+{
+    if value < min || value > max {
+        return Err(BkError::Other(format!(
+            "invalid config: {name} must be between {min} and {max}, got {value}"
+        )));
     }
+    Ok(())
 }
 
 /// Path to the config file: `~/.bk/config.toml`.
@@ -142,13 +198,6 @@ cleanup_interval_seconds = 45
     }
 
     #[test]
-    fn load_config_returns_default_when_file_missing() {
-        // load_config should not panic even if file doesn't exist
-        let c = load_config();
-        assert_eq!(c.daemon.cleanup_interval_seconds, 60);
-    }
-
-    #[test]
     fn parse_limits_config() {
         let toml = r#"
 [limits]
@@ -196,5 +245,40 @@ session_timeout_hours = 48
 "#
         );
         assert!(toml::from_str::<Config>(&toml).is_err());
+    }
+
+    #[test]
+    fn existing_invalid_config_is_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "[limits]\nmax_sessions = 'many'\n").unwrap();
+
+        let error = load_config_from_path(&path).unwrap_err();
+
+        assert!(error.to_string().contains("failed to parse config"));
+    }
+
+    #[test]
+    fn missing_config_uses_defaults() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = load_config_from_path(&dir.path().join("missing.toml")).unwrap();
+        assert_eq!(config.limits.max_sessions, 10);
+    }
+
+    #[test]
+    fn config_values_are_validated_without_clamping() {
+        for content in [
+            "[daemon]\ncleanup_interval_seconds = 0\n",
+            "[daemon]\ncleanup_interval_seconds = 3601\n",
+            "[limits]\njs_timeout_seconds = 3601\n",
+            "[limits]\nmax_sessions = 1001\n",
+            "[limits]\nmax_tabs_per_session = 1001\n",
+            "[limits]\nsession_timeout_hours = 8761\n",
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("config.toml");
+            std::fs::write(&path, content).unwrap();
+            assert!(load_config_from_path(&path).is_err(), "accepted: {content}");
+        }
     }
 }

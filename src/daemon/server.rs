@@ -2,10 +2,13 @@
 
 use std::sync::Arc;
 
+use std::time::Duration;
 use tokio::io::{AsyncWrite, BufReader, BufWriter};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::watch;
 use tracing::{error, info};
+
+const CONNECTION_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 
 use crate::daemon::handler::{handle_request, HandlerContext};
 use crate::daemon::protocol::{read_request, write_response, Request, Response};
@@ -232,30 +235,42 @@ struct ExpiredSession {
 }
 
 async fn handle_connection(stream: TcpStream, state: Arc<DaemonState>, ctx: Arc<HandlerContext>) {
+    handle_connection_with_idle_timeout(stream, state, ctx, CONNECTION_IDLE_TIMEOUT).await;
+}
+
+async fn handle_connection_with_idle_timeout(
+    stream: TcpStream,
+    state: Arc<DaemonState>,
+    ctx: Arc<HandlerContext>,
+    idle_timeout: Duration,
+) {
     let (reader, writer) = stream.into_split();
     let mut reader = BufReader::new(reader);
     let mut writer = BufWriter::new(writer);
 
     loop {
-        match read_request(&mut reader).await {
-            Ok(Some(req)) => {
-                let resp = handle_request(&req, &state, &ctx).await;
-                let is_daemon_stop = req.cmd == "daemon.stop";
-                if write_response_then_shutdown_if_daemon_stop(&mut writer, &req, &resp, &ctx)
-                    .await
-                    .is_err()
-                {
+        match tokio::time::timeout(idle_timeout, read_request(&mut reader)).await {
+            Err(_) => break,
+            Ok(result) => match result {
+                Ok(Some(req)) => {
+                    let resp = handle_request(&req, &state, &ctx).await;
+                    let is_daemon_stop = req.cmd == "daemon.stop";
+                    if write_response_then_shutdown_if_daemon_stop(&mut writer, &req, &resp, &ctx)
+                        .await
+                        .is_err()
+                    {
+                        break;
+                    }
+                    if is_daemon_stop {
+                        break;
+                    }
+                }
+                Ok(None) => break,
+                Err(resp) => {
+                    let _ = write_response(&mut writer, &resp).await;
                     break;
                 }
-                if is_daemon_stop {
-                    break;
-                }
-            }
-            Ok(None) => break,
-            Err(resp) => {
-                let _ = write_response(&mut writer, &resp).await;
-                break;
-            }
+            },
         }
     }
 }
@@ -799,6 +814,33 @@ mod tests {
         let resp: Response =
             serde_json::from_str(std::str::from_utf8(&buf[..n]).unwrap().trim()).unwrap();
         assert!(resp.ok);
+    }
+
+    #[tokio::test]
+    async fn idle_connection_is_closed_after_timeout() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let state = Arc::new(DaemonState::new());
+        let (ctx, _rx) = handler_context_with_shutdown();
+        let ctx = Arc::new(ctx);
+        let server_task = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            handle_connection_with_idle_timeout(
+                stream,
+                state,
+                ctx,
+                std::time::Duration::from_millis(50),
+            )
+            .await;
+        });
+
+        let _client = TcpStream::connect(format!("127.0.0.1:{port}"))
+            .await
+            .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(1), server_task)
+            .await
+            .expect("idle connection task did not stop")
+            .unwrap();
     }
 
     #[tokio::test]

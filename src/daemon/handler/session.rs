@@ -452,48 +452,13 @@ pub async fn handle_session_cookies_get(req: &Request, state: &Arc<DaemonState>)
 }
 
 /// Handle `bk session cookies set` — set cookies via CDP Storage.setCookies.
-///
-/// Accepts a `cookies` array in params or reads from a file path.
 pub async fn handle_session_cookies_set(req: &Request, state: &Arc<DaemonState>) -> Response {
     let session_name = match session_name_param(&req.params) {
         Ok(session_name) => session_name,
         Err(response) => return response,
     };
 
-    // Get cookies from params — either inline array or file path
-    let cookies_value = if let Some(file_path) = req.params.get("file").and_then(|v| v.as_str()) {
-        // Read cookies from file
-        let content = match tokio::fs::read_to_string(file_path).await {
-            Ok(c) => c,
-            Err(_) => {
-                return Response::error_detail(
-                    ErrorCode::FileNotFound,
-                    format!("cookies file not found: {}", file_path),
-                    Some("check file path exists and is absolute".into()),
-                );
-            }
-        };
-        match serde_json::from_str::<serde_json::Value>(&content) {
-            Ok(v) => {
-                if v.is_array() {
-                    v
-                } else {
-                    return Response::error_detail(
-                        ErrorCode::InvalidArgument,
-                        "cookies file must contain a JSON array".into(),
-                        None,
-                    );
-                }
-            }
-            Err(e) => {
-                return Response::error_detail(
-                    ErrorCode::InvalidArgument,
-                    format!("invalid JSON in cookies file: {e}"),
-                    None,
-                );
-            }
-        }
-    } else if let Some(arr) = req.params.get("cookies") {
+    let cookies_value = if let Some(arr) = req.params.get("cookies") {
         if arr.is_array() {
             arr.clone()
         } else {
@@ -506,7 +471,7 @@ pub async fn handle_session_cookies_set(req: &Request, state: &Arc<DaemonState>)
     } else {
         return Response::error_detail(
             ErrorCode::InvalidArgument,
-            "missing cookies: provide --file <path> or cookies array in params".into(),
+            "missing cookies array in params".into(),
             None,
         );
     };
@@ -1197,71 +1162,6 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("missing cookies"));
-    }
-
-    #[tokio::test]
-    async fn handle_cookies_set_file_not_found() {
-        let state = Arc::new(DaemonState::new());
-        let session = Session::new_default("localhost:9222".into());
-        state.sessions.insert("default".into(), session);
-
-        let req = Request {
-            cmd: "session.cookies.set".into(),
-            params: json!({"file": "/nonexistent/cookies.json"}),
-        };
-        let resp = handle_session_cookies_set(&req, &state).await;
-        let json = serde_json::to_value(&resp).unwrap();
-        assert_eq!(json["ok"], false);
-        assert_eq!(json["error"]["code"], "FILE_NOT_FOUND");
-    }
-
-    #[tokio::test]
-    async fn handle_cookies_set_invalid_json_file() {
-        let state = Arc::new(DaemonState::new());
-        let session = Session::new_default("localhost:9222".into());
-        state.sessions.insert("default".into(), session);
-
-        // Create a temp file with invalid JSON
-        let dir = tempfile::tempdir().unwrap();
-        let file_path = dir.path().join("bad.json");
-        std::fs::write(&file_path, "not json at all").unwrap();
-
-        let req = Request {
-            cmd: "session.cookies.set".into(),
-            params: json!({"file": file_path.to_str().unwrap()}),
-        };
-        let resp = handle_session_cookies_set(&req, &state).await;
-        let json = serde_json::to_value(&resp).unwrap();
-        assert_eq!(json["ok"], false);
-        assert_eq!(json["error"]["code"], "INVALID_ARGUMENT");
-        assert!(json["error"]["message"]
-            .as_str()
-            .unwrap()
-            .contains("invalid JSON"));
-    }
-
-    #[tokio::test]
-    async fn handle_cookies_set_non_array_file() {
-        let state = Arc::new(DaemonState::new());
-        let session = Session::new_default("localhost:9222".into());
-        state.sessions.insert("default".into(), session);
-
-        let dir = tempfile::tempdir().unwrap();
-        let file_path = dir.path().join("obj.json");
-        std::fs::write(&file_path, r#"{"not":"an array"}"#).unwrap();
-
-        let req = Request {
-            cmd: "session.cookies.set".into(),
-            params: json!({"file": file_path.to_str().unwrap()}),
-        };
-        let resp = handle_session_cookies_set(&req, &state).await;
-        let json = serde_json::to_value(&resp).unwrap();
-        assert_eq!(json["ok"], false);
-        assert_eq!(json["error"]["code"], "INVALID_ARGUMENT");
-        assert!(json["error"]["message"]
-            .as_str()
-            .unwrap()
-            .contains("JSON array"));
     }
 
     #[tokio::test]

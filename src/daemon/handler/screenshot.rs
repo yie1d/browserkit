@@ -5,8 +5,6 @@
 
 use std::sync::Arc;
 
-use serde_json::json;
-
 use crate::daemon::protocol::{Request, Response};
 use crate::daemon::state::DaemonState;
 use crate::error::ErrorCode;
@@ -139,38 +137,16 @@ pub async fn handle_screenshot(req: &Request, state: &Arc<DaemonState>) -> Respo
     }
 
     match capture_result {
-        Ok(base64_data) => {
-            // Write to file if output path given
-            if let Some(ref path) = params.output {
-                use base64::Engine;
-                match base64::engine::general_purpose::STANDARD.decode(&base64_data) {
-                    Ok(bytes) => {
-                        if let Err(e) = tokio::fs::write(path, &bytes).await {
-                            return Response::error_detail(
-                                ErrorCode::DaemonError,
-                                format!("failed to write screenshot: {e}"),
-                                None,
-                            );
-                        }
-                        Response::ok(json!({
-                            "saved": path,
-                            "size": bytes.len(),
-                        }))
-                    }
-                    Err(e) => Response::error_detail(
-                        ErrorCode::DaemonError,
-                        format!("base64 decode failed: {e}"),
-                        None,
-                    ),
-                }
-            } else {
-                Response::ok(json!({
-                    "data": base64_data,
-                    "encoding": "base64",
-                    "format": "png",
-                }))
-            }
-        }
+        Ok(base64_data) => match crate::page::capture::artifact_output_response(
+            base64_data,
+            params.output.as_deref(),
+            "png",
+        )
+        .await
+        {
+            Ok(result) => Response::ok(result),
+            Err(error) => Response::from(error),
+        },
         Err(e) => Response::error_detail(
             ErrorCode::DaemonError,
             format!("screenshot failed: {e}"),

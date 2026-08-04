@@ -6,7 +6,7 @@ use serde_json::json;
 // ── Custom grouped help text ──────────────────────────────────
 
 const HELP_TEXT: &str = "\
-Persistent browser runtime CLI for AI agents. All output is JSON.
+Persistent browser runtime CLI for AI agents. Runtime command results are JSON; help and shell completions are text.
 
 bk is the thin CLI client for the local browserkit daemon.
 
@@ -60,7 +60,7 @@ use browserkit::error::ErrorCode;
 #[command(
     name = "bk",
     about = "Persistent browser runtime CLI for AI agents",
-    long_about = "Persistent browser runtime CLI for AI agents.\n\nAll output is JSON. Commands communicate with the local browserkit daemon over TCP.",
+    long_about = "Persistent browser runtime CLI for AI agents.\n\nRuntime command results are JSON; help and shell completions are text. Commands communicate with the local browserkit daemon over TCP.",
     version
 )]
 pub struct Cli {
@@ -329,6 +329,12 @@ pub enum Command {
     Pdf {
         #[arg(short, long)]
         output: Option<String>,
+        /// Print using landscape orientation
+        #[arg(long)]
+        landscape: bool,
+        /// Include CSS backgrounds in the generated PDF
+        #[arg(long)]
+        background: bool,
     },
 
     // ── Management ────────────────────────────────────────────────
@@ -989,13 +995,13 @@ fn build_screenshot_params(
     selector: Option<&str>,
     labels: bool,
     cli: &Cli,
-) -> serde_json::Value {
+) -> Result<serde_json::Value, Response> {
     let mut params = json!({
         "full_page": full_page,
         "labels": labels,
     });
     if let Some(o) = output {
-        params["output"] = json!(o);
+        params["output"] = json!(canonical_artifact_output(o, "png")?.to_string_lossy());
     }
     if let Some(s) = selector {
         params["selector"] = json!(s);
@@ -1006,7 +1012,7 @@ fn build_screenshot_params(
     if let Some(t) = &cli.target {
         params["target"] = json!(t);
     }
-    params
+    Ok(params)
 }
 
 fn add_session_target_params(params: &mut serde_json::Value, cli: &Cli) {
@@ -1261,19 +1267,21 @@ async fn dispatch(cli: &Cli, client: &mut DaemonClient) -> Result<(), String> {
             selector,
             labels,
         } => {
-            let resp = send_cmd(
-                client,
-                "screenshot",
-                build_screenshot_params(
-                    output.as_deref(),
-                    *full_page,
-                    selector.as_deref(),
-                    *labels,
-                    cli,
-                ),
-            )
-            .await?;
-            handle_binary_response(&resp, output.as_deref(), "screenshot.png");
+            let params = match build_screenshot_params(
+                output.as_deref(),
+                *full_page,
+                selector.as_deref(),
+                *labels,
+                cli,
+            ) {
+                Ok(params) => params,
+                Err(response) => {
+                    print_response(&response);
+                    return Ok(());
+                }
+            };
+            let resp = send_cmd(client, "screenshot", params).await?;
+            print_response(&resp);
         }
 
         Command::Wait {
@@ -1507,14 +1515,31 @@ async fn dispatch(cli: &Cli, client: &mut DaemonClient) -> Result<(), String> {
             print_response(&resp);
         }
 
-        Command::Pdf { output } => {
+        Command::Pdf {
+            output,
+            landscape,
+            background,
+        } => {
             let mut params = json!({});
             if let Some(o) = output {
-                params["output"] = json!(o);
+                let output = match canonical_artifact_output(o, "pdf") {
+                    Ok(output) => output,
+                    Err(response) => {
+                        print_response(&response);
+                        return Ok(());
+                    }
+                };
+                params["output"] = json!(output.to_string_lossy());
+            }
+            if *landscape {
+                params["landscape"] = json!(true);
+            }
+            if *background {
+                params["background"] = json!(true);
             }
             add_session_target_params(&mut params, cli);
             let resp = send_cmd(client, "pdf", params).await?;
-            handle_binary_response(&resp, output.as_deref(), concat!("page", ".pdf"));
+            print_response(&resp);
         }
 
         // ── Management (Dialog) ───────────────────────────
@@ -1620,6 +1645,50 @@ fn canonical_directory(path: &str) -> Result<std::path::PathBuf, Response> {
         ));
     }
     Ok(canonical)
+}
+
+fn canonical_artifact_output(
+    path: &str,
+    expected_extension: &str,
+) -> Result<std::path::PathBuf, Response> {
+    let path = std::path::Path::new(path);
+    if !path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case(expected_extension))
+    {
+        return Err(Response::error_detail(
+            ErrorCode::InvalidArgument,
+            format!("output file must use the .{expected_extension} extension"),
+            None,
+        ));
+    }
+    let file_name = path.file_name().ok_or_else(|| {
+        Response::error_detail(
+            ErrorCode::InvalidArgument,
+            "output path must name a file".into(),
+            None,
+        )
+    })?;
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| std::path::Path::new("."));
+    let parent = std::fs::canonicalize(parent).map_err(|error| {
+        Response::error_detail(
+            ErrorCode::InvalidArgument,
+            format!("failed to resolve output parent directory: {error}"),
+            Some("choose a file in an existing directory".into()),
+        )
+    })?;
+    if !parent.is_dir() {
+        return Err(Response::error_detail(
+            ErrorCode::InvalidArgument,
+            "output parent path is not a directory".into(),
+            None,
+        ));
+    }
+    Ok(parent.join(file_name))
 }
 
 #[derive(Debug)]
@@ -1806,53 +1875,6 @@ fn append_evaluate_result(resp: &Response, path: &str) -> Response {
     }))
 }
 
-/// Handle binary (base64) responses: save to file or print info.
-fn handle_binary_response(resp: &Response, output: Option<&str>, _default_name: &str) {
-    if !resp.ok {
-        print_response(resp);
-        return;
-    }
-
-    // If already saved by daemon (output param was in the request)
-    if let Some(data) = &resp.data {
-        if data.get("file").is_some() {
-            print_response(resp);
-            return;
-        }
-    }
-
-    // Save base64 data to file if output specified but wasn't in request
-    if let (Some(path), Some(data)) = (
-        output,
-        resp.data
-            .as_ref()
-            .and_then(|d| d.get("data"))
-            .and_then(|v| v.as_str()),
-    ) {
-        match base64_decode_and_save(data, path) {
-            Ok(()) => println!(
-                "{}",
-                serde_json::json!({"ok": true, "data": {"file": path}})
-            ),
-            Err(e) => println!(
-                "{}",
-                serde_json::json!({"ok": false, "error": format!("save failed: {}", e)})
-            ),
-        }
-    } else {
-        print_response(resp);
-    }
-}
-
-/// Decode base64 data and write to file.
-fn base64_decode_and_save(data: &str, path: &str) -> Result<(), String> {
-    use base64::Engine;
-    let bytes = base64::engine::general_purpose::STANDARD
-        .decode(data)
-        .map_err(|e| format!("base64 decode error: {}", e))?;
-    std::fs::write(path, bytes).map_err(|e| format!("write error: {}", e))
-}
-
 // ── Daemon exit wait ──────────────────────────────────────────
 
 /// After sending `daemon.stop`, poll the port until the daemon process exits
@@ -1944,6 +1966,21 @@ mod tests {
             .expect("attach long help")
             .to_string()
             .contains("default session"));
+    }
+
+    #[test]
+    fn top_level_help_limits_json_guarantee_to_runtime_commands() {
+        assert!(HELP_TEXT
+            .contains("Runtime command results are JSON; help and shell completions are text."));
+        assert!(!HELP_TEXT.contains("All output is JSON."));
+
+        let long_about = Cli::command()
+            .get_long_about()
+            .expect("top-level long help")
+            .to_string();
+        assert!(long_about
+            .contains("Runtime command results are JSON; help and shell completions are text."));
+        assert!(!long_about.contains("All output is JSON."));
     }
 
     #[test]
@@ -2656,7 +2693,48 @@ mod tests {
     #[test]
     fn pdf_rejects_url_argument() {
         assert!(try_parse(&["bk", "pdf", "https://example.com"]).is_err());
-        assert!(try_parse(&["bk", "pdf", "--output", concat!("page", ".pdf")]).is_ok());
+        let cli = try_parse(&[
+            "bk",
+            "pdf",
+            "--output",
+            concat!("page", ".pdf"),
+            "--landscape",
+            "--background",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Command::Pdf {
+                landscape: true,
+                background: true,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn artifact_output_is_resolved_to_absolute_path() {
+        let resolved = canonical_artifact_output("capture.png", "png").unwrap();
+
+        assert!(resolved.is_absolute());
+        assert_eq!(
+            resolved,
+            std::env::current_dir()
+                .unwrap()
+                .canonicalize()
+                .unwrap()
+                .join("capture.png")
+        );
+    }
+
+    #[test]
+    fn artifact_output_requires_existing_parent_and_expected_extension() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("missing").join("capture.png");
+        assert!(canonical_artifact_output(missing.to_str().unwrap(), "png").is_err());
+
+        let wrong_extension = dir.path().join("capture.pdf");
+        assert!(canonical_artifact_output(wrong_extension.to_str().unwrap(), "png").is_err());
     }
 
     #[test]

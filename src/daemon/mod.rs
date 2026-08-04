@@ -94,32 +94,10 @@ pub fn try_acquire_daemon_lock() -> std::io::Result<Option<File>> {
 /// Returns `Some(port)` if a healthy daemon responds, `None` otherwise.
 pub async fn check_existing_daemon() -> Option<u16> {
     let port = read_port_file()?;
-    // Try to connect and send a ping command
-    let stream = tokio::net::TcpStream::connect(format!("127.0.0.1:{}", port))
+    crate::client::DaemonClient::connect_to_port(port)
         .await
-        .ok()?;
-
-    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, BufWriter};
-    let (reader, writer) = stream.into_split();
-    let mut writer = BufWriter::new(writer);
-    let mut reader = BufReader::new(reader);
-
-    let ping = r#"{"cmd":"ping","params":{}}"#;
-    writer
-        .write_all(format!("{ping}\n").as_bytes())
-        .await
-        .ok()?;
-    writer.flush().await.ok()?;
-
-    let mut line = String::new();
-    reader.read_line(&mut line).await.ok()?;
-
-    let resp = serde_json::from_str::<protocol::Response>(&line).ok()?;
-    if resp.ok {
-        Some(port)
-    } else {
-        None
-    }
+        .ok()
+        .map(|_| port)
 }
 
 /// Result of starting the daemon: server handle + shutdown receiver + lock guard.
@@ -171,7 +149,7 @@ pub async fn start_daemon() -> Result<DaemonStartResult, crate::error::BkError> 
     }
 
     // Load configuration
-    let config = crate::config::load_config();
+    let config = crate::config::load_config()?;
     let cleanup_interval = config.daemon.cleanup_interval_seconds;
 
     // Create empty state (no restore yet — that happens in background after bind)

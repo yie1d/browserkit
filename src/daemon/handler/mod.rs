@@ -158,7 +158,6 @@ fn allowed_request_fields(command: &str) -> Option<Vec<RequestField>> {
         ],
         "session.cookies.set" => &[
             request_field("session", String),
-            request_field("file", String),
             request_field("cookies", Array),
         ],
         "session.storage.local.get" => &[
@@ -186,7 +185,6 @@ fn allowed_request_fields(command: &str) -> Option<Vec<RequestField>> {
             request_field("target", String),
             request_field("expression", String),
             request_field("timeout", U64),
-            request_field("await_promise", Bool),
         ],
         "screenshot" => &[
             request_field("session", String),
@@ -537,7 +535,7 @@ mod tests {
             ("session.close", &["session"]),
             ("session.list", &[]),
             ("session.cookies.get", &["session"]),
-            ("session.cookies.set", &["session", "file", "cookies"]),
+            ("session.cookies.set", &["session", "cookies"]),
             ("session.cookies.clear", &["session"]),
             ("session.storage.local.get", &["session", "target", "key"]),
             (
@@ -546,16 +544,7 @@ mod tests {
             ),
             ("session.storage.export", &["session", "target"]),
             ("session.storage.import", &["session", "target", "state"]),
-            (
-                "evaluate",
-                &[
-                    "session",
-                    "target",
-                    "expression",
-                    "timeout",
-                    "await_promise",
-                ],
-            ),
+            ("evaluate", &["session", "target", "expression", "timeout"]),
             (
                 "screenshot",
                 &[
@@ -633,9 +622,10 @@ mod tests {
                 .iter()
                 .map(|field| {
                     let value = match *field {
-                        "full" | "no_page_text" | "back" | "forward" | "reload"
-                        | "await_promise" | "full_page" | "labels" | "include_text" | "regex"
-                        | "landscape" | "background" => serde_json::json!(true),
+                        "full" | "no_page_text" | "back" | "forward" | "reload" | "full_page"
+                        | "labels" | "include_text" | "regex" | "landscape" | "background" => {
+                            serde_json::json!(true)
+                        }
                         "timeout" | "max_tokens" | "time" | "max" | "context" | "limit"
                         | "count" | "ref" => serde_json::json!(1),
                         "params" | "state" => serde_json::json!({}),
@@ -679,6 +669,23 @@ mod tests {
             params: serde_json::json!([]),
         };
         assert!(validate_request_fields(&req).is_err());
+
+        for (command, params) in [
+            (
+                "evaluate",
+                serde_json::json!({"expression": "1", "await_promise": false}),
+            ),
+            (
+                "session.cookies.set",
+                serde_json::json!({"file": "cookies.json"}),
+            ),
+        ] {
+            let req = Request {
+                cmd: command.into(),
+                params,
+            };
+            assert!(validate_request_fields(&req).is_err(), "{command}");
+        }
     }
 
     #[test]

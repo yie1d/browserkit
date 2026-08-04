@@ -72,7 +72,8 @@ for normal work.
 `debug block`, `debug unblock`, and `debug cdp` are explicit diagnostic tools.
 They are not compatibility aliases or a second automation API.
 
-All CLI output is JSON. The daemon accepts only the current command contract.
+Runtime command results are JSON; help and shell completion generation are
+text. The daemon accepts only the current command contract.
 
 ## Persistence
 
@@ -97,7 +98,8 @@ state migration layer.
 - Report partial cleanup explicitly instead of claiming full success.
 - Mark sessions disconnected when their underlying CDP connection closes.
 - Keep CLI-local file writes, such as `evaluate --append-to`, out of daemon
-  request payloads.
+  request payloads. Screenshot and PDF output are different: the CLI
+  canonicalizes the destination, then the daemon writes the artifact.
 
 ## Security Boundary
 

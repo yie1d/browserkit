@@ -1,27 +1,29 @@
-# Connecting to an Existing Chrome Instance
+# Connecting to an Existing Chrome or Edge Instance
 
 browserkit is a persistent browser runtime for AI agents. Its default client,
-`bk`, connects to the user's already-running Chrome, reuses the user's logged-in
-browser context, and keeps session/tab state in the local daemon. browserkit
-does not launch, manage, or terminate the browser process.
+`bk`, connects to the user's already-running Chrome or Edge, reuses the user's
+logged-in browser context, and keeps session/tab state in the local daemon.
+browserkit does not launch, manage, or terminate the browser process.
 
 ## Prerequisites
 
-One-time Chrome setup persists across restarts:
+One-time browser setup persists across restarts:
 
-1. Open `chrome://inspect/#remote-debugging` in Chrome.
+1. Open `chrome://inspect/#remote-debugging` in Chrome or
+   `edge://inspect/#remote-debugging` in Edge.
 2. Enable remote debugging.
-3. Leave Chrome running.
+3. Leave the browser running.
 
-Chrome writes a `DevToolsActivePort` file to the profile directory containing
-the dynamic debug port and, on newer Chrome versions, the browser WebSocket
+The browser writes a `DevToolsActivePort` file to the profile directory containing
+the dynamic debug port and, on newer Chromium versions, the browser WebSocket
 path. Do not hardcode port 9222.
 
 ## File Locations
 
-- Windows: `%LOCALAPPDATA%\Google\Chrome\User Data\DevToolsActivePort`
-- macOS: `~/Library/Application Support/Google/Chrome/DevToolsActivePort`
-- Linux: `~/.config/google-chrome/DevToolsActivePort`
+| Browser | Windows | macOS | Linux |
+|---|---|---|---|
+| Chrome | `%LOCALAPPDATA%\Google\Chrome\User Data\DevToolsActivePort` | `~/Library/Application Support/Google/Chrome/DevToolsActivePort` | `~/.config/google-chrome/DevToolsActivePort` |
+| Edge | `%LOCALAPPDATA%\Microsoft\Edge\User Data\DevToolsActivePort` | `~/Library/Application Support/Microsoft Edge/DevToolsActivePort` | `~/.config/microsoft-edge/DevToolsActivePort` |
 
 ## Connect
 

@@ -1,8 +1,8 @@
 # bk command reference
 
 > Current contract from `bk --help`, `bk session --help`, and `bk debug --help`.
-> All command output is JSON. `bk` is the thin CLI client for the local
-> browserkit daemon.
+> Runtime command results are JSON; help and shell completion generation are
+> text. `bk` is the thin CLI client for the local browserkit daemon.
 
 ## Global options
 
@@ -63,7 +63,7 @@ Use these for normal browser work.
 | `bk download --ref <N> --output-dir <DIR>` | Click and track one download to terminal state |
 | `bk html [--selector <CSS>]` | Get page or element HTML |
 | `bk console [--level <LEVEL>] [--limit <N>]` | Show console buffer |
-| `bk pdf [-o <FILE>]` | Generate PDF of current target |
+| `bk pdf [--output <FILE>] [--landscape] [--background]` | Generate PDF of current target |
 | `bk screenshot [--output <FILE>] [--full-page] [--selector <CSS>] [--labels]` | Capture screenshot |
 | `bk tabs` | List tabs tracked by the current session |
 | `bk close` | Close owned tab or detach attached tab |
@@ -98,6 +98,10 @@ the terminal-buffer capacity stops immediately with
 `stop_reason="terminal_buffer_overflow"`.
 `download` requires an existing output directory, validates the final path,
 and restores Browser download behavior after the lifecycle.
+`screenshot` and `pdf` canonicalize `--output` relative to the CLI working
+directory and require an existing parent plus the matching `.png` or `.pdf`
+extension. Saved responses contain `file` and `size` but no `data`; without an
+output, responses contain base64 `data`, `encoding`, and `format`.
 
 ## Session storage commands
 
@@ -148,6 +152,12 @@ Use these only for diagnostics or controlled debugging.
 | `bk debug block <PATTERN>` | Block matching requests |
 | `bk debug unblock` | Remove request blocking |
 | `bk debug cdp <METHOD> [PARAMS]` | Send a raw CDP command |
+
+## Utility commands
+
+| Command | Purpose |
+|---|---|
+| `bk completions <bash|elvish|fish|powershell|zsh>` | Generate shell completion source as text |
 
 ## Runtime state
 

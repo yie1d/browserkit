@@ -1,5 +1,6 @@
 use crate::daemon::protocol::Response;
 use crate::error::ErrorCode;
+use url::Url;
 
 pub(super) fn validate_and_normalize_url(url: &str) -> Result<String, Response> {
     let normalized = url.trim();
@@ -10,54 +11,33 @@ pub(super) fn validate_and_normalize_url(url: &str) -> Result<String, Response> 
     if normalized.chars().any(char::is_control) {
         return Err(invalid_url("URL must not contain control characters"));
     }
-    let (scheme, remainder) = normalized
-        .split_once(':')
-        .ok_or_else(|| invalid_url("URL must include a scheme"))?;
-    if !valid_scheme(scheme) {
-        return Err(invalid_url("URL has an invalid scheme"));
-    }
-    let scheme = scheme.to_ascii_lowercase();
-    let allowed = match scheme.as_str() {
-        "http" | "https" => valid_web_remainder(remainder),
-        "file" => valid_file_remainder(remainder),
-        "about" => remainder.eq_ignore_ascii_case("blank"),
+    let parsed =
+        Url::parse(normalized).map_err(|error| invalid_url(format!("invalid URL: {error}")))?;
+    let allowed = match parsed.scheme() {
+        "http" | "https" => parsed.host().is_some(),
+        "file" => valid_file_url(normalized, &parsed),
+        "about" => parsed.as_str().eq_ignore_ascii_case("about:blank"),
         _ => false,
     };
 
     if !allowed {
         return Err(invalid_url(format!(
             "URL scheme or form not allowed: {}",
-            scheme
+            parsed.scheme()
         )));
     }
 
-    Ok(normalized.to_string())
+    Ok(parsed.to_string())
 }
 
-fn valid_scheme(scheme: &str) -> bool {
-    let mut chars = scheme.chars();
-    chars
-        .next()
-        .is_some_and(|first| first.is_ascii_alphabetic())
-        && chars.all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '+' | '-' | '.'))
-}
-
-fn valid_web_remainder(remainder: &str) -> bool {
-    let Some(authority_and_path) = remainder.strip_prefix("//") else {
+fn valid_file_url(original: &str, parsed: &Url) -> bool {
+    if original.starts_with("file:////") || original.starts_with("file://C:/") {
         return false;
-    };
-    let authority = authority_and_path
-        .split(['/', '?', '#'])
-        .next()
-        .unwrap_or_default();
-    !authority.is_empty() && !authority.chars().any(char::is_whitespace)
-}
-
-fn valid_file_remainder(remainder: &str) -> bool {
-    let Some(location) = remainder.strip_prefix("//") else {
-        return false;
-    };
-    !matches!(location, "" | "/") && !location.chars().any(char::is_whitespace)
+    }
+    match parsed.host_str() {
+        Some(host) => !host.is_empty() && parsed.path() != "/",
+        None => original.starts_with("file:///") && parsed.path() != "/",
+    }
 }
 
 fn invalid_url(message: impl Into<String>) -> Response {
@@ -116,7 +96,15 @@ mod tests {
 
     #[test]
     fn rejects_malformed_or_empty_urls() {
-        for url in ["", "   ", "https://", "file://"] {
+        for url in [
+            "",
+            "   ",
+            "https://",
+            "https://exa[mple.com/path",
+            "file://",
+            "file://C:/report.html",
+            "file:////server/share/report.html",
+        ] {
             assert!(validate_and_normalize_url(url).is_err(), "{url:?}");
         }
     }

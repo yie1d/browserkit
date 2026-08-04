@@ -15,6 +15,12 @@
   migration or compatibility layer. Restored sessions require `bk connect`.
 - Documented the canonical URL policy consistently across the README,
   architecture, bundled skill, and command reference.
+- Made existing invalid configuration fatal with explicit numeric bounds.
+- Unified screenshot and PDF output paths and response payloads, exposed PDF
+  landscape/background flags, and made JavaScript evaluation always await
+  promises.
+- Added bounded daemon connect, handshake, request, readiness, and idle
+  connection deadlines.
 
 ### Security
 
@@ -51,5 +57,6 @@
   the pure-protocol cdpkit-rs layer.
 - Upgraded the protocol layer to cdpkit 0.5.0, including explicit WebSocket
   connection handling and durable connection shutdown semantics.
-- Kept CLI output JSON-only and made invalid explicit session/target selectors
-  fail instead of falling back to active state.
+- Kept runtime command results JSON-only (help and shell completions remain
+  text) and made invalid explicit session/target selectors fail instead of
+  falling back to active state.

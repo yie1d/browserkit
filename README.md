@@ -29,11 +29,18 @@ The `bk` CLI is the default client. Under the hood, it talks to the daemon over 
 └──────────────────────┬──────────────────────────────┘
                        │ CDP WebSocket
 ┌──────────────────────▼──────────────────────────────┐
-│              Chrome / Chromium                       │
+│          Chrome / Edge / Chromium                    │
 └─────────────────────────────────────────────────────┘
 ```
 
 The daemon is the runtime boundary: it owns persistent browser connections, session state, tab tracking, and debounced state persistence. The CLI is intentionally thin.
+
+The CLI verifies every daemon connection with a `ping` and reuses that verified
+connection for the command. Daemon startup is bounded to 30 seconds; TCP connect
+and handshake each use 2-second deadlines. Requests use at least 30 seconds,
+include 5 seconds of client grace beyond a command timeout, and are capped at
+600 seconds. The server closes a client connection after 60 seconds without a
+new request.
 
 ## Why browserkit
 
@@ -72,8 +79,9 @@ cargo build --release
 ## Documentation
 
 - [Architecture](docs/REDESIGN.md)
+- [Interactive architecture tour](docs/architecture-tour.html)
 - [Roadmap](docs/ROADMAP.md)
-- [Connect to an existing Chrome](docs/connect-existing-chrome.md)
+- [Connect to an existing Chrome or Edge](docs/connect-existing-chrome.md)
 - [Agent skill and command reference](docs/bk-browser/)
 
 ## Quick Start
@@ -124,7 +132,7 @@ Session management:
 ```sh
 bk session list                     # List all sessions
 bk session close                    # Close current session
-bk session cookies                  # Cookie operations
+bk session cookies get              # Get cookies for the current session
 ```
 
 ## Command Reference
@@ -331,6 +339,20 @@ bk screenshot --output page.png     # Save to file
 bk screenshot --full-page           # Full scrollable page
 ```
 
+### pdf
+
+```sh
+bk pdf                              # PDF as base64 JSON
+bk pdf --output page.pdf             # Save to file
+bk pdf --landscape --background      # Landscape with backgrounds
+```
+
+For `screenshot` and `pdf`, an output path may be relative to the CLI working
+directory, but its parent directory must already exist and its extension must
+match the artifact. The CLI sends a canonical absolute path to the daemon. A
+saved response contains `file` and `size` without duplicating the base64 data;
+an inline response contains `data`, `encoding: "base64"`, and `format`.
+
 ### open / attach / close / tabs
 
 ```sh
@@ -389,7 +411,14 @@ session_timeout_hours = 72       # idle session timeout
 js_timeout_seconds = 0           # 0 = no timeout
 ```
 
-Unknown configuration keys are rejected and browserkit falls back to its default configuration rather than partially applying a misspelled or unsupported file. Browser discovery and connection never launch Chrome or Edge. Session limits are controlled by `max_sessions`, `max_tabs_per_session`, and `session_timeout_hours`.
+Defaults are used when the file is absent and for omitted fields in an otherwise
+valid file. An existing unreadable or invalid file fails daemon startup; unknown
+keys are rejected rather than ignored. Valid ranges are
+`cleanup_interval_seconds = 1..3600`, `js_timeout_seconds = 0..3600`,
+`max_sessions = 0..1000`, `max_tabs_per_session = 0..1000`, and
+`session_timeout_hours = 0..8760`. Zero disables the corresponding JavaScript,
+session-count, tab-count, or idle-timeout limit; it is not valid for the cleanup
+interval. Browser discovery and connection never launch Chrome or Edge.
 
 ## State Persistence
 
