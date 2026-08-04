@@ -9,7 +9,7 @@ use serde::Deserialize;
 
 /// Top-level configuration for browserkit.
 #[derive(Debug, Clone, Deserialize, Default)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct Config {
     /// Daemon-related settings.
     pub daemon: DaemonConfig,
@@ -19,7 +19,7 @@ pub struct Config {
 
 /// Daemon behavior configuration.
 #[derive(Debug, Clone, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct DaemonConfig {
     /// Cleanup check interval in seconds.
     pub cleanup_interval_seconds: u64,
@@ -27,7 +27,7 @@ pub struct DaemonConfig {
 
 /// Resource limits to prevent runaway usage.
 #[derive(Debug, Clone, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct LimitsConfig {
     /// JavaScript execution timeout in seconds (0 = no timeout).
     pub js_timeout_seconds: u64,
@@ -177,7 +177,7 @@ session_timeout_hours = 168
     }
 
     #[test]
-    fn historical_runtime_config_keys_are_ignored() {
+    fn unknown_runtime_config_keys_are_rejected() {
         let old_timeout = ["work", "space", "timeout", "minutes"].join("_");
         let old_max_units = ["max", "work", "spaces"].join("_");
         let old_max_targets = ["max", "tabs", "per", "work", "space"].join("_");
@@ -195,10 +195,6 @@ max_tabs_per_session = 3
 session_timeout_hours = 48
 "#
         );
-        let c: Config = toml::from_str(&toml).unwrap();
-        assert_eq!(c.daemon.cleanup_interval_seconds, 30);
-        assert_eq!(c.limits.max_sessions, 8);
-        assert_eq!(c.limits.max_tabs_per_session, 3);
-        assert_eq!(c.limits.session_timeout_hours, 48);
+        assert!(toml::from_str::<Config>(&toml).is_err());
     }
 }

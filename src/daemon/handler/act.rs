@@ -87,19 +87,6 @@ struct ActParams {
 ///
 /// Returns `Err(Response)` with structured error on validation failure.
 fn parse_act_params(params: &serde_json::Value) -> Result<ActParams, Response> {
-    for legacy_field in unsupported_legacy_act_fields() {
-        if params.get(&legacy_field).is_some() {
-            return Err(Response::error_detail(
-                ErrorCode::InvalidArgument,
-                format!(
-                    "legacy workspace field '{}' is not supported by act; use --session/--target and element ref instead",
-                    legacy_field
-                ),
-                None,
-            ));
-        }
-    }
-
     let kind_str = params.get("kind").and_then(|v| v.as_str()).ok_or_else(|| {
         Response::error_detail(
             ErrorCode::InvalidArgument,
@@ -195,7 +182,7 @@ fn parse_act_params(params: &serde_json::Value) -> Result<ActParams, Response> {
             if params.get(field).is_some() {
                 return Err(Response::error_detail(
                     ErrorCode::InvalidArgument,
-                    format!("{kind} does not support '{field}'"),
+                    format!("unexpected field '{field}' for act kind '{kind}'"),
                     None,
                 ));
             }
@@ -564,14 +551,6 @@ fn parse_act_params(params: &serde_json::Value) -> Result<ActParams, Response> {
     })
 }
 
-fn unsupported_legacy_act_fields() -> [String; 3] {
-    [
-        format!("w{}", "id"),
-        format!("t{}", "id"),
-        "index".to_string(),
-    ]
-}
-
 // ── Response builder ─────────────────────────────────────────────────────────
 
 /// Build a standardized act response.
@@ -932,14 +911,13 @@ async fn execute_fill(
     session_id: &str,
     params: &ActParams,
 ) -> Result<ActionSuccess, Response> {
-    use crate::page::element_ref::ElementTarget;
     use crate::page::interaction::{fill_fields_by_target, FillFieldTarget};
 
     let fields: Vec<FillFieldTarget> = params
         .fields
         .iter()
         .map(|field| FillFieldTarget {
-            target: ElementTarget::Ref(field.ref_id),
+            ref_id: field.ref_id,
             value: field.value.clone(),
         })
         .collect();
@@ -1894,13 +1872,14 @@ mod tests {
     }
 
     #[test]
-    fn parse_act_rejects_workspace_fields() {
-        for legacy_field in unsupported_legacy_act_fields() {
-            let mut params = json!({"kind": "click", "ref": 42});
-            params[&legacy_field] = json!(1);
-            let value = serde_json::to_value(parse_act_params(&params).unwrap_err()).unwrap();
-            assert_eq!(value["error"]["code"], "INVALID_ARGUMENT");
-        }
+    fn parse_act_rejects_unknown_fields() {
+        let params = json!({"kind": "click", "ref": 42, "unknown": true});
+        let value = serde_json::to_value(parse_act_params(&params).unwrap_err()).unwrap();
+        assert_eq!(value["error"]["code"], "INVALID_ARGUMENT");
+        assert!(value["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("unexpected field 'unknown'"));
     }
 
     #[test]

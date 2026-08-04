@@ -580,16 +580,6 @@ pub async fn handle_debug_unblock(req: &Request, state: &Arc<DaemonState>) -> Re
         .unwrap_or_else(|resp| resp)
 }
 
-/// Explicit legacy wrapper retained until the legacy route family is removed.
-pub async fn handle_network_block(req: &Request, state: &Arc<DaemonState>) -> Response {
-    handle_debug_block(req, state).await
-}
-
-/// Explicit legacy wrapper retained until the legacy route family is removed.
-pub async fn handle_network_unblock(req: &Request, state: &Arc<DaemonState>) -> Response {
-    handle_debug_unblock(req, state).await
-}
-
 async fn do_debug_block(req: &Request, state: &Arc<DaemonState>) -> Result<Response, Response> {
     let ctx = resolve_session_target(state, &req.params)?;
     let pattern = req
@@ -601,8 +591,12 @@ async fn do_debug_block(req: &Request, state: &Arc<DaemonState>) -> Result<Respo
                 "debug.block requires 'pattern' param".into(),
             ))
         })?;
-    #[allow(deprecated)]
-    let cmd = cdpkit::network::methods::SetBlockedUrLs::new().with_urls(vec![pattern.to_string()]);
+    let cmd = cdpkit::network::methods::SetBlockedUrLs::new().with_url_patterns(vec![
+        cdpkit::network::types::BlockPattern {
+            url_pattern: pattern.to_string(),
+            block: true,
+        },
+    ]);
     let session = ctx.cdp.session(&ctx.cdp_session_id);
     cmd.send(&session)
         .await
@@ -625,8 +619,8 @@ async fn do_debug_block(req: &Request, state: &Arc<DaemonState>) -> Result<Respo
 
 async fn do_debug_unblock(req: &Request, state: &Arc<DaemonState>) -> Result<Response, Response> {
     let ctx = resolve_session_target(state, &req.params)?;
-    #[allow(deprecated)]
-    let cmd = cdpkit::network::methods::SetBlockedUrLs::new().with_urls(Vec::<String>::new());
+    let cmd = cdpkit::network::methods::SetBlockedUrLs::new()
+        .with_url_patterns(Vec::<cdpkit::network::types::BlockPattern>::new());
     let session = ctx.cdp.session(&ctx.cdp_session_id);
     cmd.send(&session)
         .await

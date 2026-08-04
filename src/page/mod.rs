@@ -64,17 +64,17 @@ pub struct ElementInfo {
     /// Stable element reference (CDP backendNodeId).
     /// Survives DOM reordering; invalidated only when the node is removed.
     /// Use with `--ref` on action commands for DOM-change-resilient addressing.
-    #[serde(rename = "ref", default, skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "ref", default)]
     pub backend_node_id: Option<i64>,
     /// Input type attribute (e.g. "checkbox", "file", "text", "password").
     /// Only present for input elements or elements with a meaningful type.
-    #[serde(rename = "type", default, skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "type", default)]
     pub element_type: Option<String>,
     /// Element id attribute (non-empty only).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub id: Option<String>,
     /// Element aria-label attribute (non-empty only).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub aria_label: Option<String>,
     /// Ancestor path for tree display (up to 3 meaningful ancestors: tag+id/class).
     /// Only populated when tree mode is requested.

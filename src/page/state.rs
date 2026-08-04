@@ -158,43 +158,7 @@ pub async fn get_page_state(cdp: &Arc<CDP>, session_id: &str) -> Result<Vec<Elem
             el.backend_node_id = *id;
         }
     }
-    // If backendNodeId lookup fails (non-critical), elements still work with index
-
-    Ok(elements)
-}
-
-/// Retrieve interactive elements (phase-1 only) — no backendNodeId lookup.
-///
-/// This is a lightweight version of `get_page_state` that skips the expensive
-/// second pass (Runtime.getProperties + N * DOM.describeNode). Use this when
-/// you only need element metadata + coordinates for index-based resolution.
-pub async fn get_page_elements_only(
-    cdp: &Arc<CDP>,
-    session_id: &str,
-) -> Result<Vec<ElementInfo>, BkError> {
-    let session = cdp.session(session_id);
-
-    let resp = cdpkit::runtime::methods::Evaluate::new(DISCOVER_ELEMENTS_JS)
-        .with_return_by_value(true)
-        .send(&session)
-        .await?;
-
-    if let Some(details) = &resp.exception_details {
-        return Err(BkError::Other(format!(
-            "state JS error: {}",
-            exception_message(details)
-        )));
-    }
-
-    let json_str = resp
-        .result
-        .value
-        .as_ref()
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| BkError::Other("state: no value returned from evaluate".into()))?;
-
-    let elements: Vec<ElementInfo> = serde_json::from_str(json_str)
-        .map_err(|e| BkError::Other(format!("state: failed to parse element list: {}", e)))?;
+    // BackendNodeId lookup is best-effort; elements without refs remain inspectable.
 
     Ok(elements)
 }
@@ -1070,26 +1034,6 @@ mod tests {
     }
 
     #[test]
-    fn element_info_without_ref_field_deserializes_as_none() {
-        // Backward compat: old JSON without "ref" still works
-        let json_str = r#"[{
-            "index": 0,
-            "tag": "a",
-            "text": "link",
-            "x": 0,
-            "y": 0,
-            "width": 10,
-            "height": 10,
-            "href": "http://x.com",
-            "placeholder": null
-        }]"#;
-
-        let elements: Vec<ElementInfo> = serde_json::from_str(json_str).unwrap();
-        assert_eq!(elements.len(), 1);
-        assert_eq!(elements[0].backend_node_id, None);
-    }
-
-    #[test]
     fn element_info_serializes_ref_field() {
         let el = ElementInfo {
             index: 0,
@@ -1119,7 +1063,7 @@ mod tests {
     }
 
     #[test]
-    fn element_info_serializes_without_ref_when_none() {
+    fn element_info_emits_current_optional_fields_as_null() {
         let el = ElementInfo {
             index: 0,
             tag: "button".into(),
@@ -1139,12 +1083,14 @@ mod tests {
             ax_name: None,
         };
 
-        let json = serde_json::to_string(&el).unwrap();
-        assert!(
-            !json.contains("ref"),
-            "should not serialize ref when None: {}",
-            json
-        );
+        let value = serde_json::to_value(el).unwrap();
+        for key in ["ref", "type", "id", "aria_label"] {
+            assert_eq!(
+                value.get(key),
+                Some(&serde_json::Value::Null),
+                "field {key}"
+            );
+        }
     }
 
     // ── Count mismatch → all-None fallback tests ──────────────────────────
@@ -1329,28 +1275,6 @@ mod tests {
     }
 
     #[test]
-    fn element_info_without_new_fields_still_deserializes() {
-        // Backward compat: old JSON without type/id/aria_label still works
-        let json_str = r#"[{
-            "index": 0,
-            "tag": "input",
-            "text": "",
-            "x": 0,
-            "y": 0,
-            "width": 200,
-            "height": 30,
-            "href": null,
-            "placeholder": "Name"
-        }]"#;
-
-        let elements: Vec<ElementInfo> = serde_json::from_str(json_str).unwrap();
-        assert_eq!(elements.len(), 1);
-        assert!(elements[0].element_type.is_none());
-        assert!(elements[0].id.is_none());
-        assert!(elements[0].aria_label.is_none());
-    }
-
-    #[test]
     fn element_info_serializes_new_fields_when_present() {
         let el = ElementInfo {
             index: 0,
@@ -1390,7 +1314,7 @@ mod tests {
     }
 
     #[test]
-    fn element_info_skips_new_fields_when_none() {
+    fn element_info_emits_new_fields_when_none() {
         let el = ElementInfo {
             index: 0,
             tag: "button".into(),
@@ -1410,22 +1334,10 @@ mod tests {
             ax_name: None,
         };
 
-        let json = serde_json::to_string(&el).unwrap();
-        assert!(
-            !json.contains("\"type\""),
-            "should not serialize type when None: {}",
-            json
-        );
-        assert!(
-            !json.contains("\"id\""),
-            "should not serialize id when None: {}",
-            json
-        );
-        assert!(
-            !json.contains("aria_label"),
-            "should not serialize aria_label when None: {}",
-            json
-        );
+        let value = serde_json::to_value(el).unwrap();
+        assert_eq!(value["type"], serde_json::Value::Null);
+        assert_eq!(value["id"], serde_json::Value::Null);
+        assert_eq!(value["aria_label"], serde_json::Value::Null);
     }
 
     #[test]

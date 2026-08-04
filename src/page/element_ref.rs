@@ -1,4 +1,4 @@
-// Element reference resolution: by backendNodeId (ref) or by index.
+// Element reference resolution by backendNodeId (ref) or CSS selector.
 //
 // Provides a unified way to resolve an element target into either:
 // - Coordinates (for click/hover) via DOM.getContentQuads / DOM.getBoxModel
@@ -12,15 +12,12 @@ use std::sync::Arc;
 use cdpkit::CDP;
 
 use crate::error::BkError;
-use crate::page::ElementInfo;
 
 /// How the caller wants to identify the target element.
 #[derive(Debug, Clone)]
 pub enum ElementTarget {
     /// Stable reference: CDP backendNodeId obtained from `page state`.
     Ref(i64),
-    /// Positional index into the interactive element list (legacy).
-    Index(usize),
     /// CSS selector string.
     Selector(String),
 }
@@ -45,8 +42,6 @@ const REF_GONE_MSG: &str =
 /// For `Ref`: uses DOM.scrollIntoViewIfNeeded + DOM.getContentQuads to get coords,
 /// and DOM.resolveNode to get objectId.
 ///
-/// For `Index`: fetches the current page state, validates the index, then resolves
-/// the element's backendNodeId (if available) or falls back to JS-based coordinate lookup.
 pub async fn resolve_element(
     cdp: &Arc<CDP>,
     session_id: &str,
@@ -56,7 +51,6 @@ pub async fn resolve_element(
         ElementTarget::Ref(backend_node_id) => {
             resolve_by_ref(cdp, session_id, *backend_node_id).await
         }
-        ElementTarget::Index(index) => resolve_by_index(cdp, session_id, *index).await,
         ElementTarget::Selector(selector) => resolve_by_selector(cdp, session_id, selector).await,
     }
 }
@@ -91,102 +85,6 @@ async fn resolve_by_ref(
 
     // 3. Get objectId via resolveNode
     let object_id = resolve_object_id(cdp, session_id, backend_node_id).await?;
-
-    Ok(ResolvedElement {
-        center,
-        object_id,
-        backend_node_id,
-    })
-}
-
-/// Resolve element by index (legacy path).
-///
-/// Uses the lightweight phase-1-only element lookup (no backendNodeId pass) to avoid
-/// N extra CDP calls that aren't needed for index-based resolution. Falls back to
-/// JS-based coordinate lookup since backendNodeId isn't available from the light path.
-async fn resolve_by_index(
-    cdp: &Arc<CDP>,
-    session_id: &str,
-    index: usize,
-) -> Result<ResolvedElement, BkError> {
-    let elements = crate::page::state::get_page_elements_only(cdp, session_id).await?;
-    let _el = get_element(&elements, index)?;
-
-    // No backendNodeId available from the light path — use JS-based resolution
-    resolve_by_index_js(cdp, session_id, &elements, index).await
-}
-
-/// JS-based fallback for index resolution (used when no backendNodeId available).
-async fn resolve_by_index_js(
-    cdp: &Arc<CDP>,
-    session_id: &str,
-    elements: &[ElementInfo],
-    index: usize,
-) -> Result<ResolvedElement, BkError> {
-    let _el = get_element(elements, index)?;
-    let session = cdp.session(session_id);
-
-    // Get objectId and bounding rect via JS
-    let js = format!(
-        r#"(() => {{
-    const selectors = 'a, button, input, textarea, select, [role="button"], [onclick]';
-    const all = Array.from(document.querySelectorAll(selectors)).filter(el => {{
-        const r = el.getBoundingClientRect();
-        return r.width > 0 && r.height > 0;
-    }});
-    const el = all[{index}];
-    if (!el) return null;
-    el.scrollIntoView({{block: 'center', inline: 'center'}});
-    return el;
-}})()"#
-    );
-
-    let resp = cdpkit::runtime::methods::Evaluate::new(&js)
-        .send(&session)
-        .await?;
-
-    if let Some(details) = &resp.exception_details {
-        return Err(BkError::JsError(format!(
-            "resolve element: {}",
-            crate::page::exception_message(details)
-        )));
-    }
-
-    let object_id = resp
-        .result
-        .object_id
-        .ok_or_else(|| BkError::Other(format!("element at index {} not found in page", index)))?;
-
-    // Get bounding rect via callFunctionOn
-    let rect_resp = cdpkit::runtime::methods::CallFunctionOn::new(
-        "function() { const r = this.getBoundingClientRect(); return JSON.stringify({x: r.x, y: r.y, width: r.width, height: r.height}); }",
-    )
-    .with_object_id(object_id.clone())
-    .with_return_by_value(true)
-    .send(&session)
-    .await?;
-
-    let center = if let Some(val) = rect_resp.result.value.as_ref().and_then(|v| v.as_str()) {
-        let rect: serde_json::Value =
-            serde_json::from_str(val).map_err(|e| BkError::Other(format!("parse rect: {}", e)))?;
-        let x = rect["x"].as_f64().unwrap_or(0.0);
-        let y = rect["y"].as_f64().unwrap_or(0.0);
-        let w = rect["width"].as_f64().unwrap_or(0.0);
-        let h = rect["height"].as_f64().unwrap_or(0.0);
-        (x + w / 2.0, y + h / 2.0)
-    } else {
-        return Err(BkError::Other("could not get element bounds".to_string()));
-    };
-
-    // Try to get backendNodeId via describeNode
-    let backend_node_id = match cdpkit::dom::methods::DescribeNode::new()
-        .with_object_id(object_id.clone())
-        .send(&session)
-        .await
-    {
-        Ok(desc) => desc.node.backend_node_id,
-        Err(_) => 0, // fallback, shouldn't happen in practice
-    };
 
     Ok(ResolvedElement {
         center,
@@ -390,29 +288,10 @@ fn is_node_not_found_error(e: &cdpkit::CdpError) -> bool {
         || msg.contains("BackendNodeId")
 }
 
-/// Validate that `index` is within the element list and return a reference.
-fn get_element(elements: &[ElementInfo], index: usize) -> Result<&ElementInfo, BkError> {
-    if index >= elements.len() {
-        let max = if elements.is_empty() {
-            0
-        } else {
-            elements.len() - 1
-        };
-        return Err(BkError::ElementIndexOutOfRange(index, max));
-    }
-    Ok(&elements[index])
-}
-
-/// Parse a `--ref` or `--index` parameter from a daemon request, returning an ElementTarget.
-///
-/// Priority: ref > index.
-/// Returns None if neither is provided (caller must decide what to do).
+/// Parse a `ref` parameter from a daemon request.
 pub fn parse_element_target(params: &serde_json::Value) -> Option<ElementTarget> {
     if let Some(r) = params.get("ref").and_then(|v| v.as_i64()) {
         return Some(ElementTarget::Ref(r));
-    }
-    if let Some(i) = params.get("index").and_then(|v| v.as_u64()) {
-        return Some(ElementTarget::Index(i as usize));
     }
     None
 }
@@ -455,15 +334,15 @@ mod tests {
     }
 
     #[test]
-    fn parse_element_target_index() {
+    fn parse_element_target_does_not_accept_index() {
         let params = serde_json::json!({"index": 3});
         let target = parse_element_target(&params);
-        assert!(matches!(target, Some(ElementTarget::Index(3))));
+        assert!(target.is_none());
     }
 
     #[test]
-    fn parse_element_target_ref_takes_priority() {
-        let params = serde_json::json!({"ref": 99, "index": 5});
+    fn parse_element_target_ref_with_unrelated_field() {
+        let params = serde_json::json!({"ref": 99, "other": 5});
         let target = parse_element_target(&params);
         assert!(matches!(target, Some(ElementTarget::Ref(99))));
     }
@@ -492,38 +371,6 @@ mod tests {
         assert!(REF_GONE_MSG.contains("bk snapshot"));
         assert!(!REF_GONE_MSG.contains("bk page state"));
         assert!(REF_GONE_MSG.contains("no longer present"));
-    }
-
-    #[test]
-    fn get_element_valid_index() {
-        let elements = vec![ElementInfo {
-            index: 0,
-            tag: "button".into(),
-            text: "Click".into(),
-            x: 10.0,
-            y: 20.0,
-            width: 100.0,
-            height: 40.0,
-            href: None,
-            placeholder: None,
-            backend_node_id: Some(123),
-            element_type: None,
-            id: None,
-            aria_label: None,
-            ancestors: None,
-            ax_role: None,
-            ax_name: None,
-        }];
-        let el = get_element(&elements, 0).unwrap();
-        assert_eq!(el.tag, "button");
-        assert_eq!(el.backend_node_id, Some(123));
-    }
-
-    #[test]
-    fn get_element_out_of_range() {
-        let elements: Vec<ElementInfo> = vec![];
-        let err = get_element(&elements, 0).unwrap_err();
-        assert!(err.to_string().contains("out of range"));
     }
 
     #[test]

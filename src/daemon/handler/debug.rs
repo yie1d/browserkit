@@ -16,11 +16,6 @@ pub async fn handle_debug_cdp(req: &Request, state: &Arc<DaemonState>) -> Respon
     do_debug_cdp(req, state).await.unwrap_or_else(|resp| resp)
 }
 
-/// Explicit legacy wrapper retained until the legacy route family is removed.
-pub async fn handle_cdp_send(req: &Request, state: &Arc<DaemonState>) -> Response {
-    handle_debug_cdp(req, state).await
-}
-
 async fn do_debug_cdp(req: &Request, state: &Arc<DaemonState>) -> Result<Response, Response> {
     let ctx = resolve_session_target(state, &req.params)?;
     let method = req

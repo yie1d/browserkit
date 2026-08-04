@@ -174,10 +174,6 @@ mod tests {
         }
     }
 
-    fn removed_route(prefix: &str, command: &str) -> String {
-        format!("{prefix}.{command}")
-    }
-
     fn assert_unknown_error(value: &serde_json::Value, command: &str) {
         assert_eq!(value["ok"], false);
         assert_eq!(value["error"]["code"], "INVALID_ARGUMENT");
@@ -220,6 +216,21 @@ mod tests {
             };
             assert_eq!(request_session_name(&request), None, "{command}");
         }
+    }
+
+    #[tokio::test]
+    async fn unknown_command_returns_canonical_error() {
+        let state = Arc::new(DaemonState::new());
+        let command = "not-a-command";
+        let request = Request {
+            cmd: command.into(),
+            params: serde_json::json!({}),
+            token: None,
+        };
+
+        let response = handle_request(&request, &state, &test_context()).await;
+        let value = serde_json::to_value(response).unwrap();
+        assert_unknown_error(&value, command);
     }
 
     #[tokio::test]
@@ -277,170 +288,6 @@ mod tests {
 
         assert_eq!(json["ok"], false);
         assert_eq!(json["error"]["code"], "SESSION_NOT_FOUND");
-    }
-
-    #[tokio::test]
-    async fn dispatch_page_wait_is_removed_from_public_commands() {
-        let state = Arc::new(DaemonState::new());
-        let cmd = removed_route("page", "wait");
-        let req = Request {
-            cmd: cmd.clone(),
-            params: serde_json::json!({"selector": "#app"}),
-            token: None,
-        };
-
-        let resp = handle_request(&req, &state, &test_context()).await;
-        let json = serde_json::to_value(&resp).unwrap();
-
-        assert_unknown_error(&json, &cmd);
-    }
-
-    #[tokio::test]
-    async fn dispatch_nav_wait_is_removed_from_public_commands() {
-        let state = Arc::new(DaemonState::new());
-        let cmd = removed_route("nav", "wait");
-        let req = Request {
-            cmd: cmd.clone(),
-            params: serde_json::json!({}),
-            token: None,
-        };
-
-        let resp = handle_request(&req, &state, &test_context()).await;
-        let json = serde_json::to_value(&resp).unwrap();
-
-        assert_unknown_error(&json, &cmd);
-    }
-
-    #[tokio::test]
-    async fn dispatch_page_state_and_info_are_removed_from_public_commands() {
-        let state = Arc::new(DaemonState::new());
-
-        let commands = [
-            removed_route("page", "state"),
-            removed_route("page", "info"),
-        ];
-        for cmd in commands {
-            let req = Request {
-                cmd: cmd.clone(),
-                params: serde_json::json!({}),
-                token: None,
-            };
-
-            let resp = handle_request(&req, &state, &test_context()).await;
-            let json = serde_json::to_value(&resp).unwrap();
-
-            assert_unknown_error(&json, &cmd);
-        }
-    }
-
-    #[tokio::test]
-    async fn dispatch_js_eval_and_await_are_removed_from_public_commands() {
-        let state = Arc::new(DaemonState::new());
-
-        for cmd in ["js.eval", "js.await"] {
-            let req = Request {
-                cmd: cmd.into(),
-                params: serde_json::json!({"expr": "document.title"}),
-                token: None,
-            };
-
-            let resp = handle_request(&req, &state, &test_context()).await;
-            let json = serde_json::to_value(&resp).unwrap();
-
-            assert_unknown_error(&json, cmd);
-        }
-    }
-
-    #[tokio::test]
-    async fn dispatch_legacy_navigation_actions_are_removed_from_public_commands() {
-        let state = Arc::new(DaemonState::new());
-
-        let commands = [
-            removed_route("nav", "back"),
-            removed_route("nav", "forward"),
-            removed_route("nav", "reload"),
-        ];
-        for cmd in commands {
-            let req = Request {
-                cmd: cmd.clone(),
-                params: serde_json::json!({}),
-                token: None,
-            };
-
-            let resp = handle_request(&req, &state, &test_context()).await;
-            let json = serde_json::to_value(&resp).unwrap();
-
-            assert_unknown_error(&json, &cmd);
-        }
-    }
-
-    #[tokio::test]
-    async fn dispatch_page_screenshot_is_removed_from_public_commands() {
-        let state = Arc::new(DaemonState::new());
-        let cmd = removed_route("page", "screenshot");
-        let req = Request {
-            cmd: cmd.clone(),
-            params: serde_json::json!({"full_page": false}),
-            token: None,
-        };
-
-        let resp = handle_request(&req, &state, &test_context()).await;
-        let json = serde_json::to_value(&resp).unwrap();
-
-        assert_unknown_error(&json, &cmd);
-    }
-
-    async fn assert_routes_removed(commands: &[&str]) {
-        let state = Arc::new(DaemonState::new());
-        for cmd in commands {
-            let req = Request {
-                cmd: (*cmd).into(),
-                params: serde_json::json!({}),
-                token: None,
-            };
-            let value =
-                serde_json::to_value(handle_request(&req, &state, &test_context()).await).unwrap();
-            assert_unknown_error(&value, cmd);
-        }
-    }
-
-    async fn assert_prefixed_routes_removed(prefix: &str, commands: &[&str]) {
-        let routes: Vec<String> = commands
-            .iter()
-            .map(|command| format!("{prefix}.{command}"))
-            .collect();
-        let route_refs: Vec<&str> = routes.iter().map(String::as_str).collect();
-        assert_routes_removed(&route_refs).await;
-    }
-
-    #[tokio::test]
-    async fn dispatch_removed_scroll_hover_focus_routes_are_unknown() {
-        assert_prefixed_routes_removed("act", &["scroll", "hover", "focus"]).await;
-    }
-
-    #[tokio::test]
-    async fn dispatch_removed_select_and_options_routes_are_unknown() {
-        assert_prefixed_routes_removed("act", &["select", "dropdown_options"]).await;
-    }
-
-    #[tokio::test]
-    async fn dispatch_removed_fill_route_is_unknown() {
-        assert_prefixed_routes_removed("act", &["fill"]).await;
-    }
-
-    #[tokio::test]
-    async fn dispatch_removed_upload_and_drag_routes_are_unknown() {
-        assert_prefixed_routes_removed("act", &["upload", "drag"]).await;
-    }
-
-    #[tokio::test]
-    async fn dispatch_removed_act_keys_route_is_unknown() {
-        assert_prefixed_routes_removed("act", &["keys"]).await;
-    }
-
-    #[tokio::test]
-    async fn dispatch_removed_click_and_type_routes_are_unknown() {
-        assert_prefixed_routes_removed("act", &["click", "type"]).await;
     }
 
     #[tokio::test]
@@ -583,42 +430,6 @@ mod tests {
                 serde_json::to_value(handle_request(&request, &state, &test_context()).await)
                     .unwrap();
             assert_eq!(value["error"]["code"], "INVALID_ARGUMENT", "{cmd}");
-        }
-    }
-
-    #[tokio::test]
-    async fn removed_streaming_developer_routes_are_unknown() {
-        assert_routes_removed(&["network.monitor", "network.har", "cdp.events"]).await;
-    }
-
-    #[tokio::test]
-    async fn removed_route_families_are_unknown() {
-        let state = Arc::new(DaemonState::new());
-        let commands = [
-            removed_route("v2", "connect"),
-            removed_route("v2", "open"),
-            removed_route("v2", "snapshot"),
-            removed_route("v2", "act"),
-            removed_route("v2", "navigate"),
-            removed_route("ws", "list"),
-            removed_route("tab", "list"),
-            removed_route("nav", "goto"),
-            removed_route("page", "html"),
-            removed_route("page", "pdf"),
-            removed_route("storage", "local.get"),
-            removed_route("network", "monitor"),
-            removed_route("network", "har"),
-            removed_route("cdp", "events"),
-        ];
-        for cmd in commands {
-            let req = Request {
-                cmd: cmd.clone(),
-                params: serde_json::json!({}),
-                token: None,
-            };
-            let value =
-                serde_json::to_value(handle_request(&req, &state, &test_context()).await).unwrap();
-            assert_unknown_error(&value, &cmd);
         }
     }
 }

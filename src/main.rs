@@ -947,19 +947,7 @@ async fn dispatch(cli: &Cli, client: &mut DaemonClient) -> Result<(), String> {
                 let mut fields = Vec::with_capacity(set.len());
                 for item in set {
                     let field = parse_fill_set_target(item)?;
-                    let ref_id = match field.target {
-                        browserkit::page::element_ref::ElementTarget::Ref(ref_id) => ref_id,
-                        browserkit::page::element_ref::ElementTarget::Index(_) => return Err(
-                            "bk act fill only accepts ref targets in --set (use ref:<id>=<value>)"
-                                .into(),
-                        ),
-                        browserkit::page::element_ref::ElementTarget::Selector(_) => {
-                            return Err(
-                                "bk act fill does not accept selector targets in --set".into()
-                            )
-                        }
-                    };
-                    fields.push(json!({"ref": ref_id, "value": field.value}));
+                    fields.push(json!({"ref": field.ref_id, "value": field.value}));
                 }
                 params["fields"] = json!(fields);
             }
@@ -2428,198 +2416,10 @@ mod tests {
         assert!(cli.no_state_diff);
     }
 
-    // ── Removed aliases ───────────────────────────────────────────
-
-    #[test]
-    fn cli_rejects_removed_goto_alias() {
-        let result = try_parse(&["bk", "goto", "https://a.com"]);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn cli_rejects_removed_info_alias() {
-        let result = try_parse(&["bk", "info"]);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn cli_rejects_removed_eval_alias() {
-        let result = try_parse(&["bk", "eval", "document.title"]);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn cli_rejects_removed_shot_alias() {
-        let result = try_parse(&["bk", "shot"]);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn cli_rejects_removed_navigation_aliases() {
-        for args in [
-            &["bk", "back"][..],
-            &["bk", "forward"][..],
-            &["bk", "reload"][..],
-        ] {
-            let result = try_parse(args);
-            assert!(result.is_err(), "{args:?} should be removed");
-        }
-    }
-
-    #[test]
-    fn cli_rejects_removed_workspace_aliases() {
-        for args in [
-            &["bk", "new"][..],
-            &["bk", "ls"][..],
-            &["bk", "rm", "ws1"][..],
-        ] {
-            let result = try_parse(args);
-            assert!(result.is_err(), "{args:?} should be removed");
-        }
-    }
-
-    #[test]
-    fn cli_rejects_removed_url_title_aliases() {
-        for args in [&["bk", "url"][..], &["bk", "title"][..]] {
-            let result = try_parse(args);
-            assert!(result.is_err(), "{args:?} should be removed");
-        }
-    }
-
-    fn assert_cli_commands_removed(cases: &[&[&str]]) {
-        for args in cases {
-            assert!(try_parse(args).is_err(), "{args:?} should be removed");
-        }
-    }
-
-    #[test]
-    fn cli_rejects_removed_scroll_hover_focus_commands() {
-        assert_cli_commands_removed(&[
-            &["bk", "scroll", "down"][..],
-            &["bk", "hover", "--ref", "42"][..],
-            &["bk", "focus", "--ref", "43"][..],
-        ]);
-    }
-
-    #[test]
-    fn cli_rejects_removed_select_and_options_commands() {
-        assert_cli_commands_removed(&[
-            &["bk", "select", "--ref", "42", "green"][..],
-            &["bk", "options", "--ref", "42"][..],
-        ]);
-    }
-
-    #[test]
-    fn cli_rejects_removed_fill_command() {
-        assert_cli_commands_removed(&[&["bk", "fill", "--set", "ref:42=value"][..]]);
-    }
-
-    #[test]
-    fn cli_rejects_removed_upload_and_drag_commands() {
-        assert_cli_commands_removed(&[
-            &["bk", "upload", "--ref", "42", "a.txt"][..],
-            &["bk", "drag", "--from-ref", "10", "--to-ref", "20"][..],
-        ]);
-    }
-
-    #[test]
-    fn cli_rejects_removed_keys_command() {
-        assert_cli_commands_removed(&[
-            &["bk", "keys", "Enter"][..],
-            &["bk", "keys", "Control+a"][..],
-        ]);
-    }
-
-    #[test]
-    fn cli_rejects_removed_click_and_type_commands() {
-        assert_cli_commands_removed(&[
-            &["bk", "click", "--ref", "42"][..],
-            &["bk", "type", "--ref", "42", "hello"][..],
-        ]);
-    }
-
-    #[test]
-    fn top_level_help_omits_removed_action_alias_guidance() {
-        for removed in [
-            "click -> use act click",
-            "type -> use act type",
-            "keys -> use act press --keys",
-            "scroll -> use act scroll",
-            "hover -> use act hover",
-            "focus -> use act focus",
-            "fill -> use act fill",
-            "select -> use act select",
-            "options -> use act options",
-            "upload -> use act upload",
-            "drag -> use act drag",
-        ] {
-            assert!(!HELP_TEXT.contains(removed), "{removed}");
-        }
-    }
-
-    #[test]
-    fn top_level_help_primary_includes_attach() {
-        assert!(
-            HELP_TEXT.contains("  attach"),
-            "custom primary help should list attach"
-        );
-    }
-
-    #[test]
-    fn cli_rejects_removed_streaming_debug_commands() {
-        assert_cli_commands_removed(&[
-            &["bk", "debug", "monitor"][..],
-            &["bk", "debug", "har", "https://example.com"][..],
-            &["bk", "debug", "events"][..],
-        ]);
-    }
-
-    #[test]
-    fn cli_rejects_all_removed_workspace_surfaces() {
-        for args in [
-            &["bk", "ws", "list"][..],
-            &["bk", "tab", "list"][..],
-            &["bk", "fetch", "https://example.com"][..],
-            &["bk", "storage", "export"][..],
-            &["bk", "debug", "monitor"][..],
-            &["bk", "debug", "har", "https://example.com"][..],
-            &["bk", "debug", "events"][..],
-            &["bk", "--ws", "abc", "snapshot"][..],
-        ] {
-            assert!(try_parse(args).is_err(), "removed command parsed: {args:?}");
-        }
-    }
-
-    // ── Removed flags ────────────────────────────────────────────
-
-    #[test]
-    fn cli_no_format_flag() {
-        let result = try_parse(&["bk", "--format", "text", "snapshot"]);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn cli_no_ws_flag() {
-        let result = try_parse(&["bk", "--ws", "abc", "snapshot"]);
-        assert!(result.is_err());
-    }
-
     #[test]
     fn press_with_single_key_succeeds() {
         let result = try_parse(&["bk", "act", "press", "--keys", "Enter"]);
         assert!(result.is_ok());
-    }
-
-    #[test]
-    fn back_is_removed() {
-        let result = try_parse(&["bk", "back"]);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn forward_is_removed() {
-        let result = try_parse(&["bk", "forward"]);
-        assert!(result.is_err());
     }
 
     #[test]
@@ -2644,7 +2444,7 @@ mod tests {
     }
 
     #[test]
-    fn pdf_no_longer_accepts_a_url() {
+    fn pdf_rejects_url_argument() {
         assert!(try_parse(&["bk", "pdf", "https://example.com"]).is_err());
         assert!(try_parse(&["bk", "pdf", "--output", concat!("page", ".pdf")]).is_ok());
     }
