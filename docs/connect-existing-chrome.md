@@ -2,11 +2,8 @@
 
 browserkit is a persistent browser runtime for AI agents. Its default client,
 `bk`, connects to the user's already-running Chrome, reuses the user's logged-in
-browser context, and keeps session/tab state in the local daemon.
-
-This document covers the current session-oriented attach flow. Historical
-workspace commands are removed; use `connect`, `attach`, `open`, `tabs`, and
-`close`.
+browser context, and keeps session/tab state in the local daemon. browserkit
+does not launch, manage, or terminate the browser process.
 
 ## Prerequisites
 
@@ -107,16 +104,15 @@ bk --session agent-a session cookies get
 bk --session agent-a session close
 ```
 
-## State and Migration
+## State and Restart
 
-The daemon stores schema v3 session-only state in `~/.bk/state.json`. The file
-contains browser metadata, sessions, session tabs, ownership, and optional
-migration metadata. It does not write workspace fields.
-
-When a schema v2 state file is found, browserkit creates `state.v2.backup.json`
-or a numbered variant before writing schema v3. `bk status` reports migration
-metadata, including converted counts, dropped duplicate/conflicting targets, and
-warnings.
+The daemon stores strict schema v1 session state in `~/.bk/state.json`. The file
+contains session metadata, session tabs, ownership, active targets, timestamps,
+and disconnect state. It does not contain browser process metadata. After a
+daemon restart, restored sessions are visible but disconnected; run `bk connect`
+to discover the already-running browser and bind the selected session again.
+Unknown fields, corrupt content, or any non-v1 version disable persistence
+writes so the original file is not overwritten.
 
 ## Chrome 136+ and `/json` Endpoint Restrictions
 

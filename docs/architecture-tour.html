@@ -165,7 +165,7 @@
             <g class="node" role="button" tabindex="0" data-node="state" aria-pressed="false"><rect x="380" y="245" width="160" height="70"/><text x="460" y="274" text-anchor="middle">DaemonState</text><text class="sub" x="460" y="296" text-anchor="middle">sessions + locks</text></g>
             <g class="node destructive" role="button" tabindex="0" data-node="watchers" aria-pressed="false"><rect x="570" y="245" width="150" height="70"/><text x="645" y="274" text-anchor="middle">Watchers</text><text class="sub" x="645" y="296" text-anchor="middle">target + console</text></g>
             <g class="node" role="button" tabindex="0" data-node="chrome" aria-pressed="false"><rect x="760" y="245" width="150" height="70"/><text x="835" y="274" text-anchor="middle">User Chrome</text><text class="sub" x="835" y="296" text-anchor="middle">existing browser</text></g>
-            <g class="node" role="button" tabindex="0" data-node="persist" aria-pressed="false"><rect x="555" y="410" width="180" height="65"/><text x="645" y="438" text-anchor="middle">state.json</text><text class="sub" x="645" y="458" text-anchor="middle">schema v3</text></g>
+            <g class="node" role="button" tabindex="0" data-node="persist" aria-pressed="false"><rect x="555" y="410" width="180" height="65"/><text x="645" y="438" text-anchor="middle">state.json</text><text class="sub" x="645" y="458" text-anchor="middle">schema v1</text></g>
           </svg>
           <div class="mobile-topology" aria-label="架构节点">
             <button type="button" data-node="agent" aria-pressed="false">AI Agent</button><button type="button" data-node="cli" aria-pressed="false">bk CLI</button><button type="button" data-node="daemon" aria-pressed="false">daemon</button><button type="button" data-node="handlers" aria-pressed="false">Handlers</button><button type="button" data-node="page" aria-pressed="false">Page layer</button><button type="button" data-node="cdpkit" aria-pressed="false">cdpkit</button><button type="button" data-node="chrome" aria-pressed="false">User Chrome</button><button type="button" data-node="state" aria-pressed="false">DaemonState</button><button type="button" data-node="watchers" aria-pressed="false">Watchers</button><button type="button" data-node="persist" aria-pressed="false">state.json</button>
@@ -202,7 +202,7 @@
 
       <section id="persistence" data-title="持久化与清理">
         <div class="eyebrow">07 / Persistence</div><h2>状态可恢复，但不伪装浏览器仍在线</h2>
-        <div class="split"><div><h3>写入</h3><ul class="plain-list"><li>schema v3：Session、Tab、ownership、active target</li><li>500ms 防抖，request handler 不同步写盘</li><li>临时文件加 rename 原子替换</li><li>运行时错误写入 <code>last_error</code>，后续继续重试</li></ul></div><div><h3>迁移与保护</h3><ul class="plain-list"><li>v2 先备份为 <code>state.v2.backup*.json</code></li><li>未来 schema 或损坏状态进入 fail-closed</li><li>启动先把恢复的 Session 标记 disconnected</li><li>用户浏览器需再次 <code>bk connect</code></li></ul></div></div>
+        <div class="split"><div><h3>写入</h3><ul class="plain-list"><li>schema v1：Session、Tab、ownership、active target</li><li>500ms 防抖，request handler 不同步写盘</li><li>临时文件加 rename 原子替换</li><li>运行时错误写入 <code>last_error</code>，后续继续重试</li></ul></div><div><h3>读取与保护</h3><ul class="plain-list"><li>只接受严格的 schema v1</li><li>未知字段、其他版本或损坏状态进入 fail-closed</li><li>启动先把恢复的 Session 标记 disconnected</li><li>用户浏览器需再次 <code>bk connect</code></li></ul></div></div>
         <p>清理入口包括 close、session close、idle timeout、browser disconnect、自然断连和 daemon stop。所有入口都遵守 Owned close / Attached detach，并在部分失败时返回结构化 <code>cleanup_errors</code>。</p>
       </section>
 
@@ -214,12 +214,12 @@
 
       <section id="source-map" data-title="源码地图">
         <div class="eyebrow">09 / Source map</div><h2>从入口追到浏览器</h2>
-        <dl class="source-tree"><dt>src/main.rs</dt><dd>CLI、参数映射、本地文件输出</dd><dt>src/client.rs</dt><dd>daemon 发现、自启、token 注入</dd><dt>src/daemon/protocol.rs</dt><dd>newline-JSON 和结构化错误</dd><dt>src/daemon/server.rs</dt><dd>TCP server、鉴权、idle cleanup</dd><dt>src/daemon/state.rs</dt><dd>共享状态、连接与锁</dd><dt>src/daemon/handler/mod.rs</dt><dd>canonical command 路由</dd><dt>src/daemon/session.rs</dt><dd>Session、Tab、ownership 模型</dd><dt>src/daemon/target_lifecycle.rs</dt><dd>Target watcher 与原子注册</dd><dt>src/daemon/persist.rs</dt><dd>schema v3、迁移、防抖写入</dd><dt>src/browser/</dt><dd>DevToolsActivePort 发现与 CDP 连接</dd><dt>src/page/</dt><dd>navigation、interaction、state、capture、wait</dd></dl>
+        <dl class="source-tree"><dt>src/main.rs</dt><dd>CLI、参数映射、本地文件输出</dd><dt>src/client.rs</dt><dd>daemon 发现、自启、token 注入</dd><dt>src/daemon/protocol.rs</dt><dd>newline-JSON 和结构化错误</dd><dt>src/daemon/server.rs</dt><dd>TCP server、鉴权、idle cleanup</dd><dt>src/daemon/state.rs</dt><dd>共享状态、连接与锁</dd><dt>src/daemon/handler/mod.rs</dt><dd>canonical command 路由</dd><dt>src/daemon/session.rs</dt><dd>Session、Tab、ownership 模型</dd><dt>src/daemon/target_lifecycle.rs</dt><dd>Target watcher 与原子注册</dd><dt>src/daemon/persist.rs</dt><dd>schema v1、严格读取、防抖写入</dd><dt>src/browser/</dt><dd>DevToolsActivePort 发现与 CDP 连接</dd><dt>src/page/</dt><dd>navigation、interaction、state、capture、wait</dd></dl>
       </section>
 
       <section id="assessment" data-title="设计评价">
         <div class="eyebrow">10 / Assessment</div><h2>主架构已经收敛，剩余的是内部历史边缘</h2>
-        <div class="split"><div><h3>合理之处</h3><ul class="plain-list"><li>CLI 与持久运行时分离</li><li>browserkit 与 cdpkit 边界清晰</li><li>Session 是唯一隔离模型</li><li>ownership 保护用户 Tab</li><li>生命周期锁兼顾一致性与并发</li><li>磁盘和事件流都不阻塞主请求</li></ul></div><div><h3>仍可清理</h3><ul class="plain-list"><li><code>browser_launch_lock</code> 已无当前产品用途</li><li><code>managed/pid/child</code> 与历史恢复逻辑仍存在</li><li>部分源码注释仍带 workspace/v2 阶段语言</li><li>Windows token ACL 可进一步收紧</li><li>daemon 重启后 unmanaged 用户浏览器不会自动重连</li></ul></div></div>
+        <div class="split"><div><h3>合理之处</h3><ul class="plain-list"><li>CLI 与持久运行时分离</li><li>browserkit 与 cdpkit 边界清晰</li><li>Session 是唯一隔离模型</li><li>ownership 保护用户 Tab</li><li>生命周期锁兼顾一致性与并发</li><li>磁盘和事件流都不阻塞主请求</li></ul></div><div><h3>当前边界</h3><ul class="plain-list"><li>只连接外部已运行的 Chrome/Edge</li><li>不保存或管理浏览器进程信息</li><li>daemon 重启后必须显式 <code>bk connect</code></li><li><code>Attached</code> 只 detach，<code>Owned</code> 才关闭 target</li><li>Windows token ACL 可继续加强</li></ul></div></div>
         <p>最重要的架构主线已经稳定：daemon 管生命周期，Session 管隔离，ownership 管用户资源安全，cdpkit 管协议，CLI 只负责请求和本地输出。</p>
         <footer>内容基于当前仓库实现；命令合同仍以 <code>bk --help</code>、README 和 <code>docs/bk-browser/references/commands.md</code> 为准。</footer>
       </section>
@@ -237,7 +237,7 @@
       chrome:{title:'User Chrome / Edge',role:'用户已经运行并开启远程调试的浏览器；当前 browserkit 不负责启动它。',inputs:'CDP 命令',outputs:'页面状态、Target/Network/Dialog 事件',files:'src/browser/discover.rs · src/browser/finder.rs'},
       state:{title:'DaemonState',role:'用 DashMap、原子量和细粒度锁承载 Browser、Session、订阅与持久化健康状态。',inputs:'handler 和 watcher 的状态变更',outputs:'一致的运行时视图',files:'src/daemon/state.rs · src/daemon/session.rs'},
       watchers:{title:'Runtime watchers',role:'订阅 Target、console、dialog 和断连事件，把浏览器反向变化映射回正确 Session。',inputs:'cdpkit EventStream',outputs:'Tab 注册/删除、buffer、disconnected 状态',files:'src/daemon/target_lifecycle.rs · src/daemon/console.rs · src/daemon/dialog.rs'},
-      persist:{title:'state.json / schema v3',role:'保存可恢复的 Session 元数据与 ownership；不序列化活跃 WebSocket 和任务句柄。',inputs:'500ms 防抖后的状态快照',outputs:'原子 state.json、迁移与错误状态',files:'src/daemon/persist.rs · src/daemon/persist/migrate_v2.rs'}
+      persist:{title:'state.json / schema v1',role:'保存可恢复的 Session 元数据与 ownership；不序列化活跃 WebSocket、浏览器进程和任务句柄。',inputs:'500ms 防抖后的状态快照',outputs:'原子 state.json 与 persistence health',files:'src/daemon/persist.rs'}
     });
     const RUNTIME_FLOWS = Object.freeze({
       'auto-start':{title:'首次命令与 daemon 自启',summary:'CLI 先探测健康 daemon；缺失时后台启动，等待 token、端口和 ping 就绪后再发送业务请求。',steps:[['Agent','运行命令','发起 bk snapshot','normal'],['bk CLI','探测','读取 daemon.port 并 ping','normal'],['daemon process','自启','获取单实例锁，加载状态','normal'],['TCP server','就绪','写入 token 与随机端口','normal'],['handler','执行','鉴权、路由并返回 JSON','normal']]},

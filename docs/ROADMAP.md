@@ -2,15 +2,16 @@
 
 ## Current State
 
-The v2 session-runtime migration is complete as of browserkit 0.2.0.
-
 - browserkit is the persistent browser runtime and agent-facing JSON API.
 - cdpkit-rs is the typed CDP protocol layer.
 - The default session attaches to the user's browser context.
 - Named sessions use isolated BrowserContexts.
-- Schema v3 persists sessions and target ownership.
-- Schema v2 workspace state is migrated once with a backup and visible report.
-- Workspace commands, v1 aliases, and legacy daemon routes are removed.
+- browserkit connects only to already-running Chrome or Edge CDP endpoints and
+  never manages the browser process.
+- Schema v1 persists sessions and target ownership. Restored sessions remain
+  disconnected until an explicit `bk connect`.
+- Only the current command, configuration, and persisted-state contracts are
+  supported; there is no migration or compatibility layer.
 - Network observation, downloads, append-to-file evaluation, and deterministic
   snapshot budgets are available through canonical session commands.
 - CI, Rust 1.75 checks, release validation, and cross-platform artifacts are in

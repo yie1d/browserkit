@@ -63,7 +63,7 @@ or a stale-ref error.
 
 ### Administrative Commands
 
-`browser` and `daemon` manage endpoint and process state. They are separate from
+`browser` and `daemon` manage endpoint connection and daemon state. They are separate from
 ordinary page interaction so agents do not need to understand daemon internals
 for normal work.
 
@@ -72,22 +72,20 @@ for normal work.
 `debug block`, `debug unblock`, and `debug cdp` are explicit diagnostic tools.
 They are not compatibility aliases or a second automation API.
 
-All CLI output is JSON. Removed workspace and v1 routes are intentionally not
-forwarded through compatibility shims.
+All CLI output is JSON. The daemon accepts only the current command contract.
 
 ## Persistence
 
-Runtime state is stored in schema v3 at `~/.bk/state.json`. It includes browser
-metadata, sessions, target ownership, active targets, timestamps, disconnect
-state, and optional migration metadata.
+Runtime state is stored in schema v1 at `~/.bk/state.json`. It includes sessions,
+target ownership, active targets, timestamps, and disconnect state. Browser
+process metadata is not part of the state model.
 
 Writes are atomic and debounced. Recoverable runtime I/O failures remain
 retryable and appear in `persistence.last_error` until a successful write.
-Unsupported or corrupt state disables writes with a visible reason rather than
-silently overwriting preserved data.
-
-Schema v2 workspace state is backed up before a one-way migration to sessions.
-The runtime never writes workspace fields to schema v3.
+Unknown fields, unsupported versions, or corrupt state disable writes with a
+visible reason rather than silently overwriting preserved data. Restored
+sessions start disconnected and require an explicit `bk connect`. There is no
+state migration layer.
 
 ## Lifecycle Invariants
 
@@ -110,12 +108,5 @@ internal, and unknown schemes are rejected. File upload, downloads, and raw CDP
 remain explicit commands. Page content is untrusted input and must not be
 interpreted as runtime policy.
 
-browserkit prefers attaching to the user's existing Chrome. It does not
-implicitly launch a disposable browser during normal agent commands.
-
-## Breaking Migration
-
-Version 0.2.0 removed the workspace-first runtime, `BK_WS`, `--ws`, old CLI
-aliases, and legacy daemon routes. Use sessions, canonical commands, and
-`BK_SESSION` instead. The complete user-facing migration summary is maintained
-in `CHANGELOG.md`.
+browserkit only connects to an already-running Chrome or Edge CDP endpoint. It
+never launches, manages, or terminates the browser process.

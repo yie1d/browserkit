@@ -112,7 +112,9 @@ bk connect
 5. **验证**：再次 `bk snapshot` 或 `bk wait` + `bk snapshot` 确认结果
 6. **结束**：`bk close` detach/关闭当前 tab，或 `bk session close` 清理当前 session
 
-daemon 在命令之间保持连接，无需重复 connect。
+daemon 在正常命令之间保持连接，无需重复 connect。daemon 重启后，持久化
+恢复的 Session 处于 disconnected 状态，必须再次执行 `bk connect`。bk 只连接
+已经运行且开启 CDP 的 Chrome/Edge，不会启动、管理或终止浏览器进程。
 
 `bk open` / `bk navigate` 支持所有 host 的 HTTP(S)（包括 localhost、
 `127.0.0.1`、IPv6 loopback 和局域网），也支持标准本地/UNC 文件 URL，

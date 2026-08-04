@@ -1,8 +1,8 @@
 # browserkit
 
-A persistent browser runtime for AI agents that attaches to the user's existing Chrome, built on [cdpkit](https://crates.io/crates/cdpkit).
+A persistent browser runtime for AI agents that connects to an already-running Chrome or Edge CDP endpoint, built on [cdpkit](https://crates.io/crates/cdpkit).
 
-browserkit connects agents to Chrome through a long-running local daemon. It keeps browser connections, tabs, isolated sessions, and page state available across CLI invocations, so agents can observe and act without relaunching or re-authenticating the browser.
+browserkit connects agents to Chrome or Edge through a long-running local daemon. It keeps browser connections, tabs, isolated sessions, and page state available across CLI invocations, so agents can observe and act without re-authenticating the browser. It does not launch, manage, or terminate the browser process.
 
 The `bk` CLI is the default client. Under the hood, it talks to the daemon over newline-delimited JSON on a local TCP socket.
 
@@ -233,7 +233,6 @@ bk act drag --from-selector "#card-a" --to-selector "#drop-zone"
 ```
 
 `bk act fill`, `bk act select`, and `bk act options` accept only stable element refs from `bk snapshot`.
-Legacy top-level `bk click` and `bk type` are removed; use `bk act click` and `bk act type`.
 `bk act click` returns the action result plus `state_diff`; when a click opens a new tab, the response reports `new_tab`.
 
 | Action | Command |
@@ -262,8 +261,8 @@ bk snapshot --max-tokens 512        # Deterministic elements + page_text budget
 
 `--max-tokens` accepts `16..100000`. It uses the deterministic estimate
 `ceil(serialized UTF-8 JSON bytes / 4)` for the `elements + page_text` content
-scope; it is not a model-specific tokenizer. Responses keep the legacy
-`truncated` field and add `token_budget` plus per-field `truncation` metadata.
+scope; it is not a model-specific tokenizer. Responses include the
+`truncated` field, `token_budget`, and per-field `truncation` metadata.
 Without `--max-tokens`, compact and `--full` limits behave as before.
 
 ### wait
@@ -373,18 +372,6 @@ restrictions still apply.
 |----------|-------------|
 | `BK_SESSION` | Default session name (equivalent to `--session`) |
 
-`BK_WS` and `--ws` were removed in the session-only migration. Use `BK_SESSION` or `--session`.
-
-## Breaking Migration From Workspace Runtime
-
-browserkit now exposes one session runtime. The old workspace surface was removed rather than forwarded through compatibility aliases:
-
-- removed CLI surfaces: `ws`, `tab`, `fetch`, legacy top-level action/navigation aliases, `storage`, and streaming `debug monitor|har|events`;
-- removed environment and flags: `BK_WS`, `--ws`;
-- removed daemon routes: `ws.*`, `tab.*`, `nav.*`, `page.*`, old `storage.*`, and `v2.*` aliases.
-
-On startup, schema v2 state is backed up as `state.v2.backup.json` (or a numbered variant) before being converted to schema v3. `bk status` exposes migration metadata so migrated or dropped state is visible instead of silent. If malformed or newer state disables writes, `persistence.enabled` is false and `persistence.disabled_reason` explains why. A recoverable runtime write failure keeps persistence enabled for later retries and appears in `persistence.last_error` until a write succeeds. Cleanup commands such as `browser disconnect` and `daemon stop` return structured `cleanup_errors` when cleanup is partial.
-
 ## Configuration
 
 Optional config at `~/.bk/config.toml`:
@@ -400,18 +387,16 @@ session_timeout_hours = 72       # idle session timeout
 js_timeout_seconds = 0           # 0 = no timeout
 ```
 
-Historical workspace and managed-Chrome launch keys are ignored by current binaries. Browser discovery and connection do not launch Chrome. Session limits are controlled by `max_sessions`, `max_tabs_per_session`, and `session_timeout_hours`.
+Unknown configuration keys are rejected and browserkit falls back to its default configuration rather than partially applying a misspelled or unsupported file. Browser discovery and connection never launch Chrome or Edge. Session limits are controlled by `max_sessions`, `max_tabs_per_session`, and `session_timeout_hours`.
 
 ## State Persistence
 
-All daemon state is stored in a single schema v3 `~/.bk/state.json` file:
+All persistent daemon state is stored in a single schema v1 `~/.bk/state.json` file:
 
-- historical managed-browser metadata retained for compatible restoration;
 - session metadata: mode, browser host, BrowserContext ID, tabs, active target, timestamps, disconnected flag;
-- per-tab ownership (`Owned` or `Attached`);
-- migration metadata when a v2 state file was converted.
+- per-tab ownership (`Owned` or `Attached`).
 
-The runtime never writes workspace fields to schema v3. Attached user tabs are detached from browserkit on close; browserkit-owned tabs are closed in Chrome.
+After a daemon restart, restored sessions are visible but disconnected until an explicit `bk connect`. Attached user tabs are detached from browserkit on close; browserkit-owned tabs are closed in Chrome or Edge. Browser process state and process identifiers are never persisted.
 
 Additional runtime files in `~/.bk/`:
 - `daemon.port` — current daemon TCP port

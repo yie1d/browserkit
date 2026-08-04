@@ -147,23 +147,18 @@ Use these only for diagnostics or controlled debugging.
 | `bk debug unblock` | Remove request blocking |
 | `bk debug cdp <METHOD> [PARAMS]` | Send a raw CDP command |
 
-## Breaking migration notes
+## Runtime state
 
-The workspace runtime was removed in a breaking migration. Do not use or
-document compatibility aliases for these surfaces:
+browserkit connects only to already-running Chrome or Edge CDP endpoints. It
+does not launch, manage, or terminate browser processes. The daemon persists
+strict schema v1 state containing Session metadata and tab ownership, but no
+browser process metadata. After a daemon restart, restored Sessions remain
+disconnected until an explicit `bk connect`.
 
-- CLI: `ws`, `tab`, `fetch`, old top-level action/navigation aliases, and
-  top-level `storage`;
-- environment and flags: `BK_WS`, `--ws`;
-- daemon routes: `ws.*`, `tab.*`, `nav.*`, `page.*`, old `storage.*`, and
-  `v2.*` aliases;
-- debug streams: `debug monitor`, `debug har`, and `debug events`.
-
-Schema v2 state is backed up before migration to schema v3. `bk status` reports
-migration metadata. If writes are disabled, `persistence.enabled` is false and
-`persistence.disabled_reason` explains the preserved-state error. Recoverable
-runtime write failures leave writes enabled and appear in
-`persistence.last_error` until a later write succeeds. Cleanup commands return
-structured `cleanup_errors` when cleanup is partial. Schema v3 state contains
-historical managed-browser metadata, sessions, tab ownership, and optional
-migration metadata, but no workspace fields.
+If unknown fields, corrupt content, or a non-v1 version disable writes,
+`persistence.enabled` is false and `persistence.disabled_reason` explains why
+the original state is being preserved. Recoverable runtime write failures leave
+writes enabled and appear in `persistence.last_error` until a later write
+succeeds. Cleanup commands return structured `cleanup_errors` when cleanup is
+partial. Unknown configuration keys and unsupported command inputs are rejected;
+there is no migration or compatibility layer.

@@ -8,7 +8,7 @@
 bk CLI / TCP client  --(newline-JSON over TCP)-->  browserkit daemon/runtime  --(cdpkit typed CDP)-->  Chrome
 ```
 
-daemon 常驻后台,维持持久 CDP 连接,状态持久化到 `~/.bk/`。重启时先恢复 session 元数据为 disconnected;当前版本不会启动 Chrome,用户浏览器需由 `bk connect` 重新发现并绑定。仅历史状态中的 managed browser 记录保留兼容性重连。
+daemon 常驻后台,维持持久 CDP 连接,状态持久化到 `~/.bk/`。browserkit 只连接已经运行且开启 CDP 的 Chrome/Edge,不启动、管理或终止浏览器进程。daemon 重启时恢复的 session 为 disconnected,必须显式执行 `bk connect` 重新绑定。
 
 ## 源码布局（`src/`）
 
@@ -21,11 +21,11 @@ daemon 常驻后台,维持持久 CDP 连接,状态持久化到 `~/.bk/`。重启
 
 - **Session** = 唯一浏览器活动与持久化边界。默认 session 复用用户 Chrome 登录态;命名 session 用 BrowserContext 隔离 cookie/storage/tab。
 - **Tab ownership** = `Owned` tab 由 browserkit 创建,close 会关闭 Chrome target;`Attached` tab 来自用户现有浏览器,close 只 detach,不能关闭用户 target。
-- **持久化**:`~/.bk/state.json` 为 schema v3 session-only 状态文件。v2 state 会先备份为 `state.v2.backup*.json` 再迁移到 v3;运行时不再写 workspace 字段。损坏或未来版本会禁用写入并在 `daemon.status.persistence` 暴露原因。`daemon.port` 记录 daemon 端口。写入原子(tmp+rename)且防抖(500ms)。别在请求处理里同步阻塞写盘。
-- **破坏性迁移**:`ws`/`tab`/`fetch` CLI、`BK_WS`/`--ws`、`ws.*`/`tab.*`/`nav.*`/`page.*`/旧 `storage.*`/`v2.*` route 已移除;文档和 skill 只能推荐当前 canonical commands。
+- **持久化**:`~/.bk/state.json` 为 schema v1 session-only 状态文件,只保存 Session 元数据、tab ownership 和 active target。只接受严格的 v1 schema;未知字段、损坏内容或其他版本都会禁用写入并在 `daemon.status.persistence` 暴露原因,绝不覆盖原文件。`daemon.port` 记录 daemon 端口。写入原子(tmp+rename)且防抖(500ms)。别在请求处理里同步阻塞写盘。
+- **无迁移与兼容层**:项目尚未投入使用,只维护当前 canonical CLI、route、配置和 JSON 契约;不要新增旧输入兼容或状态迁移。
 - **并发**:DashMap / parking_lot;注意别持锁跨 await。
 - daemon 按需自启;端口存 `~/.bk/daemon.port`。
-- v2 输出格式固定 JSON;旧 `--format`/text/tsv 口径只属于历史 v1。
+- 输出格式固定为 JSON。
 
 ## 对底层 cdpkit 的依赖（重要）
 
