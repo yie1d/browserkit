@@ -1,6 +1,6 @@
 // Network developer handlers: request block and unblock.
 
-use std::{collections::HashMap, num::NonZeroUsize, sync::Arc, time::Duration};
+use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use futures::{Stream, StreamExt};
 use serde_json::json;
@@ -11,7 +11,6 @@ use crate::daemon::protocol::{Request, Response};
 use crate::daemon::state::DaemonState;
 use crate::error::BkError;
 
-const NETWORK_EVENT_CAPACITY: usize = 256;
 const TERMINAL_EVENT_CAPACITY: usize = 256;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -151,7 +150,6 @@ struct EventStreamStop {
     reason: &'static str,
     stream: &'static str,
     error: Option<String>,
-    overflow: Option<serde_json::Value>,
 }
 
 impl EventStreamStop {
@@ -160,41 +158,14 @@ impl EventStreamStop {
             reason: "event_stream_closed",
             stream,
             error: None,
-            overflow: None,
         }
     }
 
     fn from_error(stream: &'static str, error: cdpkit::CdpError) -> Self {
-        match error {
-            cdpkit::CdpError::EventStreamOverflow {
-                event,
-                capacity,
-                dropped,
-            } => Self {
-                reason: "event_stream_overflow",
-                stream,
-                error: None,
-                overflow: Some(json!({
-                    "event": event,
-                    "capacity": capacity,
-                    "dropped_events": dropped,
-                })),
-            },
-            error => Self {
-                reason: "event_stream_error",
-                stream,
-                error: Some(error.to_string()),
-                overflow: None,
-            },
-        }
-    }
-
-    fn observed_overflow(dropped_events: serde_json::Value) -> Self {
         Self {
-            reason: "event_stream_overflow",
-            stream: "multiple",
-            error: None,
-            overflow: Some(json!({"dropped_events": dropped_events})),
+            reason: "event_stream_error",
+            stream,
+            error: Some(error.to_string()),
         }
     }
 
@@ -202,9 +173,15 @@ impl EventStreamStop {
         json!({
             "stream": self.stream,
             "error": self.error,
-            "overflow": self.overflow,
         })
     }
+}
+
+fn event_stream_metadata(stop: Option<&EventStreamStop>) -> serde_json::Value {
+    json!({
+        "buffer": "unbounded",
+        "stop": stop.map(EventStreamStop::metadata),
+    })
 }
 
 enum SelectedNetworkEvent<R, F, L> {
@@ -383,27 +360,16 @@ pub async fn handle_network_watch(req: &Request, state: &Arc<DaemonState>) -> Re
     };
 
     let session = ctx.cdp.session(&ctx.cdp_session_id);
-    let event_policy = cdpkit::EventStreamPolicy::Bounded {
-        capacity: NonZeroUsize::new(NETWORK_EVENT_CAPACITY).expect("positive event capacity"),
-        overflow: cdpkit::EventOverflowStrategy::CloseStream,
-    };
-    let mut response_events =
-        cdpkit::network::events::ResponseReceived::subscribe_result_with_policy(
-            &session,
-            event_policy,
-        );
-    let mut finished_events =
-        cdpkit::network::events::LoadingFinished::subscribe_result_with_policy(
-            &session,
-            event_policy,
-        );
-    let mut failed_events = cdpkit::network::events::LoadingFailed::subscribe_result_with_policy(
+    let mut response_events = cdpkit::network::events::ResponseReceived::subscribe(
         &session,
-        event_policy,
+        cdpkit::EventBuffer::Unbounded,
     );
-    let response_event_stats = response_events.stats();
-    let finished_event_stats = finished_events.stats();
-    let failed_event_stats = failed_events.stats();
+    let mut finished_events = cdpkit::network::events::LoadingFinished::subscribe(
+        &session,
+        cdpkit::EventBuffer::Unbounded,
+    );
+    let mut failed_events =
+        cdpkit::network::events::LoadingFailed::subscribe(&session, cdpkit::EventBuffer::Unbounded);
 
     if let Err(error) = cdpkit::network::methods::Enable::new().send(&session).await {
         return Response::error_detail(
@@ -516,22 +482,6 @@ pub async fn handle_network_watch(req: &Request, state: &Arc<DaemonState>) -> Re
         }
     };
 
-    let response_events_dropped = response_event_stats.dropped_events();
-    let finished_events_dropped = finished_event_stats.dropped_events();
-    let failed_events_dropped = failed_event_stats.dropped_events();
-    let dropped_events = json!({
-        "response_received": response_events_dropped,
-        "loading_finished": finished_events_dropped,
-        "loading_failed": failed_events_dropped,
-    });
-    if event_stream_stop.is_none()
-        && response_events_dropped
-            .saturating_add(finished_events_dropped)
-            .saturating_add(failed_events_dropped)
-            > 0
-    {
-        event_stream_stop = Some(EventStreamStop::observed_overflow(dropped_events.clone()));
-    }
     let stop_reason = event_stream_stop
         .as_ref()
         .map_or(stop_reason, |stop| stop.reason);
@@ -552,12 +502,7 @@ pub async fn handle_network_watch(req: &Request, state: &Arc<DaemonState>) -> Re
             "body_omitted": true,
             "reason": "bounded_memory",
         },
-        "event_streams": {
-            "capacity_each": NETWORK_EVENT_CAPACITY,
-            "overflow_strategy": "close_stream",
-            "dropped_events": dropped_events,
-            "stop": event_stream_stop.as_ref().map(EventStreamStop::metadata),
-        },
+        "event_streams": event_stream_metadata(event_stream_stop.as_ref()),
         "terminal_buffer": {
             "capacity": TERMINAL_EVENT_CAPACITY,
             "pending": terminals.len(),
@@ -739,25 +684,39 @@ mod tests {
         assert_eq!(response["body_omission_reason"], "metadata_only");
         assert!(response.get("body_truncated").is_none());
         assert!(response.get("body_original_bytes").is_none());
-        assert_eq!(NETWORK_EVENT_CAPACITY, 256);
         assert_eq!(TERMINAL_EVENT_CAPACITY, 256);
     }
 
     #[test]
-    fn network_watch_event_overflow_is_structured() {
+    fn network_watch_event_error_is_structured() {
+        let decode_error = serde_json::from_str::<serde_json::Value>("{").unwrap_err();
         let stop = EventStreamStop::from_error(
             "loading_finished",
-            cdpkit::CdpError::EventStreamOverflow {
-                event: "Network.loadingFinished".into(),
-                capacity: 256,
-                dropped: 1,
-            },
+            cdpkit::CdpError::Serialization(decode_error),
         );
 
-        assert_eq!(stop.reason, "event_stream_overflow");
+        assert_eq!(stop.reason, "event_stream_error");
         assert_eq!(stop.metadata()["stream"], "loading_finished");
-        assert_eq!(stop.metadata()["overflow"]["capacity"], 256);
-        assert_eq!(stop.metadata()["overflow"]["dropped_events"], 1);
+        assert!(stop.metadata()["error"]
+            .as_str()
+            .is_some_and(|error| error.contains("Serialization error")));
+    }
+
+    #[test]
+    fn network_watch_event_metadata_reports_unbounded_buffer() {
+        assert_eq!(
+            event_stream_metadata(None),
+            json!({"buffer": "unbounded", "stop": null})
+        );
+    }
+
+    #[test]
+    fn network_watch_closed_event_stream_is_structured() {
+        let stop = EventStreamStop::closed("loading_failed");
+
+        assert_eq!(stop.reason, "event_stream_closed");
+        assert_eq!(stop.metadata()["stream"], "loading_failed");
+        assert!(stop.metadata()["error"].is_null());
     }
 
     #[tokio::test]

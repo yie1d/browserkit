@@ -4,6 +4,7 @@ pub mod element_ref;
 pub mod find_elements;
 pub mod interaction;
 pub mod navigation;
+pub(crate) mod remote_object;
 pub mod state;
 pub mod state_diff;
 pub mod wait;
@@ -143,7 +144,9 @@ pub struct FullPageState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cdpkit::runtime::types::{ExceptionDetails, RemoteObject};
+    use cdpkit::runtime::types::{
+        ExceptionDetails, RemoteObject, RemoteObjectSubtype, RemoteObjectType,
+    };
 
     fn make_exception_details(text: &str, description: Option<&str>) -> ExceptionDetails {
         ExceptionDetails {
@@ -155,8 +158,8 @@ mod tests {
             url: None,
             stack_trace: None,
             exception: description.map(|desc| RemoteObject {
-                type_: "object".to_string(),
-                subtype: Some("error".to_string()),
+                type_: RemoteObjectType::Object,
+                subtype: Some(RemoteObjectSubtype::Error),
                 class_name: Some("Error".to_string()),
                 value: None,
                 unserializable_value: None,
@@ -205,7 +208,7 @@ mod tests {
             url: None,
             stack_trace: None,
             exception: Some(RemoteObject {
-                type_: "object".to_string(),
+                type_: RemoteObjectType::Object,
                 subtype: None,
                 class_name: None,
                 value: None,

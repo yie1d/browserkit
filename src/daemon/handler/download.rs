@@ -120,14 +120,16 @@ fn download_start_matches(event_frame_id: &str, main_frame_id: &str) -> bool {
 fn classify_download_progress(
     event_guid: &str,
     download_guid: &str,
-    state: &str,
+    state: &cdpkit::browser::types::DownloadProgressState,
 ) -> Option<DownloadTerminal> {
     if event_guid != download_guid {
         return None;
     }
     match state {
-        "completed" => Some(DownloadTerminal::Completed),
-        "canceled" => Some(DownloadTerminal::Canceled),
+        cdpkit::browser::types::DownloadProgressState::Completed => {
+            Some(DownloadTerminal::Completed)
+        }
+        cdpkit::browser::types::DownloadProgressState::Canceled => Some(DownloadTerminal::Canceled),
         _ => None,
     }
 }
@@ -151,7 +153,7 @@ fn chrome_download_path(path: &Path) -> String {
 }
 
 fn download_behavior(
-    behavior: &str,
+    behavior: cdpkit::browser::types::SetDownloadBehaviorBehavior,
     output_dir: Option<&Path>,
     browser_context_id: Option<&str>,
     events_enabled: bool,
@@ -170,7 +172,12 @@ fn download_behavior(
 async fn restore_download_behavior(
     ctx: &super::common::SessionTargetContext,
 ) -> Result<(), Response> {
-    let reset = download_behavior("default", None, ctx.browser_context_id.as_deref(), false);
+    let reset = download_behavior(
+        cdpkit::browser::types::SetDownloadBehaviorBehavior::Default,
+        None,
+        ctx.browser_context_id.as_deref(),
+        false,
+    );
     match tokio::time::timeout(Duration::from_secs(5), reset.send(&*ctx.cdp)).await {
         Ok(Ok(())) => Ok(()),
         Ok(Err(error)) => Err(Response::error_detail(
@@ -248,8 +255,15 @@ async fn observe_download(
                 ));
             }
             event = begin_events.next() => match event {
-                Some(event) if download_start_matches(&event.frame_id, main_frame_id) => break event,
-                Some(_) => continue,
+                Some(Ok(event)) if download_start_matches(&event.frame_id, main_frame_id) => break event,
+                Some(Ok(_)) => continue,
+                Some(Err(error)) => {
+                    return Response::error_detail(
+                        ErrorCode::DaemonError,
+                        format!("download start event stream failed: {error}"),
+                        None,
+                    );
+                }
                 None => {
                     return Response::error_detail(
                         ErrorCode::DaemonError,
@@ -274,7 +288,7 @@ async fn observe_download(
                 ));
             }
             event = progress_events.next() => match event {
-                Some(event) if event.guid == started.guid => {
+                Some(Ok(event)) if event.guid == started.guid => {
                     progress_count += 1;
                     received_bytes = event.received_bytes;
                     total_bytes = event.total_bytes;
@@ -312,7 +326,14 @@ async fn observe_download(
                         None => {}
                     }
                 }
-                Some(_) => continue,
+                Some(Ok(_)) => continue,
+                Some(Err(error)) => {
+                    return Response::error_detail(
+                        ErrorCode::DaemonError,
+                        format!("download progress event stream failed: {error}"),
+                        None,
+                    );
+                }
                 None => {
                     return Response::error_detail(
                         ErrorCode::DaemonError,
@@ -362,10 +383,16 @@ pub async fn handle_download(req: &Request, state: &Arc<DaemonState>) -> Respons
         Err(_) => return timeout_response("download timed out while resolving the page frame"),
     };
 
-    let begin_events = cdpkit::browser::events::DownloadWillBegin::subscribe(&*ctx.cdp);
-    let progress_events = cdpkit::browser::events::DownloadProgress::subscribe(&*ctx.cdp);
+    let begin_events = cdpkit::browser::events::DownloadWillBegin::subscribe(
+        &*ctx.cdp,
+        cdpkit::EventBuffer::Unbounded,
+    );
+    let progress_events = cdpkit::browser::events::DownloadProgress::subscribe(
+        &*ctx.cdp,
+        cdpkit::EventBuffer::Unbounded,
+    );
     let enable = download_behavior(
-        "allow",
+        cdpkit::browser::types::SetDownloadBehaviorBehavior::Allow,
         Some(&params.output_dir),
         ctx.browser_context_id.as_deref(),
         true,
@@ -511,19 +538,35 @@ mod tests {
         assert!(!download_start_matches("FRAME2", "FRAME1"));
 
         assert_eq!(
-            classify_download_progress("GUID1", "GUID1", "inProgress"),
+            classify_download_progress(
+                "GUID1",
+                "GUID1",
+                &cdpkit::browser::types::DownloadProgressState::InProgress,
+            ),
             None
         );
         assert_eq!(
-            classify_download_progress("GUID1", "GUID1", "completed"),
+            classify_download_progress(
+                "GUID1",
+                "GUID1",
+                &cdpkit::browser::types::DownloadProgressState::Completed,
+            ),
             Some(DownloadTerminal::Completed)
         );
         assert_eq!(
-            classify_download_progress("GUID1", "GUID1", "canceled"),
+            classify_download_progress(
+                "GUID1",
+                "GUID1",
+                &cdpkit::browser::types::DownloadProgressState::Canceled,
+            ),
             Some(DownloadTerminal::Canceled)
         );
         assert_eq!(
-            classify_download_progress("OTHER", "GUID1", "completed"),
+            classify_download_progress(
+                "OTHER",
+                "GUID1",
+                &cdpkit::browser::types::DownloadProgressState::Completed,
+            ),
             None
         );
     }

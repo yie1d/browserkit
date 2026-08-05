@@ -6,6 +6,7 @@ use std::sync::Arc;
 use cdpkit::CDP;
 
 use crate::error::BkError;
+use crate::page::remote_object::RemoteObjectScope;
 use crate::page::{
     exception_message, ElementInfo, FullPageState, SearchMatch, INTERACTIVE_SELECTOR,
 };
@@ -425,69 +426,75 @@ async fn get_backend_node_ids(
     }
 
     let session = cdp.session(session_id);
+    let object_group = RemoteObjectScope::new(cdp, session_id, "page-state-refs");
+    let result = async {
+        // Get the element array as a remote object (objectId)
+        let resp = cdpkit::runtime::methods::Evaluate::new(DISCOVER_ELEMENTS_REFS_JS)
+            .with_object_group(object_group.name())
+            .send(&session)
+            .await?;
 
-    // Get the element array as a remote object (objectId)
-    let resp = cdpkit::runtime::methods::Evaluate::new(DISCOVER_ELEMENTS_REFS_JS)
-        .send(&session)
-        .await?;
+        if resp.exception_details.is_some() {
+            return Err(BkError::Other("failed to get element refs".into()));
+        }
 
-    if resp.exception_details.is_some() {
-        return Err(BkError::Other("failed to get element refs".into()));
-    }
+        let array_object_id = resp
+            .result
+            .object_id
+            .ok_or_else(|| BkError::Other("state refs: no objectId for element array".into()))?;
 
-    let array_object_id = resp
-        .result
-        .object_id
-        .ok_or_else(|| BkError::Other("state refs: no objectId for element array".into()))?;
+        // Get indexed properties of the array
+        let props_resp = cdpkit::runtime::methods::GetProperties::new(array_object_id)
+            .with_own_properties(true)
+            .send(&session)
+            .await?;
 
-    // Get indexed properties of the array
-    let props_resp = cdpkit::runtime::methods::GetProperties::new(array_object_id)
-        .with_own_properties(true)
-        .send(&session)
-        .await?;
-
-    // Collect element objectIds in index order
-    let mut element_entries: Vec<(usize, String)> = Vec::with_capacity(expected_count);
-    for prop in &props_resp.result {
-        // Array elements have numeric names: "0", "1", "2", ...
-        if let Ok(idx) = prop.name.parse::<usize>() {
-            if let Some(ref value) = prop.value {
-                if let Some(ref oid) = value.object_id {
-                    element_entries.push((idx, oid.clone()));
+        // Collect element objectIds in index order
+        let mut element_entries: Vec<(usize, String)> = Vec::with_capacity(expected_count);
+        for prop in &props_resp.result {
+            // Array elements have numeric names: "0", "1", "2", ...
+            if let Ok(idx) = prop.name.parse::<usize>() {
+                if let Some(ref value) = prop.value {
+                    if let Some(ref oid) = value.object_id {
+                        element_entries.push((idx, oid.clone()));
+                    }
                 }
             }
         }
-    }
-    element_entries.sort_by_key(|(idx, _)| *idx);
+        element_entries.sort_by_key(|(idx, _)| *idx);
 
-    // Count validation: if phase-2 found a different number of elements than phase-1,
-    // the DOM changed between the two passes — discard all refs to avoid misalignment.
-    if element_entries.len() != expected_count {
-        return Ok(vec![None; expected_count]);
-    }
+        // Count validation: if phase-2 found a different number of elements than phase-1,
+        // the DOM changed between the two passes — discard all refs to avoid misalignment.
+        if element_entries.len() != expected_count {
+            return Ok(vec![None; expected_count]);
+        }
 
-    // Describe each node to get backendNodeId (parallelized)
-    let futures: Vec<_> = element_entries
-        .iter()
-        .map(|(_idx, oid)| {
-            let oid = oid.clone();
-            let session = cdp.session(session_id);
-            async move {
-                match cdpkit::dom::methods::DescribeNode::new()
-                    .with_object_id(oid)
-                    .send(&session)
-                    .await
-                {
-                    Ok(desc) => Some(desc.node.backend_node_id),
-                    Err(_) => None,
+        // Describe each node to get backendNodeId (parallelized)
+        let futures: Vec<_> = element_entries
+            .iter()
+            .map(|(_idx, oid)| {
+                let oid = oid.clone();
+                let session = cdp.session(session_id);
+                async move {
+                    match cdpkit::dom::methods::DescribeNode::new()
+                        .with_object_id(oid)
+                        .send(&session)
+                        .await
+                    {
+                        Ok(desc) => Some(desc.node.backend_node_id),
+                        Err(_) => None,
+                    }
                 }
-            }
-        })
-        .collect();
+            })
+            .collect();
 
-    let ids: Vec<Option<i64>> = futures::future::join_all(futures).await;
+        let ids: Vec<Option<i64>> = futures::future::join_all(futures).await;
 
-    Ok(ids)
+        Ok(ids)
+    }
+    .await;
+    object_group.release().await;
+    result
 }
 
 /// Build the JS snippet for searching text in the page body.
@@ -687,14 +694,14 @@ pub async fn enrich_with_ax_tree(cdp: &Arc<CDP>, session_id: &str, elements: &mu
     let session = cdp.session(session_id);
 
     // Enable accessibility domain (required before getFullAXTree)
-    let enable_result = cdpkit::protocol::accessibility::methods::Enable::new()
+    let enable_result = cdpkit::accessibility::methods::Enable::new()
         .send(&session)
         .await;
     if enable_result.is_err() {
         return;
     }
 
-    let ax_resp = cdpkit::protocol::accessibility::methods::GetFullAxTree::new()
+    let ax_resp = cdpkit::accessibility::methods::GetFullAxTree::new()
         .send(&session)
         .await;
 

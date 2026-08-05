@@ -13,23 +13,35 @@ async fn click_at(cdp: &Arc<CDP>, session_id: &str, x: f64, y: f64) -> Result<()
     let session = cdp.session(session_id);
 
     // 1. mouseMoved
-    cdpkit::input::methods::DispatchMouseEvent::new("mouseMoved", x, y)
-        .send(&session)
-        .await?;
+    cdpkit::input::methods::DispatchMouseEvent::new(
+        cdpkit::input::types::DispatchMouseEventType::MouseMoved,
+        x,
+        y,
+    )
+    .send(&session)
+    .await?;
 
     // 2. mousePressed
-    cdpkit::input::methods::DispatchMouseEvent::new("mousePressed", x, y)
-        .with_button(cdpkit::input::types::MouseButton::Left)
-        .with_click_count(1)
-        .send(&session)
-        .await?;
+    cdpkit::input::methods::DispatchMouseEvent::new(
+        cdpkit::input::types::DispatchMouseEventType::MousePressed,
+        x,
+        y,
+    )
+    .with_button(cdpkit::input::types::MouseButton::Left)
+    .with_click_count(1)
+    .send(&session)
+    .await?;
 
     // 3. mouseReleased
-    cdpkit::input::methods::DispatchMouseEvent::new("mouseReleased", x, y)
-        .with_button(cdpkit::input::types::MouseButton::Left)
-        .with_click_count(1)
-        .send(&session)
-        .await?;
+    cdpkit::input::methods::DispatchMouseEvent::new(
+        cdpkit::input::types::DispatchMouseEventType::MouseReleased,
+        x,
+        y,
+    )
+    .with_button(cdpkit::input::types::MouseButton::Left)
+    .with_click_count(1)
+    .send(&session)
+    .await?;
 
     Ok(())
 }
@@ -95,11 +107,15 @@ pub async fn scroll_page(
                 _ => unreachable!(),
             };
 
-            cdpkit::input::methods::DispatchMouseEvent::new("mouseWheel", 400.0, 300.0)
-                .with_delta_x(delta_x)
-                .with_delta_y(delta_y)
-                .send(&session)
-                .await?;
+            cdpkit::input::methods::DispatchMouseEvent::new(
+                cdpkit::input::types::DispatchMouseEventType::MouseWheel,
+                400.0,
+                300.0,
+            )
+            .with_delta_x(delta_x)
+            .with_delta_y(delta_y)
+            .send(&session)
+            .await?;
         }
         _ => {
             return Err(BkError::Other(format!(
@@ -173,48 +189,13 @@ pub async fn upload_files_by_selector(
     selector: &str,
     files: &[String],
 ) -> Result<(), BkError> {
-    // Validate all file paths exist
-    validate_file_paths(files)?;
-
-    let session = cdp.session(session_id);
-
-    // Use serde_json::to_string to produce a safe JS string literal
-    let selector_js = serde_json::to_string(selector)
-        .map_err(|e| BkError::Other(format!("upload: failed to serialize selector: {}", e)))?;
-
-    let js = format!(
-        r#"(() => {{
-    const el = document.querySelector({selector_js});
-    if (!el) throw new Error('element not found for selector: ' + {selector_js});
-    if (el.tagName.toLowerCase() !== 'input' || el.type.toLowerCase() !== 'file')
-        throw new Error('element matching selector is not an input[type=file], got: <' + el.tagName.toLowerCase() + ' type="' + (el.type || '') + '">');
-    return el;
-}})()"#
-    );
-
-    let resp = cdpkit::runtime::methods::Evaluate::new(&js)
-        .send(&session)
-        .await?;
-
-    if let Some(details) = &resp.exception_details {
-        return Err(BkError::Other(format!(
-            "upload: {}",
-            exception_message(details)
-        )));
-    }
-
-    let object_id = resp
-        .result
-        .object_id
-        .ok_or_else(|| BkError::Other("upload: no objectId returned for element".into()))?;
-
-    // Call DOM.setFileInputFiles
-    cdpkit::dom::methods::SetFileInputFiles::new(files.to_vec())
-        .with_object_id(object_id)
-        .send(&session)
-        .await?;
-
-    Ok(())
+    upload_files_by_target(
+        cdp,
+        session_id,
+        &ElementTarget::Selector(selector.to_string()),
+        files,
+    )
+    .await
 }
 
 /// Result of filling a single field in a batch fill operation.
@@ -269,7 +250,9 @@ pub async fn click_element_by_target(
     target: &ElementTarget,
 ) -> Result<(), BkError> {
     let resolved = resolve_element(cdp, session_id, target).await?;
-    click_at(cdp, session_id, resolved.center.0, resolved.center.1).await
+    let result = click_at(cdp, session_id, resolved.center.0, resolved.center.1).await;
+    resolved.release().await;
+    result
 }
 
 /// Type text into an element by ElementTarget.
@@ -284,21 +267,19 @@ pub async fn type_text_by_target(
 ) -> Result<(), BkError> {
     let resolved = resolve_element(cdp, session_id, target).await?;
     let session = cdp.session(session_id);
-
-    // Click to focus
-    click_at(cdp, session_id, resolved.center.0, resolved.center.1).await?;
-
-    // Clear if requested
-    if clear {
-        clear_by_object_id(cdp, session_id, &resolved.object_id).await?;
+    let result = async {
+        click_at(cdp, session_id, resolved.center.0, resolved.center.1).await?;
+        if clear {
+            clear_by_object_id(cdp, session_id, &resolved.object_id).await?;
+        }
+        cdpkit::input::methods::InsertText::new(text)
+            .send(&session)
+            .await?;
+        Ok(())
     }
-
-    // Insert text
-    cdpkit::input::methods::InsertText::new(text)
-        .send(&session)
-        .await?;
-
-    Ok(())
+    .await;
+    resolved.release().await;
+    result
 }
 
 /// Hover over an element by ElementTarget.
@@ -310,15 +291,16 @@ pub async fn hover_by_target(
     let resolved = resolve_element(cdp, session_id, target).await?;
     let session = cdp.session(session_id);
 
-    cdpkit::input::methods::DispatchMouseEvent::new(
-        "mouseMoved",
+    let result = cdpkit::input::methods::DispatchMouseEvent::new(
+        cdpkit::input::types::DispatchMouseEventType::MouseMoved,
         resolved.center.0,
         resolved.center.1,
     )
     .send(&session)
-    .await?;
-
-    Ok(())
+    .await
+    .map_err(BkError::from);
+    resolved.release().await;
+    result
 }
 
 /// Focus an element by ElementTarget.
@@ -330,12 +312,14 @@ pub async fn focus_by_target(
     let resolved = resolve_element(cdp, session_id, target).await?;
     let session = cdp.session(session_id);
 
-    cdpkit::runtime::methods::CallFunctionOn::new("function() { this.focus(); }")
-        .with_object_id(resolved.object_id)
+    let result = cdpkit::runtime::methods::CallFunctionOn::new("function() { this.focus(); }")
+        .with_object_id(resolved.object_id.clone())
         .send(&session)
-        .await?;
-
-    Ok(())
+        .await
+        .map(|_| ())
+        .map_err(BkError::from);
+    resolved.release().await;
+    result
 }
 
 /// Select a dropdown option by ElementTarget.
@@ -347,6 +331,7 @@ pub async fn select_by_target(
 ) -> Result<serde_json::Value, BkError> {
     let resolved = resolve_element(cdp, session_id, target).await?;
     let session = cdp.session(session_id);
+    let result = async {
 
     let json_value = serde_json::to_string(value)
         .map_err(|e| BkError::Other(format!("failed to serialize value: {}", e)))?;
@@ -369,7 +354,7 @@ pub async fn select_by_target(
     );
 
     let resp = cdpkit::runtime::methods::CallFunctionOn::new(&js)
-        .with_object_id(resolved.object_id)
+        .with_object_id(resolved.object_id.clone())
         .with_return_by_value(true)
         .send(&session)
         .await?;
@@ -402,7 +387,11 @@ pub async fn select_by_target(
         return Err(BkError::Other(format!("act.select: {}", err)));
     }
 
-    Ok(result)
+        Ok(result)
+    }
+    .await;
+    resolved.release().await;
+    result
 }
 
 /// Scroll an element into view by ElementTarget.
@@ -412,7 +401,8 @@ pub async fn scroll_to_element_by_target(
     target: &ElementTarget,
 ) -> Result<(), BkError> {
     // resolve_element already calls ScrollIntoViewIfNeeded, so this is sufficient
-    let _resolved = resolve_element(cdp, session_id, target).await?;
+    let resolved = resolve_element(cdp, session_id, target).await?;
+    resolved.release().await;
     Ok(())
 }
 
@@ -426,36 +416,60 @@ pub async fn drag_by_target(
     to: &ElementTarget,
 ) -> Result<(), BkError> {
     let from_resolved = resolve_element(cdp, session_id, from).await?;
-    let to_resolved = resolve_element(cdp, session_id, to).await?;
+    let to_resolved = match resolve_element(cdp, session_id, to).await {
+        Ok(resolved) => resolved,
+        Err(error) => {
+            from_resolved.release().await;
+            return Err(error);
+        }
+    };
     let session = cdp.session(session_id);
 
     let (fx, fy) = from_resolved.center;
     let (tx, ty) = to_resolved.center;
+    from_resolved.release().await;
+    to_resolved.release().await;
 
     // mouseMoved to source
-    cdpkit::input::methods::DispatchMouseEvent::new("mouseMoved", fx, fy)
-        .send(&session)
-        .await?;
+    cdpkit::input::methods::DispatchMouseEvent::new(
+        cdpkit::input::types::DispatchMouseEventType::MouseMoved,
+        fx,
+        fy,
+    )
+    .send(&session)
+    .await?;
 
     // mousePressed at source
-    cdpkit::input::methods::DispatchMouseEvent::new("mousePressed", fx, fy)
-        .with_button(cdpkit::input::types::MouseButton::Left)
-        .with_click_count(1)
-        .send(&session)
-        .await?;
+    cdpkit::input::methods::DispatchMouseEvent::new(
+        cdpkit::input::types::DispatchMouseEventType::MousePressed,
+        fx,
+        fy,
+    )
+    .with_button(cdpkit::input::types::MouseButton::Left)
+    .with_click_count(1)
+    .send(&session)
+    .await?;
 
     // mouseMoved to destination
-    cdpkit::input::methods::DispatchMouseEvent::new("mouseMoved", tx, ty)
-        .with_button(cdpkit::input::types::MouseButton::Left)
-        .send(&session)
-        .await?;
+    cdpkit::input::methods::DispatchMouseEvent::new(
+        cdpkit::input::types::DispatchMouseEventType::MouseMoved,
+        tx,
+        ty,
+    )
+    .with_button(cdpkit::input::types::MouseButton::Left)
+    .send(&session)
+    .await?;
 
     // mouseReleased at destination
-    cdpkit::input::methods::DispatchMouseEvent::new("mouseReleased", tx, ty)
-        .with_button(cdpkit::input::types::MouseButton::Left)
-        .with_click_count(1)
-        .send(&session)
-        .await?;
+    cdpkit::input::methods::DispatchMouseEvent::new(
+        cdpkit::input::types::DispatchMouseEventType::MouseReleased,
+        tx,
+        ty,
+    )
+    .with_button(cdpkit::input::types::MouseButton::Left)
+    .with_click_count(1)
+    .send(&session)
+    .await?;
 
     Ok(())
 }
@@ -468,6 +482,7 @@ pub async fn dropdown_options_by_target(
 ) -> Result<serde_json::Value, BkError> {
     let resolved = resolve_element(cdp, session_id, target).await?;
     let session = cdp.session(session_id);
+    let result = async {
 
     let js = r#"function() {
     const el = this;
@@ -477,7 +492,7 @@ pub async fn dropdown_options_by_target(
 }"#;
 
     let resp = cdpkit::runtime::methods::CallFunctionOn::new(js)
-        .with_object_id(resolved.object_id)
+        .with_object_id(resolved.object_id.clone())
         .with_return_by_value(true)
         .send(&session)
         .await?;
@@ -503,7 +518,11 @@ pub async fn dropdown_options_by_target(
         return Err(BkError::Other(format!("act.dropdown_options: {}", err)));
     }
 
-    Ok(result)
+        Ok(result)
+    }
+    .await;
+    resolved.release().await;
+    result
 }
 
 /// Upload files to a file input element by ElementTarget.
@@ -517,6 +536,7 @@ pub async fn upload_files_by_target(
 
     let resolved = resolve_element(cdp, session_id, target).await?;
     let session = cdp.session(session_id);
+    let result = async {
 
     // Validate element is input[type=file] via callFunctionOn
     let check_js = r#"function() {
@@ -540,11 +560,15 @@ pub async fn upload_files_by_target(
 
     // Set files
     cdpkit::dom::methods::SetFileInputFiles::new(files.to_vec())
-        .with_object_id(resolved.object_id)
+        .with_object_id(resolved.object_id.clone())
         .send(&session)
         .await?;
 
-    Ok(())
+        Ok(())
+    }
+    .await;
+    resolved.release().await;
+    result
 }
 
 /// A single ref-based field assignment for batch fill.
@@ -592,6 +616,7 @@ async fn fill_single_by_target(
 ) -> Result<(), BkError> {
     let resolved = resolve_element(cdp, session_id, target).await?;
     let session = cdp.session(session_id);
+    let result = async {
 
     let json_value = serde_json::to_string(value)
         .map_err(|e| BkError::Other(format!("fill: failed to serialize value: {}", e)))?;
@@ -649,7 +674,7 @@ async fn fill_single_by_target(
     );
 
     let resp = cdpkit::runtime::methods::CallFunctionOn::new(&js)
-        .with_object_id(resolved.object_id)
+        .with_object_id(resolved.object_id.clone())
         .with_return_by_value(true)
         .send(&session)
         .await?;
@@ -661,7 +686,11 @@ async fn fill_single_by_target(
         )));
     }
 
-    Ok(())
+        Ok(())
+    }
+    .await;
+    resolved.release().await;
+    result
 }
 
 /// Clear element content by objectId (used internally by type_text_by_target).

@@ -273,7 +273,7 @@ bk evaluate "JSON.stringify(Array.from(document.querySelectorAll('.item-title'))
 bk network watch --pattern "/api/orders" --count 2 --timeout 10000
 ```
 
-只观察当前 session/target 的 XHR/fetch，达到 count 或 timeout 后一次性返回 JSON。结果仅含响应 metadata；`body` 固定为 `null`，检查 `body_omitted` / `body_omission_reason`，需要内容时另用 `evaluate`。三个事件流与乱序 terminal 暂存容量均为 256；terminal 暂存达到容量时立即以 `stop_reason="terminal_buffer_overflow"` 停止。必须检查 `event_streams`、`terminal_buffer` 的 overflow/close/drop/stop 信息，不要把它当成 streaming command。
+只观察当前 session/target 的 XHR/fetch，达到 count 或 timeout 后一次性返回 JSON。结果仅含响应 metadata；`body` 固定为 `null`，检查 `body_omitted` / `body_omission_reason`，需要内容时另用 `evaluate`。三个 CDP 事件流使用无界缓冲；乱序 terminal 暂存容量为 256，达到容量时立即以 `stop_reason="terminal_buffer_overflow"` 停止。必须检查 `event_streams.stop` 以及 `terminal_buffer` 的 overflow/drop/stop 信息，不要把它当成 streaming command。
 
 ### 下载文件
 

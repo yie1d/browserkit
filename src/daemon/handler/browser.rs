@@ -428,7 +428,7 @@ async fn do_browser_disconnect(
     // Browser stores only the CDP connection, so removing it cannot terminate
     // the external browser process.
     state.browsers.remove(&host);
-    cdp.close().await;
+    cdp.close();
     state.request_persist();
     info!(host = %host, "browser disconnected");
 

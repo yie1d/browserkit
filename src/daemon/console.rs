@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use futures::StreamExt;
 use tokio_util::sync::CancellationToken;
-use tracing::debug;
+use tracing::{debug, warn};
 
 use crate::daemon::state::DaemonState;
 
@@ -63,7 +63,10 @@ fn spawn_console_subscription_for_key(
 
     tokio::spawn(async move {
         let owned_session = cdp.owned_session(&cdp_session_id);
-        let mut stream = cdpkit::runtime::events::ConsoleApiCalled::subscribe(&owned_session);
+        let mut stream = cdpkit::runtime::events::ConsoleApiCalled::subscribe(
+            &owned_session,
+            cdpkit::EventBuffer::Unbounded,
+        );
 
         debug!(owner = %key.0, target = %key.1, "console: subscription started");
 
@@ -74,10 +77,19 @@ fn spawn_console_subscription_for_key(
                     break;
                 }
                 event = stream.next() => {
-                    let Some(ev) = event else {
-                        break;
+                    let ev = match event {
+                        Some(Ok(ev)) => ev,
+                        Some(Err(cdpkit::CdpError::Serialization(error))) => {
+                            warn!(owner = %key.0, target = %key.1, error = %error, "console: skipped malformed event");
+                            continue;
+                        }
+                        Some(Err(error)) => {
+                            warn!(owner = %key.0, target = %key.1, error = %error, "console: event stream failed");
+                            break;
+                        }
+                        None => break,
                     };
-                    let level = ev.type_.clone();
+                    let level = ev.type_.as_ref().to_string();
                     let text: String = ev.args.iter()
                         .filter_map(|arg| {
                             arg.value.as_ref().map(|v| match v {
@@ -88,6 +100,23 @@ fn spawn_console_subscription_for_key(
                         .collect::<Vec<_>>()
                         .join(" ");
                     let timestamp = ev.timestamp;
+                    let remote_object_ids: Vec<_> = ev.args
+                        .iter()
+                        .filter_map(|arg| arg.object_id.clone())
+                        .collect();
+                    for object_id in remote_object_ids {
+                        if let Err(error) = cdpkit::runtime::methods::ReleaseObject::new(object_id)
+                            .send(&owned_session)
+                            .await
+                        {
+                            debug!(
+                                owner = %key.0,
+                                target = %key.1,
+                                error = %error,
+                                "console: failed to release remote argument object"
+                            );
+                        }
+                    }
 
                     let entry = ConsoleEntry { level, text, timestamp };
 
@@ -98,6 +127,7 @@ fn spawn_console_subscription_for_key(
             }
         }
 
+        cancel_clone.cancel();
         debug!(owner = %key.0, target = %key.1, "console: subscription ended");
     });
 

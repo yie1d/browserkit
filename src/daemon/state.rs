@@ -1,7 +1,7 @@
 // DaemonState: global state management for the daemon process
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 
 use cdpkit::CDP;
 use dashmap::DashMap;
@@ -17,6 +17,49 @@ use crate::daemon::target_lifecycle::TargetLifecycleEvent;
 
 fn same_connection<T>(current: &Arc<T>, disconnected: &Arc<T>) -> bool {
     Arc::ptr_eq(current, disconnected)
+}
+
+#[derive(Default)]
+struct SessionLifecycleLockRegistry {
+    locks: DashMap<String, Weak<AsyncRwLock<()>>>,
+}
+
+impl SessionLifecycleLockRegistry {
+    fn lock_for(&self, session_name: &str) -> Arc<AsyncRwLock<()>> {
+        use dashmap::mapref::entry::Entry;
+
+        // Weak entries preserve one-lock-per-name while an operation is alive.
+        // Removing expired entries here bounds storage by concurrent use rather
+        // than by every session name ever observed.
+        self.locks.retain(|_, lock| lock.strong_count() > 0);
+
+        match self.locks.entry(session_name.to_string()) {
+            Entry::Occupied(mut entry) => {
+                if let Some(lock) = entry.get().upgrade() {
+                    lock
+                } else {
+                    let lock = Arc::new(AsyncRwLock::new(()));
+                    entry.insert(Arc::downgrade(&lock));
+                    lock
+                }
+            }
+            Entry::Vacant(entry) => {
+                let lock = Arc::new(AsyncRwLock::new(()));
+                entry.insert(Arc::downgrade(&lock));
+                lock
+            }
+        }
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.locks.len()
+    }
+
+    #[cfg(test)]
+    fn contains_key(&self, session_name: &str) -> bool {
+        self.locks.contains_key(session_name)
+    }
 }
 
 /// Daemon global state, shared via `Arc<DaemonState>`.
@@ -45,7 +88,7 @@ pub struct DaemonState {
     /// create duplicate BrowserContexts for the same session name.
     pub session_bind_lock: Arc<AsyncMutex<()>>,
     /// Serializes operations and idle cleanup for each session.
-    pub session_lifecycle_locks: DashMap<String, Arc<AsyncRwLock<()>>>,
+    session_lifecycle_locks: SessionLifecycleLockRegistry,
     /// Sender for the debounced persistence task.
     /// Call `request_persist(&self.persist_tx)` after any state mutation.
     pub persist_tx: PersistTx,
@@ -96,7 +139,7 @@ impl DaemonState {
                 .as_secs(),
             browser_connect_lock: Arc::new(AsyncMutex::new(())),
             session_bind_lock: Arc::new(AsyncMutex::new(())),
-            session_lifecycle_locks: DashMap::new(),
+            session_lifecycle_locks: SessionLifecycleLockRegistry::default(),
             persist_tx,
             _persist_rx_guard: Some(persist_rx),
             target_watchers: DashMap::new(),
@@ -133,12 +176,7 @@ impl DaemonState {
     }
 
     pub fn session_lifecycle_lock(&self, session_name: &str) -> Arc<AsyncRwLock<()>> {
-        Arc::clone(
-            self.session_lifecycle_locks
-                .entry(session_name.to_string())
-                .or_insert_with(|| Arc::new(AsyncRwLock::new(())))
-                .value(),
-        )
+        self.session_lifecycle_locks.lock_for(session_name)
     }
 
     /// Called when a browser WebSocket disconnects (Chrome crash, shutdown, or network error).
@@ -236,6 +274,29 @@ mod tests {
         assert!(state.target_watchers.is_empty());
         assert_eq!(state.request_count.load(Ordering::Relaxed), 0);
         assert!(state.started_at > 0);
+    }
+
+    #[test]
+    fn lifecycle_lock_registry_reclaims_unused_session_names() {
+        let state = DaemonState::new();
+        let first = state.session_lifecycle_lock("expired-session");
+        drop(first);
+
+        let _live = state.session_lifecycle_lock("live-session");
+
+        assert_eq!(state.session_lifecycle_locks.len(), 1);
+        assert!(!state
+            .session_lifecycle_locks
+            .contains_key("expired-session"));
+    }
+
+    #[test]
+    fn lifecycle_lock_registry_reuses_a_live_lock() {
+        let state = DaemonState::new();
+        let first = state.session_lifecycle_lock("shared");
+        let second = state.session_lifecycle_lock("shared");
+
+        assert!(Arc::ptr_eq(&first, &second));
     }
 
     #[tokio::test]

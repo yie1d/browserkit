@@ -12,7 +12,7 @@ name = "bk"
 path = "src/main.rs"
 
 [dependencies]
-cdpkit = "0.5.0"
+cdpkit = { version = "0.6.0", path = "../cdpkit-rs-worktrees/runtime-codegen-hardening/cdpkit" }
 tokio = { version = "1", features = ["full"] }
 clap = { version = "4", features = ["derive", "env"] }
 serde = { version = "1", features = ["derive"] }
@@ -31,8 +31,10 @@ futures = "0.3"
 tokio-util = "0.7"
 fs2 = "0.4"
 const_format = "0.2"
-url = "=2.5.8"
+tempfile = "=3.25.0"
+# url 2.5.8 can resolve idna_adapter 1.2.2, whose edition-2024 manifest
+# cannot be parsed by the declared Cargo 1.75 MSRV.
+url = "=2.5.2"
 
 [dev-dependencies]
-tempfile = "3"
 static_assertions = "1"

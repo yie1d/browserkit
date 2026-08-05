@@ -209,9 +209,11 @@ pub async fn wait_for_conditions(
 
     // Set up networkidle tracking if requested.
     // Subscribe BEFORE any polling begins so we don't miss events.
+    let event_buffer = cdpkit::EventBuffer::Bounded(std::num::NonZeroUsize::new(256).unwrap());
     let mut req_stream = if conditions.networkidle {
         Some(cdpkit::network::events::RequestWillBeSent::subscribe(
             &session,
+            event_buffer,
         ))
     } else {
         None
@@ -219,12 +221,16 @@ pub async fn wait_for_conditions(
     let mut fin_stream = if conditions.networkidle {
         Some(cdpkit::network::events::LoadingFinished::subscribe(
             &session,
+            event_buffer,
         ))
     } else {
         None
     };
     let mut fail_stream = if conditions.networkidle {
-        Some(cdpkit::network::events::LoadingFailed::subscribe(&session))
+        Some(cdpkit::network::events::LoadingFailed::subscribe(
+            &session,
+            event_buffer,
+        ))
     } else {
         None
     };
@@ -250,30 +256,33 @@ pub async fn wait_for_conditions(
             biased;
 
             // Drain network events (only if networkidle is requested)
-            Some(ev) = async {
+            event = async {
                 match req_stream.as_mut() {
                     Some(s) => s.next().await,
-                    None => std::future::pending::<Option<cdpkit::network::events::RequestWillBeSent>>().await,
+                    None => std::future::pending::<Option<Result<cdpkit::network::events::RequestWillBeSent, cdpkit::CdpError>>>().await,
                 }
             } => {
+                let ev = event.ok_or_else(|| BkError::Other("network request event stream closed".into()))??;
                 idle_tracker.request_start(&ev.request_id);
                 continue;
             }
-            Some(ev) = async {
+            event = async {
                 match fin_stream.as_mut() {
                     Some(s) => s.next().await,
-                    None => std::future::pending::<Option<cdpkit::network::events::LoadingFinished>>().await,
+                    None => std::future::pending::<Option<Result<cdpkit::network::events::LoadingFinished, cdpkit::CdpError>>>().await,
                 }
             } => {
+                let ev = event.ok_or_else(|| BkError::Other("network finished event stream closed".into()))??;
                 idle_tracker.request_end(&ev.request_id);
                 continue;
             }
-            Some(ev) = async {
+            event = async {
                 match fail_stream.as_mut() {
                     Some(s) => s.next().await,
-                    None => std::future::pending::<Option<cdpkit::network::events::LoadingFailed>>().await,
+                    None => std::future::pending::<Option<Result<cdpkit::network::events::LoadingFailed, cdpkit::CdpError>>>().await,
                 }
             } => {
+                let ev = event.ok_or_else(|| BkError::Other("network failed event stream closed".into()))??;
                 idle_tracker.request_end(&ev.request_id);
                 continue;
             }

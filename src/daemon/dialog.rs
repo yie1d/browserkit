@@ -228,14 +228,17 @@ fn spawn_dialog_subscription_for_key(
 
     tokio::spawn(async move {
         let owned_session = cdp.owned_session(&cdp_session_id);
-
         // Subscribe to dialog opening events on this session
-        let mut dialog_stream =
-            cdpkit::page::events::JavascriptDialogOpening::subscribe(&owned_session);
+        let mut dialog_stream = cdpkit::page::events::JavascriptDialogOpening::subscribe(
+            &owned_session,
+            cdpkit::EventBuffer::Unbounded,
+        );
 
         // Also subscribe to dialog closed events for cleanup
-        let mut closed_stream =
-            cdpkit::page::events::JavascriptDialogClosed::subscribe(&owned_session);
+        let mut closed_stream = cdpkit::page::events::JavascriptDialogClosed::subscribe(
+            &owned_session,
+            cdpkit::EventBuffer::Unbounded,
+        );
 
         debug!(
             owner = %key.0,
@@ -251,9 +254,20 @@ fn spawn_dialog_subscription_for_key(
                     break;
                 }
                 event = dialog_stream.next() => {
-                    let Some(ev) = event else {
-                        debug!(owner = %key.0, target = %key.1, "dialog: opening stream ended");
-                        break;
+                    let ev = match event {
+                        Some(Ok(ev)) => ev,
+                        Some(Err(cdpkit::CdpError::Serialization(error))) => {
+                            warn!(owner = %key.0, target = %key.1, error = %error, "dialog: skipped malformed opening event");
+                            continue;
+                        }
+                        Some(Err(error)) => {
+                            warn!(owner = %key.0, target = %key.1, error = %error, "dialog: opening stream failed");
+                            break;
+                        }
+                        None => {
+                            debug!(owner = %key.0, target = %key.1, "dialog: opening stream ended");
+                            break;
+                        }
                     };
 
                     let dialog_type = ev.type_.as_ref().to_string();
@@ -341,9 +355,20 @@ fn spawn_dialog_subscription_for_key(
                     }
                 }
                 event = closed_stream.next() => {
-                    let Some(ev) = event else {
-                        debug!(owner = %key.0, target = %key.1, "dialog: closed stream ended");
-                        break;
+                    let ev = match event {
+                        Some(Ok(ev)) => ev,
+                        Some(Err(cdpkit::CdpError::Serialization(error))) => {
+                            warn!(owner = %key.0, target = %key.1, error = %error, "dialog: skipped malformed closed event");
+                            continue;
+                        }
+                        Some(Err(error)) => {
+                            warn!(owner = %key.0, target = %key.1, error = %error, "dialog: closed stream failed");
+                            break;
+                        }
+                        None => {
+                            debug!(owner = %key.0, target = %key.1, "dialog: closed stream ended");
+                            break;
+                        }
                     };
                     // Dialog was closed (either by us or externally) — clear pending state
                     let was_pending = state.dialog_state.take_pending(&key.0, &key.1);
@@ -359,6 +384,7 @@ fn spawn_dialog_subscription_for_key(
             }
         }
 
+        cancel_clone.cancel();
         debug!(owner = %key.0, target = %key.1, "dialog: subscription task ended");
     });
 

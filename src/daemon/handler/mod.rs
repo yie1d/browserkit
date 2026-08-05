@@ -117,19 +117,19 @@ const fn request_field(name: &'static str, field_type: RequestFieldType) -> Requ
 fn allowed_request_fields(command: &str) -> Option<Vec<RequestField>> {
     use RequestFieldType::{Array, Bool, Object, String, StringArray, I64, U64};
 
-    let fields: &[RequestField] = match command {
-        "ping" | "session.list" | "daemon.status" | "daemon.stop" | "browser.list" => &[],
+    let fields = match command {
+        "ping" | "session.list" | "daemon.status" | "daemon.stop" | "browser.list" => vec![],
         "connect"
         | "tabs"
         | "session.close"
         | "session.cookies.get"
         | "session.cookies.clear"
-        | "dialog.list" => &[request_field("session", String)],
-        "open" => &[
+        | "dialog.list" => vec![request_field("session", String)],
+        "open" => vec![
             request_field("url", String),
             request_field("session", String),
         ],
-        "snapshot" => &[
+        "snapshot" => vec![
             request_field("session", String),
             request_field("target", String),
             request_field("wait", String),
@@ -138,7 +138,7 @@ fn allowed_request_fields(command: &str) -> Option<Vec<RequestField>> {
             request_field("timeout", U64),
             request_field("max_tokens", U64),
         ],
-        "navigate" => &[
+        "navigate" => vec![
             request_field("url", String),
             request_field("back", Bool),
             request_field("forward", Bool),
@@ -147,46 +147,46 @@ fn allowed_request_fields(command: &str) -> Option<Vec<RequestField>> {
             request_field("target", String),
             request_field("timeout", U64),
         ],
-        "attach" => &[
+        "attach" => vec![
             request_field("session", String),
             request_field("target", String),
             request_field("pattern", String),
         ],
-        "close" => &[
+        "close" => vec![
             request_field("session", String),
             request_field("target", String),
         ],
-        "session.cookies.set" => &[
+        "session.cookies.set" => vec![
             request_field("session", String),
             request_field("cookies", Array),
         ],
-        "session.storage.local.get" => &[
+        "session.storage.local.get" => vec![
             request_field("session", String),
             request_field("target", String),
             request_field("key", String),
         ],
-        "session.storage.local.set" => &[
+        "session.storage.local.set" => vec![
             request_field("session", String),
             request_field("target", String),
             request_field("key", String),
             request_field("value", String),
         ],
-        "session.storage.export" => &[
+        "session.storage.export" => vec![
             request_field("session", String),
             request_field("target", String),
         ],
-        "session.storage.import" => &[
+        "session.storage.import" => vec![
             request_field("session", String),
             request_field("target", String),
             request_field("state", Object),
         ],
-        "evaluate" => &[
+        "evaluate" => vec![
             request_field("session", String),
             request_field("target", String),
             request_field("expression", String),
             request_field("timeout", U64),
         ],
-        "screenshot" => &[
+        "screenshot" => vec![
             request_field("session", String),
             request_field("target", String),
             request_field("full_page", Bool),
@@ -194,7 +194,7 @@ fn allowed_request_fields(command: &str) -> Option<Vec<RequestField>> {
             request_field("selector", String),
             request_field("labels", Bool),
         ],
-        "wait" => &[
+        "wait" => vec![
             request_field("session", String),
             request_field("target", String),
             request_field("time", U64),
@@ -206,7 +206,7 @@ fn allowed_request_fields(command: &str) -> Option<Vec<RequestField>> {
             request_field("fn", String),
             request_field("timeout", U64),
         ],
-        "find" => &[
+        "find" => vec![
             request_field("session", String),
             request_field("target", String),
             request_field("selector", String),
@@ -214,7 +214,7 @@ fn allowed_request_fields(command: &str) -> Option<Vec<RequestField>> {
             request_field("max", U64),
             request_field("include_text", Bool),
         ],
-        "search" => &[
+        "search" => vec![
             request_field("session", String),
             request_field("target", String),
             request_field("text", String),
@@ -223,79 +223,79 @@ fn allowed_request_fields(command: &str) -> Option<Vec<RequestField>> {
             request_field("context", U64),
             request_field("max", U64),
         ],
-        "html" => &[
+        "html" => vec![
             request_field("session", String),
             request_field("target", String),
             request_field("selector", String),
         ],
-        "console" => &[
+        "console" => vec![
             request_field("session", String),
             request_field("target", String),
             request_field("level", String),
             request_field("limit", U64),
         ],
-        "pdf" => &[
+        "pdf" => vec![
             request_field("session", String),
             request_field("target", String),
             request_field("output", String),
             request_field("landscape", Bool),
             request_field("background", Bool),
         ],
-        "browser.connect" => &[
+        "browser.connect" => vec![
             request_field("host", String),
             request_field("session", String),
         ],
-        "browser.discover" => &[
+        "browser.discover" => vec![
             request_field("path", String),
             request_field("session", String),
         ],
-        "browser.disconnect" => &[request_field("host", String)],
-        "debug.block" => &[
+        "browser.disconnect" => vec![request_field("host", String)],
+        "debug.block" => vec![
             request_field("session", String),
             request_field("target", String),
             request_field("pattern", String),
         ],
-        "debug.unblock" => &[
+        "debug.unblock" => vec![
             request_field("session", String),
             request_field("target", String),
         ],
-        "network.watch" => &[
+        "network.watch" => vec![
             request_field("session", String),
             request_field("target", String),
             request_field("pattern", String),
             request_field("count", U64),
             request_field("timeout", U64),
         ],
-        "download" => &[
+        "download" => vec![
             request_field("session", String),
             request_field("target", String),
             request_field("ref", I64),
             request_field("output_dir", String),
             request_field("timeout", U64),
         ],
-        "debug.cdp" => &[
+        "debug.cdp" => vec![
             request_field("session", String),
             request_field("target", String),
             request_field("method", String),
             request_field("params", Object),
         ],
-        "dialog.accept" => &[
+        "dialog.accept" => vec![
             request_field("session", String),
             request_field("target", String),
             request_field("text", String),
         ],
-        "dialog.dismiss" => &[
+        "dialog.dismiss" => vec![
             request_field("session", String),
             request_field("target", String),
         ],
-        "dialog.policy" => &[
+        "dialog.policy" => vec![
             request_field("session", String),
             request_field("policy", String),
         ],
         "act" => return None,
         _ => return None,
     };
-    Some(fields.to_vec())
+    Some(fields)
 }
 
 fn validate_request_fields(req: &Request) -> Result<(), Response> {

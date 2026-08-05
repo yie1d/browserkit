@@ -359,10 +359,18 @@ async fn run_target_watcher(
     cdp: Arc<cdpkit::CDP>,
     cancel: CancellationToken,
 ) {
-    let mut created_stream = cdpkit::target::events::TargetCreated::subscribe(cdp.as_ref());
-    let mut destroyed_stream = cdpkit::target::events::TargetDestroyed::subscribe(cdp.as_ref());
-    let mut info_changed_stream =
-        cdpkit::target::events::TargetInfoChanged::subscribe(cdp.as_ref());
+    let mut created_stream = cdpkit::target::events::TargetCreated::subscribe(
+        cdp.as_ref(),
+        cdpkit::EventBuffer::Unbounded,
+    );
+    let mut destroyed_stream = cdpkit::target::events::TargetDestroyed::subscribe(
+        cdp.as_ref(),
+        cdpkit::EventBuffer::Unbounded,
+    );
+    let mut info_changed_stream = cdpkit::target::events::TargetInfoChanged::subscribe(
+        cdp.as_ref(),
+        cdpkit::EventBuffer::Unbounded,
+    );
 
     if let Err(error) = cdpkit::target::methods::SetDiscoverTargets::new(true)
         .send(cdp.as_ref())
@@ -382,23 +390,56 @@ async fn run_target_watcher(
                 break;
             }
             event = created_stream.next() => {
-                let Some(event) = event else {
-                    debug!(host = %host, "target watcher: created stream ended");
-                    break;
+                let event = match event {
+                    Some(Ok(event)) => event,
+                    Some(Err(cdpkit::CdpError::Serialization(error))) => {
+                        warn!(host = %host, error = %error, "target watcher: skipped malformed created event");
+                        continue;
+                    }
+                    Some(Err(error)) => {
+                        warn!(host = %host, error = %error, "target watcher: created stream failed");
+                        break;
+                    }
+                    None => {
+                        debug!(host = %host, "target watcher: created stream ended");
+                        break;
+                    }
                 };
                 handle_target_created_event(&state, &host, &cdp, event.target_info).await;
             }
             event = destroyed_stream.next() => {
-                let Some(event) = event else {
-                    debug!(host = %host, "target watcher: destroyed stream ended");
-                    break;
+                let event = match event {
+                    Some(Ok(event)) => event,
+                    Some(Err(cdpkit::CdpError::Serialization(error))) => {
+                        warn!(host = %host, error = %error, "target watcher: skipped malformed destroyed event");
+                        continue;
+                    }
+                    Some(Err(error)) => {
+                        warn!(host = %host, error = %error, "target watcher: destroyed stream failed");
+                        break;
+                    }
+                    None => {
+                        debug!(host = %host, "target watcher: destroyed stream ended");
+                        break;
+                    }
                 };
                 handle_target_destroyed_event(&state, &event.target_id).await;
             }
             event = info_changed_stream.next() => {
-                let Some(event) = event else {
-                    debug!(host = %host, "target watcher: info changed stream ended");
-                    break;
+                let event = match event {
+                    Some(Ok(event)) => event,
+                    Some(Err(cdpkit::CdpError::Serialization(error))) => {
+                        warn!(host = %host, error = %error, "target watcher: skipped malformed info changed event");
+                        continue;
+                    }
+                    Some(Err(error)) => {
+                        warn!(host = %host, error = %error, "target watcher: info changed stream failed");
+                        break;
+                    }
+                    None => {
+                        debug!(host = %host, "target watcher: info changed stream ended");
+                        break;
+                    }
                 };
                 let target_info = event.target_info;
                 handle_target_info_changed_event(

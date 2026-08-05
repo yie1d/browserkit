@@ -30,9 +30,10 @@ daemon 常驻后台,维持持久 CDP 连接,状态持久化到 `~/.bk/`。browse
 
 ## 对底层 cdpkit 的依赖（重要）
 
-- `Cargo.toml` 发布版本依赖 crates.io 的 `cdpkit = "0.5.0"`;联合开发底层 API 时可临时改为 `../cdpkit-rs/cdpkit` path 依赖,但发布前必须恢复 registry 依赖并重新验证锁文件。
-- cdpkit 0.5.0 使用 unified Sender trait API:浏览器级命令 `cmd.send(&cdp)`;页面级命令 `let session = cdp.session(session_id); cmd.send(&session)`;`tokio::spawn` 场景用 `cdp.owned_session(id)` 得到 `OwnedSession`(Send+'static)。
-- 事件订阅:`SomeEvent::subscribe(&session)`(或 `&cdp`),返回 `EventStream<T>`;订阅要在触发动作之前。
+- `Cargo.toml` 在 cdpkit 0.6.0 发布并单独完成 registry 验证前，固定到 `../cdpkit-rs-worktrees/runtime-codegen-hardening/cdpkit` path 依赖；不得把未验证的 registry 版本写回。
+- cdpkit 0.6.0 使用 unified Sender trait API:浏览器级命令 `cmd.send(&cdp)`;页面级命令 `let session = cdp.session(session_id); cmd.send(&session)`;`tokio::spawn` 场景用 `cdp.owned_session(id)` 得到 `OwnedSession`(Send+'static)。
+- 事件订阅:`SomeEvent::subscribe(&session, policy)`(或 `&cdp`),返回显式有界且 item 为 `Result<T, CdpError>` 的 `EventStream<T>`；所有 watcher 使用正数容量和 `CloseStream`，并处理 `Some(Ok)`、`Some(Err)`、`None`。订阅要在触发动作之前。
+- 协议域只从 crate root 使用（例如 `cdpkit::accessibility`），不使用私有生成容器；`CDP::close()` 同步发起关闭，需等待完成时再调用 `closed().await`。
 - 自定义 Method 结构体(不在 protocol.rs 生成的)用 `sender.send_cmd(my_method).await?` 发送,需 `use cdpkit::Sender;`。
 - 需要 cdpkit 尚未提供的能力时:**不在本仓库实现底层**。记录需要什么 CDP API,交给用户去 cdpkit-rs 那套 agent 实现;待底层就绪(发新版,或临时 path 依赖 `../cdpkit-rs/cdpkit`)再接入。
 - **归属判断 + 不做强行兼容**:若 bug 根因或某能力其实属于 cdpkit(库层),**明确指出"该在 cdpkit-rs 改"并告诉用户**,不要在 browserkit 里做 workaround / 绕过 / 上层硬凑来掩盖——两个项目都是我们维护的,去对的那一层修,而不是堆补丁。

@@ -954,12 +954,21 @@ async fn dispatch_key_combo(session: &cdpkit::Session<'_>, key_str: &str) -> Res
     let key_def = resolve_key(key_name);
 
     if modifiers & 1 != 0 {
-        send_key_event(session, "rawKeyDown", "Alt", "AltLeft", 18, None, modifiers).await?;
+        send_key_event(
+            session,
+            cdpkit::input::types::DispatchKeyEventType::RawKeyDown,
+            "Alt",
+            "AltLeft",
+            18,
+            None,
+            modifiers,
+        )
+        .await?;
     }
     if modifiers & 2 != 0 {
         send_key_event(
             session,
-            "rawKeyDown",
+            cdpkit::input::types::DispatchKeyEventType::RawKeyDown,
             "Control",
             "ControlLeft",
             17,
@@ -971,7 +980,7 @@ async fn dispatch_key_combo(session: &cdpkit::Session<'_>, key_str: &str) -> Res
     if modifiers & 4 != 0 {
         send_key_event(
             session,
-            "rawKeyDown",
+            cdpkit::input::types::DispatchKeyEventType::RawKeyDown,
             "Meta",
             "MetaLeft",
             91,
@@ -983,7 +992,7 @@ async fn dispatch_key_combo(session: &cdpkit::Session<'_>, key_str: &str) -> Res
     if modifiers & 8 != 0 {
         send_key_event(
             session,
-            "rawKeyDown",
+            cdpkit::input::types::DispatchKeyEventType::RawKeyDown,
             "Shift",
             "ShiftLeft",
             16,
@@ -994,9 +1003,9 @@ async fn dispatch_key_combo(session: &cdpkit::Session<'_>, key_str: &str) -> Res
     }
 
     let event_type = if key_def.text.is_some() {
-        "keyDown"
+        cdpkit::input::types::DispatchKeyEventType::KeyDown
     } else {
-        "rawKeyDown"
+        cdpkit::input::types::DispatchKeyEventType::RawKeyDown
     };
     send_key_event(
         session,
@@ -1011,7 +1020,7 @@ async fn dispatch_key_combo(session: &cdpkit::Session<'_>, key_str: &str) -> Res
 
     send_key_event(
         session,
-        "keyUp",
+        cdpkit::input::types::DispatchKeyEventType::KeyUp,
         key_def.key,
         key_def.code,
         key_def.key_code,
@@ -1021,16 +1030,52 @@ async fn dispatch_key_combo(session: &cdpkit::Session<'_>, key_str: &str) -> Res
     .await?;
 
     if modifiers & 8 != 0 {
-        send_key_event(session, "keyUp", "Shift", "ShiftLeft", 16, None, 0).await?;
+        send_key_event(
+            session,
+            cdpkit::input::types::DispatchKeyEventType::KeyUp,
+            "Shift",
+            "ShiftLeft",
+            16,
+            None,
+            0,
+        )
+        .await?;
     }
     if modifiers & 4 != 0 {
-        send_key_event(session, "keyUp", "Meta", "MetaLeft", 91, None, 0).await?;
+        send_key_event(
+            session,
+            cdpkit::input::types::DispatchKeyEventType::KeyUp,
+            "Meta",
+            "MetaLeft",
+            91,
+            None,
+            0,
+        )
+        .await?;
     }
     if modifiers & 2 != 0 {
-        send_key_event(session, "keyUp", "Control", "ControlLeft", 17, None, 0).await?;
+        send_key_event(
+            session,
+            cdpkit::input::types::DispatchKeyEventType::KeyUp,
+            "Control",
+            "ControlLeft",
+            17,
+            None,
+            0,
+        )
+        .await?;
     }
     if modifiers & 1 != 0 {
-        send_key_event(session, "keyUp", "Alt", "AltLeft", 18, None, 0).await?;
+        send_key_event(
+            session,
+            cdpkit::input::types::DispatchKeyEventType::KeyUp,
+            "Alt",
+            "AltLeft",
+            18,
+            None,
+            0,
+        )
+        .await?;
     }
 
     Ok(())
@@ -1038,7 +1083,7 @@ async fn dispatch_key_combo(session: &cdpkit::Session<'_>, key_str: &str) -> Res
 
 async fn send_key_event(
     session: &cdpkit::Session<'_>,
-    type_: &str,
+    type_: cdpkit::input::types::DispatchKeyEventType,
     key: &str,
     code: &str,
     key_code: i64,

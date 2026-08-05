@@ -12,6 +12,7 @@ use std::sync::Arc;
 use cdpkit::CDP;
 
 use crate::error::BkError;
+use crate::page::remote_object::RemoteObjectScope;
 
 /// How the caller wants to identify the target element.
 #[derive(Debug, Clone)]
@@ -23,7 +24,6 @@ pub enum ElementTarget {
 }
 
 /// A resolved element handle that can be used for interaction.
-#[derive(Debug, Clone)]
 pub struct ResolvedElement {
     /// Center coordinates (viewport-relative) for mouse events.
     pub center: (f64, f64),
@@ -31,6 +31,20 @@ pub struct ResolvedElement {
     pub object_id: String,
     /// The backendNodeId for this element.
     pub backend_node_id: i64,
+    object_scope: RemoteObjectScope,
+}
+
+impl ResolvedElement {
+    /// Release every Chrome-side object created while resolving and using this element.
+    pub async fn release(self) {
+        self.object_scope.release().await;
+    }
+}
+
+struct ResolvedElementData {
+    center: (f64, f64),
+    object_id: String,
+    backend_node_id: i64,
 }
 
 /// Error returned when a ref (backendNodeId) no longer exists in the page.
@@ -47,11 +61,27 @@ pub async fn resolve_element(
     session_id: &str,
     target: &ElementTarget,
 ) -> Result<ResolvedElement, BkError> {
-    match target {
+    let object_scope = RemoteObjectScope::new(cdp, session_id, "resolve-element");
+    let result = match target {
         ElementTarget::Ref(backend_node_id) => {
-            resolve_by_ref(cdp, session_id, *backend_node_id).await
+            resolve_by_ref(cdp, session_id, *backend_node_id, &object_scope).await
         }
-        ElementTarget::Selector(selector) => resolve_by_selector(cdp, session_id, selector).await,
+        ElementTarget::Selector(selector) => {
+            resolve_by_selector(cdp, session_id, selector, &object_scope).await
+        }
+    };
+
+    match result {
+        Ok(data) => Ok(ResolvedElement {
+            center: data.center,
+            object_id: data.object_id,
+            backend_node_id: data.backend_node_id,
+            object_scope,
+        }),
+        Err(error) => {
+            object_scope.release().await;
+            Err(error)
+        }
     }
 }
 
@@ -64,7 +94,8 @@ async fn resolve_by_ref(
     cdp: &Arc<CDP>,
     session_id: &str,
     backend_node_id: i64,
-) -> Result<ResolvedElement, BkError> {
+    object_group: &RemoteObjectScope,
+) -> Result<ResolvedElementData, BkError> {
     let session = cdp.session(session_id);
 
     // 1. Scroll into view
@@ -81,12 +112,13 @@ async fn resolve_by_ref(
     }
 
     // 2. Get coordinates via getContentQuads
-    let center = get_center_by_backend_node_id(cdp, session_id, backend_node_id).await?;
+    let center =
+        get_center_by_backend_node_id(cdp, session_id, backend_node_id, object_group).await?;
 
     // 3. Get objectId via resolveNode
-    let object_id = resolve_object_id(cdp, session_id, backend_node_id).await?;
+    let object_id = resolve_object_id(cdp, session_id, backend_node_id, object_group).await?;
 
-    Ok(ResolvedElement {
+    Ok(ResolvedElementData {
         center,
         object_id,
         backend_node_id,
@@ -101,7 +133,8 @@ async fn resolve_by_selector(
     cdp: &Arc<CDP>,
     session_id: &str,
     selector: &str,
-) -> Result<ResolvedElement, BkError> {
+    object_group: &RemoteObjectScope,
+) -> Result<ResolvedElementData, BkError> {
     let session = cdp.session(session_id);
 
     // Safe JS string literal for selector
@@ -118,6 +151,7 @@ async fn resolve_by_selector(
     );
 
     let resp = cdpkit::runtime::methods::Evaluate::new(&js)
+        .with_object_group(object_group.name())
         .send(&session)
         .await?;
 
@@ -138,6 +172,7 @@ async fn resolve_by_selector(
         "function() { const r = this.getBoundingClientRect(); return JSON.stringify({x: r.x, y: r.y, width: r.width, height: r.height}); }",
     )
     .with_object_id(object_id.clone())
+    .with_object_group(object_group.name())
     .with_return_by_value(true)
     .send(&session)
     .await?;
@@ -166,7 +201,7 @@ async fn resolve_by_selector(
         Err(_) => 0,
     };
 
-    Ok(ResolvedElement {
+    Ok(ResolvedElementData {
         center,
         object_id,
         backend_node_id,
@@ -177,10 +212,11 @@ async fn resolve_by_selector(
 ///
 /// Tries DOM.getContentQuads first (most accurate for inline elements),
 /// falls back to DOM.getBoxModel, then to DOM.resolveNode + getBoundingClientRect.
-pub async fn get_center_by_backend_node_id(
+async fn get_center_by_backend_node_id(
     cdp: &Arc<CDP>,
     session_id: &str,
     backend_node_id: i64,
+    object_group: &RemoteObjectScope,
 ) -> Result<(f64, f64), BkError> {
     let session = cdp.session(session_id);
 
@@ -219,11 +255,12 @@ pub async fn get_center_by_backend_node_id(
     }
 
     // Last resort: resolveNode + getBoundingClientRect
-    let object_id = resolve_object_id(cdp, session_id, backend_node_id).await?;
+    let object_id = resolve_object_id(cdp, session_id, backend_node_id, object_group).await?;
     let rect_resp = cdpkit::runtime::methods::CallFunctionOn::new(
         "function() { const r = this.getBoundingClientRect(); return JSON.stringify({x: r.x, y: r.y, width: r.width, height: r.height}); }",
     )
     .with_object_id(object_id)
+    .with_object_group(object_group.name())
     .with_return_by_value(true)
     .send(&session)
     .await?;
@@ -244,15 +281,17 @@ pub async fn get_center_by_backend_node_id(
 }
 
 /// Get the objectId for an element by its backendNodeId via DOM.resolveNode.
-pub async fn resolve_object_id(
+async fn resolve_object_id(
     cdp: &Arc<CDP>,
     session_id: &str,
     backend_node_id: i64,
+    object_group: &RemoteObjectScope,
 ) -> Result<String, BkError> {
     let session = cdp.session(session_id);
 
     let resp = cdpkit::dom::methods::ResolveNode::new()
         .with_backend_node_id(backend_node_id)
+        .with_object_group(object_group.name())
         .send(&session)
         .await
         .map_err(|e| {

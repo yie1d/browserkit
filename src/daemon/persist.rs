@@ -1,6 +1,7 @@
 // State persistence: schema v1 session-only state.json.
 
 use std::collections::{HashMap, HashSet};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -320,12 +321,21 @@ pub fn load_state_from_path(path: &Path) -> LoadStateResult {
 
 /// Write a serializable value to a JSON file atomically.
 ///
-/// Writes to a `.tmp` sibling file first, then renames into place.
+/// Writes and syncs a unique sibling temporary file, then atomically replaces
+/// the destination on every supported platform.
 fn write_json_atomic(path: &Path, value: &impl Serialize) -> Result<(), std::io::Error> {
-    let json = serde_json::to_string(value).map_err(std::io::Error::other)?;
-    let tmp = path.with_extension("tmp");
-    std::fs::write(&tmp, &json)?;
-    std::fs::rename(&tmp, path)
+    let parent = path.parent().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "persistence path has no parent directory",
+        )
+    })?;
+    let mut tmp = tempfile::NamedTempFile::new_in(parent)?;
+    serde_json::to_writer(&mut tmp, value).map_err(std::io::Error::other)?;
+    tmp.flush()?;
+    tmp.as_file().sync_all()?;
+    tmp.persist(path).map_err(|error| error.error)?;
+    Ok(())
 }
 
 pub fn load_persisted_state() -> LoadStateResult {
@@ -586,6 +596,21 @@ mod tests {
         assert!(json.get("sessions").is_some());
         assert!(json.get("browsers").is_none());
         assert!(json.get("migration").is_none());
+    }
+
+    #[test]
+    fn atomic_write_replaces_existing_state_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.json");
+        let first = serde_json::json!({"generation": 1});
+        let second = serde_json::json!({"generation": 2});
+
+        write_json_atomic(&path, &first).unwrap();
+        write_json_atomic(&path, &second).unwrap();
+
+        let persisted: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        assert_eq!(persisted["generation"], 2);
     }
 
     #[test]

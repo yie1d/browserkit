@@ -6,6 +6,7 @@ use std::sync::Arc;
 use cdpkit::CDP;
 
 use crate::error::BkError;
+use crate::page::remote_object::RemoteObjectScope;
 use crate::page::{exception_message, INTERACTIVE_SELECTOR};
 
 /// Capture a viewport screenshot (PNG, base64-encoded).
@@ -14,7 +15,7 @@ use crate::page::{exception_message, INTERACTIVE_SELECTOR};
 pub async fn capture_viewport(cdp: &Arc<CDP>, session_id: &str) -> Result<String, BkError> {
     let session = cdp.session(session_id);
     let resp = cdpkit::page::methods::CaptureScreenshot::new()
-        .with_format("png")
+        .with_format(cdpkit::page::types::CaptureScreenshotFormat::Png)
         .send(&session)
         .await?;
 
@@ -43,7 +44,7 @@ pub async fn capture_full_page(cdp: &Arc<CDP>, session_id: &str) -> Result<Strin
     };
 
     let resp = cdpkit::page::methods::CaptureScreenshot::new()
-        .with_format("png")
+        .with_format(cdpkit::page::types::CaptureScreenshotFormat::Png)
         .with_clip(clip)
         .with_capture_beyond_viewport(true)
         .send(&session)
@@ -65,93 +66,97 @@ pub async fn capture_element(
     selector: &str,
 ) -> Result<String, BkError> {
     let session = cdp.session(session_id);
+    let object_group = RemoteObjectScope::new(cdp, session_id, "capture-element");
+    let result = async {
+        // 1. Find the element via Runtime.evaluate and get its objectId
+        // serde_json::to_string produces a quoted JS string literal — embed directly
+        let json_selector = serde_json::to_string(selector)
+            .map_err(|e| BkError::Other(format!("failed to serialize selector: {}", e)))?;
+        let js = format!(r#"document.querySelector({})"#, json_selector);
+        let eval_resp = cdpkit::runtime::methods::Evaluate::new(&js)
+            .with_object_group(object_group.name())
+            .send(&session)
+            .await?;
 
-    // 1. Find the element via Runtime.evaluate and get its objectId
-    // serde_json::to_string produces a quoted JS string literal — embed directly
-    let json_selector = serde_json::to_string(selector)
-        .map_err(|e| BkError::Other(format!("failed to serialize selector: {}", e)))?;
-    let js = format!(r#"document.querySelector({})"#, json_selector);
-    let eval_resp = cdpkit::runtime::methods::Evaluate::new(&js)
-        .send(&session)
-        .await?;
+        if let Some(details) = &eval_resp.exception_details {
+            return Err(BkError::Other(format!(
+                "failed to query selector '{}': {}",
+                selector,
+                exception_message(details)
+            )));
+        }
 
-    if let Some(details) = &eval_resp.exception_details {
-        return Err(BkError::Other(format!(
-            "failed to query selector '{}': {}",
-            selector,
-            exception_message(details)
-        )));
+        // Check that the result is a non-null object with an objectId
+        if eval_resp.result.type_ == cdpkit::runtime::types::RemoteObjectType::Undefined
+            || eval_resp.result.subtype.as_ref().is_some_and(|subtype| {
+                *subtype == cdpkit::runtime::types::RemoteObjectSubtype::Null
+            })
+        {
+            return Err(BkError::Other(format!(
+                "element not found for selector: {}",
+                selector
+            )));
+        }
+
+        let object_id = eval_resp.result.object_id.ok_or_else(|| {
+            BkError::Other(format!("no objectId returned for selector: {}", selector))
+        })?;
+
+        // 2. Scroll the element into view
+        cdpkit::dom::methods::ScrollIntoViewIfNeeded::new()
+            .with_object_id(object_id.clone())
+            .send(&session)
+            .await?;
+
+        // 3. Get the element's content quads for bounding box calculation
+        let quads_resp = cdpkit::dom::methods::GetContentQuads::new()
+            .with_object_id(object_id.clone())
+            .send(&session)
+            .await?;
+
+        if quads_resp.quads.is_empty() {
+            return Err(BkError::Other(format!(
+                "element has no visible quads for selector: {}",
+                selector
+            )));
+        }
+
+        // Compute bounding box from the first quad (8 values: x1,y1, x2,y2, x3,y3, x4,y4)
+        let quad = &quads_resp.quads[0];
+        if quad.len() < 8 {
+            return Err(BkError::Other(
+                "unexpected quad format from DOM.getContentQuads".into(),
+            ));
+        }
+
+        let xs = [quad[0], quad[2], quad[4], quad[6]];
+        let ys = [quad[1], quad[3], quad[5], quad[7]];
+
+        let min_x = xs.iter().cloned().fold(f64::INFINITY, f64::min);
+        let max_x = xs.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+        let min_y = ys.iter().cloned().fold(f64::INFINITY, f64::min);
+        let max_y = ys.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+
+        let clip = cdpkit::page::types::Viewport {
+            x: min_x,
+            y: min_y,
+            width: max_x - min_x,
+            height: max_y - min_y,
+            scale: 1.0,
+        };
+
+        // 4. Capture the screenshot with the computed clip
+        let resp = cdpkit::page::methods::CaptureScreenshot::new()
+            .with_format(cdpkit::page::types::CaptureScreenshotFormat::Png)
+            .with_clip(clip)
+            .send(&session)
+            .await?;
+
+        Ok(resp.data)
     }
-
-    // Check that the result is a non-null object with an objectId
-    if eval_resp.result.type_ == "undefined"
-        || eval_resp
-            .result
-            .subtype
-            .as_deref()
-            .is_some_and(|s| s == "null")
-    {
-        return Err(BkError::Other(format!(
-            "element not found for selector: {}",
-            selector
-        )));
-    }
-
-    let object_id = eval_resp.result.object_id.ok_or_else(|| {
-        BkError::Other(format!("no objectId returned for selector: {}", selector))
-    })?;
-
-    // 2. Scroll the element into view
-    cdpkit::dom::methods::ScrollIntoViewIfNeeded::new()
-        .with_object_id(object_id.clone())
-        .send(&session)
-        .await?;
-
-    // 3. Get the element's content quads for bounding box calculation
-    let quads_resp = cdpkit::dom::methods::GetContentQuads::new()
-        .with_object_id(object_id.clone())
-        .send(&session)
-        .await?;
-
-    if quads_resp.quads.is_empty() {
-        return Err(BkError::Other(format!(
-            "element has no visible quads for selector: {}",
-            selector
-        )));
-    }
-
-    // Compute bounding box from the first quad (8 values: x1,y1, x2,y2, x3,y3, x4,y4)
-    let quad = &quads_resp.quads[0];
-    if quad.len() < 8 {
-        return Err(BkError::Other(
-            "unexpected quad format from DOM.getContentQuads".into(),
-        ));
-    }
-
-    let xs = [quad[0], quad[2], quad[4], quad[6]];
-    let ys = [quad[1], quad[3], quad[5], quad[7]];
-
-    let min_x = xs.iter().cloned().fold(f64::INFINITY, f64::min);
-    let max_x = xs.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
-    let min_y = ys.iter().cloned().fold(f64::INFINITY, f64::min);
-    let max_y = ys.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
-
-    let clip = cdpkit::page::types::Viewport {
-        x: min_x,
-        y: min_y,
-        width: max_x - min_x,
-        height: max_y - min_y,
-        scale: 1.0,
-    };
-
-    // 4. Capture the screenshot with the computed clip
-    let resp = cdpkit::page::methods::CaptureScreenshot::new()
-        .with_format("png")
-        .with_clip(clip)
-        .send(&session)
-        .await?;
-
-    Ok(resp.data)
+    .await;
+    object_group.release().await;
+    result
 }
 
 /// Generate a PDF of the current page (base64-encoded).

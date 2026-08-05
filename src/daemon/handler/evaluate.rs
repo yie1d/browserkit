@@ -11,6 +11,7 @@ use crate::daemon::protocol::{Request, Response};
 use crate::daemon::state::DaemonState;
 use crate::error::ErrorCode;
 use crate::page::exception_message;
+use crate::page::remote_object::RemoteObjectScope;
 
 use super::common::{optional_string_param, session_name_param};
 
@@ -111,6 +112,8 @@ pub async fn handle_evaluate(req: &Request, state: &Arc<DaemonState>) -> Respons
     };
 
     let cdp_session = cdp.session(&session_tab.cdp_session_id);
+    let object_group =
+        RemoteObjectScope::new(cdp.as_ref(), &session_tab.cdp_session_id, "evaluate");
 
     // Execute JavaScript with timeout
     let timeout_dur = std::time::Duration::from_millis(params.timeout);
@@ -118,13 +121,15 @@ pub async fn handle_evaluate(req: &Request, state: &Arc<DaemonState>) -> Respons
         let js_timeout_seconds = state.config.limits.js_timeout_seconds;
         let mut eval = cdpkit::runtime::methods::Evaluate::new(&params.expression)
             .with_return_by_value(true)
-            .with_await_promise(true);
+            .with_await_promise(true)
+            .with_object_group(object_group.name());
         if js_timeout_seconds > 0 {
             eval = eval.with_timeout(js_timeout_seconds as f64 * 1000.0);
         }
         eval.send(&cdp_session).await
     })
     .await;
+    object_group.release().await;
 
     match eval_result {
         Ok(Ok(resp)) => {

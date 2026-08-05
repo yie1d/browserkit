@@ -11,6 +11,19 @@ use crate::page::exception_message;
 /// Default timeout for page load operations and idle waits.
 pub const PAGE_LOAD_TIMEOUT: Duration = Duration::from_secs(30);
 
+fn is_transient_execution_context_error(error: &cdpkit::CdpError) -> bool {
+    let cdpkit::CdpError::Protocol { code, message } = error else {
+        return false;
+    };
+    if *code != -32000 {
+        return false;
+    }
+    let message = message.to_ascii_lowercase();
+    message.contains("execution context was destroyed")
+        || message.contains("cannot find context with specified id")
+        || message.contains("cannot find default execution context")
+}
+
 /// Navigate to a URL using CDP `Page.navigate`.
 ///
 /// Returns the new URL after navigation. Checks `errorText` in the response
@@ -197,13 +210,43 @@ pub async fn wait_for_load(
                     }
                 }
             }
-            Err(_) => {
-                // Session might not be ready yet, keep polling
-            }
+            Err(error) if is_transient_execution_context_error(&error) => {}
+            Err(error) => return Err(BkError::Cdp(error)),
         }
 
         tokio::time::sleep(poll_interval).await;
         // Exponential backoff capped at max_interval
         poll_interval = (poll_interval * 2).min(max_interval);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_transient_execution_context_error;
+
+    #[test]
+    fn retries_only_execution_context_transition_errors() {
+        for message in [
+            "Execution context was destroyed.",
+            "Cannot find context with specified id",
+            "Cannot find default execution context",
+        ] {
+            let error = cdpkit::CdpError::protocol(-32000, message);
+            assert!(is_transient_execution_context_error(&error), "{message}");
+        }
+    }
+
+    #[test]
+    fn does_not_retry_unrelated_cdp_errors() {
+        let invalid = cdpkit::CdpError::protocol(-32602, "Invalid parameters");
+        assert!(!is_transient_execution_context_error(&invalid));
+        let wrong_code = cdpkit::CdpError::protocol(-32602, "Execution context was destroyed.");
+        assert!(!is_transient_execution_context_error(&wrong_code));
+        assert!(!is_transient_execution_context_error(
+            &cdpkit::CdpError::ConnectionClosed
+        ));
+        assert!(!is_transient_execution_context_error(
+            &cdpkit::CdpError::Timeout
+        ));
     }
 }
