@@ -77,7 +77,7 @@ const MAX_REQUEST_LINE_BYTES: usize = 1024 * 1024;
 ///
 /// Returns `Ok(None)` when the stream reaches EOF (client disconnected).
 /// Returns an error `Response` when the line cannot be parsed as a valid request.
-/// Rejects lines exceeding [`MAX_REQUEST_LINE_BYTES`] to prevent memory exhaustion.
+/// Rejects lines exceeding `MAX_REQUEST_LINE_BYTES` to prevent memory exhaustion.
 pub async fn read_request<R>(reader: &mut BufReader<R>) -> Result<Option<Request>, Response>
 where
     R: tokio::io::AsyncRead + Unpin,

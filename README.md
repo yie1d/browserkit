@@ -311,9 +311,10 @@ pattern. It returns JSON after `count` matching responses complete or the
 timeout expires, with `stop_reason` and `timed_out`; it is not an infinite
 stream. Responses are metadata-only: status, headers, MIME type, encoded size,
 and failure metadata are returned, while `body` is always `null` with
-`body_omitted=true` and `body_omission_reason="metadata_only"`. The three CDP
-event streams and the out-of-order terminal-event buffer each have an explicit
-capacity of 256. Overflow or stream closure stops observation with structured
+`body_omitted=true` and `body_omission_reason="metadata_only"`. The operation
+is bounded by `count` and `timeout`; its three CDP event streams are unbounded,
+while the out-of-order terminal-event buffer has capacity 256. Terminal-buffer
+overflow or event-stream closure stops observation with structured
 `stop_reason`, `event_streams`, and `terminal_buffer` metadata.
 
 ### download

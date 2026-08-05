@@ -124,7 +124,7 @@ pub enum Command {
         /// Element ref (backendNodeId)
         #[arg(long = "ref")]
         element_ref: Option<i64>,
-        /// Field assignment for fill action (ref:<id>=<value>)
+        /// Field assignment for fill action (`ref:<id>=<value>`)
         #[arg(long = "set")]
         set: Vec<String>,
         /// Text for type action

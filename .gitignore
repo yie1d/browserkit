@@ -1,4 +1,6 @@
 /target
+/.cargo-target-*/
+/AGENTS.md
 .claude/
 .codex/
 .worktrees/

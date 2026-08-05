@@ -248,7 +248,7 @@ mod tests {
     }
 
     #[test]
-    fn direct_websocket_targets_are_detected_for_cdpkit_0_5() {
+    fn direct_websocket_targets_are_detected_for_cdpkit_0_6() {
         assert!(is_direct_websocket_target(
             "ws://localhost:9222/devtools/browser/id"
         ));

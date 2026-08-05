@@ -17,11 +17,11 @@ use serde::{Deserialize, Serialize};
 /// to ensure consistent indexing. Covers:
 /// - Native interactive elements: a, button, input, textarea, select
 /// - Disclosure widgets: details > summary
-/// - Rich text editors: [contenteditable]:not([contenteditable="false"])
-/// - Focusable by tabindex: [tabindex]:not([tabindex="-1"])
+/// - Rich text editors: `[contenteditable]:not([contenteditable="false"])`
+/// - Focusable by tabindex: `[tabindex]:not([tabindex="-1"])`
 /// - ARIA roles: button, link, checkbox, radio, tab, textbox, combobox, slider, switch,
 ///   menuitem, menuitemcheckbox, menuitemradio, option, spinbutton, searchbox
-/// - Event-bound: [onclick]
+/// - Event-bound: `[onclick]`
 pub const INTERACTIVE_SELECTOR: &str = r#"a, button, input, textarea, select, details > summary, [contenteditable]:not([contenteditable="false"]), [tabindex]:not([tabindex="-1"]), [role="button"], [role="link"], [role="checkbox"], [role="radio"], [role="tab"], [role="textbox"], [role="combobox"], [role="slider"], [role="switch"], [role="menuitem"], [role="menuitemcheckbox"], [role="menuitemradio"], [role="option"], [role="spinbutton"], [role="searchbox"], [onclick]"#;
 
 /// Extract the best available error message from a CDP ExceptionDetails.

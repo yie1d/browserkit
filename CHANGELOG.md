@@ -5,10 +5,11 @@
 ### Changed
 
 - Path-bound the unpublished runtime to cdpkit 0.6.0 for joint verification.
-  Event watchers now use explicit bounded `CloseStream` policies and treat
-  decode errors or stream closure as state-invalidating; generated enums and
-  root domain imports replace stringly or private generated APIs. This does not
-  claim that cdpkit 0.6.0 is available from crates.io.
+  Event watchers now choose an explicit buffer policy: long-lived watchers use
+  `Unbounded`, while `wait networkidle` uses `Bounded(256)`. Watchers handle
+  decode errors and stream closure explicitly; generated enums and root domain
+  imports replace stringly or private generated APIs. This does not claim that
+  cdpkit 0.6.0 is available from crates.io.
 
 - Reduced current documentation to maintained architecture, roadmap, Chrome
   connection, and agent command references; completed implementation plans
