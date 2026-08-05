@@ -12,7 +12,7 @@ use crate::page::exception_message;
 pub const PAGE_LOAD_TIMEOUT: Duration = Duration::from_secs(30);
 
 fn is_transient_execution_context_error(error: &cdpkit::CdpError) -> bool {
-    let cdpkit::CdpError::Protocol { code, message } = error else {
+    let cdpkit::CdpError::Protocol { code, message, .. } = error else {
         return false;
     };
     if *code != -32000 {
