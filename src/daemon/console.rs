@@ -19,23 +19,36 @@ pub struct ConsoleEntry {
     pub timestamp: f64,
 }
 
-/// Spawn a background task that subscribes to `Runtime.consoleAPICalled` events
-/// for a session and buffers entries into the tab's `console_log`.
+pub(crate) type ConsoleEventStream = cdpkit::EventStream<cdpkit::runtime::events::ConsoleApiCalled>;
+
+/// Subscribe synchronously so Runtime events are buffered before Runtime.enable.
+pub(crate) fn subscribe_console_events(
+    cdp: &cdpkit::CDP,
+    cdp_session_id: &str,
+) -> ConsoleEventStream {
+    let session = cdp.session(cdp_session_id);
+    cdpkit::runtime::events::ConsoleApiCalled::subscribe(&session, cdpkit::EventBuffer::Unbounded)
+}
+
+/// Spawn a background task that consumes a pre-created Runtime.consoleAPICalled
+/// stream and buffers entries into the tab's console_log.
 ///
 /// This should be called once per tab after `Runtime.enable` has been sent.
 /// The task runs until the CDP session closes (stream ends).
-pub fn spawn_console_subscription(
+pub(crate) fn spawn_console_subscription(
     state: Arc<DaemonState>,
     session_name: String,
     target_id: String,
     cdp: Arc<cdpkit::CDP>,
     cdp_session_id: String,
+    stream: ConsoleEventStream,
 ) -> CancellationToken {
     spawn_console_subscription_for_key(
         state,
         (session_name, target_id),
         cdp,
         cdp_session_id,
+        stream,
         record_console_entry_for_session,
     )
 }
@@ -45,6 +58,7 @@ fn spawn_console_subscription_for_key(
     key: (String, String),
     cdp: Arc<cdpkit::CDP>,
     cdp_session_id: String,
+    mut stream: ConsoleEventStream,
     record_entry: fn(&DaemonState, &str, &str, ConsoleEntry) -> bool,
 ) -> CancellationToken {
     let cancel = CancellationToken::new();
@@ -63,11 +77,6 @@ fn spawn_console_subscription_for_key(
 
     tokio::spawn(async move {
         let owned_session = cdp.owned_session(&cdp_session_id);
-        let mut stream = cdpkit::runtime::events::ConsoleApiCalled::subscribe(
-            &owned_session,
-            cdpkit::EventBuffer::Unbounded,
-        );
-
         debug!(owner = %key.0, target = %key.1, "console: subscription started");
 
         loop {

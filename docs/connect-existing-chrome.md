@@ -41,6 +41,11 @@ bk browser discover --path /path/to/DevToolsActivePort
 bk browser connect "ws://127.0.0.1:<port>/devtools/browser/<guid>"
 ```
 
+The explicit endpoint contract accepts only `host:port`, `http://host:port`,
+or a direct `ws://host:port/path`. browserkit does not support TLS endpoints
+(`https://` or `wss://`), and HTTP discovery URLs must not include a path;
+browserkit always requests `/json/version` itself.
+
 `bk connect` and `bk browser discover` use the dynamic endpoint exposed by the
 user's browser. They should be preferred over fixed ports.
 

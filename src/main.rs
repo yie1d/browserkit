@@ -458,7 +458,7 @@ pub enum DaemonAction {
 pub enum BrowserAction {
     /// Connect to an existing browser
     Connect {
-        /// CDP endpoint host (e.g. localhost:9222)
+        /// CDP endpoint: host:port, http://host:port, or ws://host:port/path
         host: String,
     },
     /// Auto-discover user's Chrome via DevToolsActivePort

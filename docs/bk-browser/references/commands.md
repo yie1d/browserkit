@@ -133,7 +133,7 @@ Use these to manage browser and daemon connections.
 | Command | Purpose |
 |---|---|
 | `bk browser discover [--path <DevToolsActivePort>]` | Discover Chrome and bind the selected session |
-| `bk browser connect <HOST_OR_WS_URL>` | Connect an endpoint and bind the selected session |
+| `bk browser connect <ENDPOINT>` | Connect `host:port`, `http://host:port`, or `ws://host:port/path` and bind the selected session; `https://` and `wss://` are unsupported |
 | `bk browser list` | List connected browsers |
 | `bk browser disconnect <HOST>` | Disconnect a browser |
 | `bk daemon start` | Start daemon |

@@ -180,23 +180,47 @@ fn now_ts() -> u64 {
         .as_secs()
 }
 
-/// Spawn a background task that subscribes to JavascriptDialogOpening events
-/// on a specific session (tab) and either records the dialog or auto-handles it
-/// based on the session's policy.
+pub(crate) struct DialogEventStreams {
+    opened: cdpkit::EventStream<cdpkit::page::events::JavascriptDialogOpening>,
+    closed: cdpkit::EventStream<cdpkit::page::events::JavascriptDialogClosed>,
+}
+
+/// Subscribe synchronously so Page events are buffered before Page.enable.
+pub(crate) fn subscribe_dialog_events(
+    cdp: &cdpkit::CDP,
+    cdp_session_id: &str,
+) -> DialogEventStreams {
+    let session = cdp.session(cdp_session_id);
+    DialogEventStreams {
+        opened: cdpkit::page::events::JavascriptDialogOpening::subscribe(
+            &session,
+            cdpkit::EventBuffer::Unbounded,
+        ),
+        closed: cdpkit::page::events::JavascriptDialogClosed::subscribe(
+            &session,
+            cdpkit::EventBuffer::Unbounded,
+        ),
+    }
+}
+
+/// Spawn a background task that consumes pre-created dialog event streams and
+/// either records the dialog or auto-handles it based on the session's policy.
 ///
 /// Returns a CancellationToken to stop the subscription.
-pub fn spawn_dialog_subscription(
+pub(crate) fn spawn_dialog_subscription(
     state: Arc<DaemonState>,
     session_name: String,
     target_id: String,
     cdp: Arc<cdpkit::CDP>,
     cdp_session_id: String,
+    streams: DialogEventStreams,
 ) -> CancellationToken {
     spawn_dialog_subscription_for_key(
         state,
         session_dialog_key(&session_name, &target_id),
         cdp,
         cdp_session_id,
+        streams,
     )
 }
 
@@ -205,6 +229,7 @@ fn spawn_dialog_subscription_for_key(
     key: DialogKey,
     cdp: Arc<cdpkit::CDP>,
     cdp_session_id: String,
+    streams: DialogEventStreams,
 ) -> CancellationToken {
     let cancel = CancellationToken::new();
     let cancel_clone = cancel.clone();
@@ -228,17 +253,8 @@ fn spawn_dialog_subscription_for_key(
 
     tokio::spawn(async move {
         let owned_session = cdp.owned_session(&cdp_session_id);
-        // Subscribe to dialog opening events on this session
-        let mut dialog_stream = cdpkit::page::events::JavascriptDialogOpening::subscribe(
-            &owned_session,
-            cdpkit::EventBuffer::Unbounded,
-        );
-
-        // Also subscribe to dialog closed events for cleanup
-        let mut closed_stream = cdpkit::page::events::JavascriptDialogClosed::subscribe(
-            &owned_session,
-            cdpkit::EventBuffer::Unbounded,
-        );
+        let mut dialog_stream = streams.opened;
+        let mut closed_stream = streams.closed;
 
         debug!(
             owner = %key.0,

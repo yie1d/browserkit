@@ -28,8 +28,10 @@
    aligned with each release.
 2. Add protocol capabilities to cdpkit first, then consume the released crate
    from browserkit.
-3. Preserve session ownership, bounded observation, structured errors, and
-   cleanup reporting when adding commands.
+3. Preserve session ownership and structured errors. Long-lived CDP event
+   channels remain unbounded; only `wait networkidle` uses `Bounded(256)`, while
+   finite operations use count/deadline bounds and explicit business-buffer
+   overflow reporting.
 4. Add new transports or SDKs only when they reuse the same daemon/runtime
    contract rather than creating a parallel automation model.
 

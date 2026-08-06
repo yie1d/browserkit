@@ -14,7 +14,7 @@ use crate::daemon::bk_home;
 use crate::daemon::session::{Session, SessionMode, SessionTab, TabOwnership};
 use crate::daemon::state::DaemonState;
 use crate::daemon::target_close::detach_unregistered_target_session;
-use crate::daemon::target_lifecycle::enable_session_tab_domains;
+use crate::daemon::target_lifecycle::{prepare_session_tab_subscriptions, PreparedSessionTab};
 
 /// Serializable representation of a schema v1 session tab.
 ///
@@ -384,7 +384,7 @@ pub(crate) async fn browser_context_available(session: &Session, cdp: &Arc<cdpki
 pub(crate) async fn reattach_session_tabs(
     session: &mut Session,
     cdp: &Arc<cdpkit::CDP>,
-) -> Vec<(String, String)> {
+) -> Vec<PreparedSessionTab> {
     let mut subscriptions = Vec::new();
     let mut failed_targets = Vec::new();
     let mut target_ids: Vec<String> = session.tabs.keys().cloned().collect();
@@ -401,23 +401,34 @@ pub(crate) async fn reattach_session_tabs(
             .await
         {
             Ok(response) => {
-                if let Err(error) =
-                    enable_session_tab_domains(cdp.as_ref(), &response.session_id).await
-                {
-                    let _ =
-                        detach_unregistered_target_session(cdp.as_ref(), response.session_id).await;
-                    warn!(
-                        session = %session.name,
-                        target_id = %tab.target_id,
-                        error = %error,
-                        "failed to enable restored target domains, dropping tab"
-                    );
-                    failed_targets.push(tab.target_id.clone());
-                    continue;
-                }
+                let prepared =
+                    match prepare_session_tab_subscriptions(cdp.as_ref(), &response.session_id)
+                        .await
+                    {
+                        Ok(subscriptions) => PreparedSessionTab {
+                            target_id: tab.target_id.clone(),
+                            cdp_session_id: response.session_id.clone(),
+                            subscriptions,
+                        },
+                        Err(error) => {
+                            let _ = detach_unregistered_target_session(
+                                cdp.as_ref(),
+                                response.session_id,
+                            )
+                            .await;
+                            warn!(
+                                session = %session.name,
+                                target_id = %tab.target_id,
+                                error = %error,
+                                "failed to initialize restored target domains, dropping tab"
+                            );
+                            failed_targets.push(tab.target_id.clone());
+                            continue;
+                        }
+                    };
 
                 tab.cdp_session_id = response.session_id.clone();
-                subscriptions.push((tab.target_id.clone(), response.session_id));
+                subscriptions.push(prepared);
             }
             Err(error) => {
                 warn!(

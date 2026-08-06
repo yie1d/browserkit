@@ -13,7 +13,7 @@ use crate::daemon::session::SessionTab;
 use crate::daemon::state::DaemonState;
 use crate::daemon::target_close::detach_unregistered_target_session;
 use crate::daemon::target_lifecycle::{
-    emit_session_tab_created, enable_session_tab_domains, register_reserved_session_tab,
+    emit_session_tab_created, prepare_session_tab_subscriptions, register_reserved_session_tab,
     release_session_tab_reservation, reserve_session_tab, spawn_session_tab_subscriptions,
     SessionTabRegistration,
 };
@@ -191,18 +191,21 @@ pub async fn handle_open(req: &Request, state: &Arc<DaemonState>) -> Response {
         }
     };
 
-    if let Err(error) = enable_session_tab_domains(cdp.as_ref(), &session_id).await {
-        let cleanup_error =
-            rollback_opened_target(cdp.as_ref(), &target_id, Some(session_id)).await;
-        return Response::error_detail(
-            ErrorCode::DaemonError,
-            append_cleanup_error(
-                format!("failed to initialize new tab session: {error}"),
-                cleanup_error,
-            ),
-            None,
-        );
-    }
+    let subscriptions = match prepare_session_tab_subscriptions(cdp.as_ref(), &session_id).await {
+        Ok(subscriptions) => subscriptions,
+        Err(error) => {
+            let cleanup_error =
+                rollback_opened_target(cdp.as_ref(), &target_id, Some(session_id)).await;
+            return Response::error_detail(
+                ErrorCode::DaemonError,
+                append_cleanup_error(
+                    format!("failed to initialize new tab session: {error}"),
+                    cleanup_error,
+                ),
+                None,
+            );
+        }
+    };
 
     let mut tab = SessionTab::new_owned(target_id.clone(), params.url.clone(), String::new());
     tab.cdp_session_id = session_id.clone();
@@ -231,6 +234,7 @@ pub async fn handle_open(req: &Request, state: &Arc<DaemonState>) -> Response {
             target_id.clone(),
             Arc::clone(&cdp),
             session_id,
+            subscriptions,
         );
         emit_session_tab_created(state, &params.session_name, &target_id, None);
     }

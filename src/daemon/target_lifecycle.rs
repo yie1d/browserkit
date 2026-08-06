@@ -5,8 +5,13 @@ use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
-use crate::daemon::console::{cancel_console_subscription, spawn_console_subscription};
-use crate::daemon::dialog::spawn_dialog_subscription;
+use crate::daemon::console::{
+    cancel_console_subscription, spawn_console_subscription, subscribe_console_events,
+    ConsoleEventStream,
+};
+use crate::daemon::dialog::{
+    spawn_dialog_subscription, subscribe_dialog_events, DialogEventStreams,
+};
 use crate::daemon::session::{SessionMode, SessionTab};
 use crate::daemon::state::DaemonState;
 use crate::daemon::target_close::detach_unregistered_target_session;
@@ -222,12 +227,36 @@ pub async fn enable_session_tab_domains(
     Ok(())
 }
 
-pub fn spawn_session_tab_subscriptions(
+pub(crate) struct SessionTabSubscriptions {
+    console: ConsoleEventStream,
+    dialog: DialogEventStreams,
+}
+
+pub(crate) struct PreparedSessionTab {
+    pub(crate) target_id: String,
+    pub(crate) cdp_session_id: String,
+    pub(crate) subscriptions: SessionTabSubscriptions,
+}
+
+pub(crate) async fn prepare_session_tab_subscriptions(
+    cdp: &cdpkit::CDP,
+    cdp_session_id: &str,
+) -> Result<SessionTabSubscriptions, cdpkit::CdpError> {
+    let subscriptions = SessionTabSubscriptions {
+        console: subscribe_console_events(cdp, cdp_session_id),
+        dialog: subscribe_dialog_events(cdp, cdp_session_id),
+    };
+    enable_session_tab_domains(cdp, cdp_session_id).await?;
+    Ok(subscriptions)
+}
+
+pub(crate) fn spawn_session_tab_subscriptions(
     state: Arc<DaemonState>,
     session_name: String,
     target_id: String,
     cdp: Arc<cdpkit::CDP>,
     cdp_session_id: String,
+    subscriptions: SessionTabSubscriptions,
 ) {
     spawn_dialog_subscription(
         Arc::clone(&state),
@@ -235,8 +264,16 @@ pub fn spawn_session_tab_subscriptions(
         target_id.clone(),
         Arc::clone(&cdp),
         cdp_session_id.clone(),
+        subscriptions.dialog,
     );
-    spawn_console_subscription(state, session_name, target_id, cdp, cdp_session_id);
+    spawn_console_subscription(
+        state,
+        session_name,
+        target_id,
+        cdp,
+        cdp_session_id,
+        subscriptions.console,
+    );
 }
 
 pub fn remove_session_tab(state: &DaemonState, target_id: &str) -> Option<(String, SessionTab)> {
@@ -544,16 +581,20 @@ async fn handle_target_created_event(
         }
     };
 
-    if let Err(error) = enable_session_tab_domains(cdp.as_ref(), &cdp_session_id).await {
-        let _ = detach_unregistered_target_session(cdp.as_ref(), cdp_session_id).await;
-        debug!(
-            host = %host,
-            target_id = %target_info.target_id,
-            error = %error,
-            "target watcher: failed to enable target session domains"
-        );
-        return;
-    }
+    let subscriptions = match prepare_session_tab_subscriptions(cdp.as_ref(), &cdp_session_id).await
+    {
+        Ok(subscriptions) => subscriptions,
+        Err(error) => {
+            let _ = detach_unregistered_target_session(cdp.as_ref(), cdp_session_id).await;
+            debug!(
+                host = %host,
+                target_id = %target_info.target_id,
+                error = %error,
+                "target watcher: failed to initialize target session domains"
+            );
+            return;
+        }
+    };
 
     let mut tab = SessionTab::new_owned(
         target_info.target_id.clone(),
@@ -570,6 +611,7 @@ async fn handle_target_created_event(
                 target_info.target_id.clone(),
                 Arc::clone(cdp),
                 cdp_session_id,
+                subscriptions,
             );
             emit_session_tab_created(
                 state,
@@ -614,14 +656,97 @@ mod tests {
 
     use super::{
         emit_session_tab_created, ensure_target_watcher_token, find_target_owner,
-        handle_target_destroyed_event, is_trackable_page_target, register_initialized_session_tab,
-        register_reserved_session_tab, register_session_tab, remove_session_tab,
-        reserve_session_tab, session_for_created_target, subscribe_target_events,
-        update_session_tab_info, SessionTabRegistration, TargetLifecycleEvent,
+        handle_target_destroyed_event, is_trackable_page_target, prepare_session_tab_subscriptions,
+        register_initialized_session_tab, register_reserved_session_tab, register_session_tab,
+        remove_session_tab, reserve_session_tab, session_for_created_target,
+        subscribe_target_events, update_session_tab_info, SessionTabRegistration,
+        TargetLifecycleEvent,
     };
+    use futures::{SinkExt, StreamExt};
+    use serde_json::{json, Value};
     use std::sync::{Arc, Barrier};
     use std::thread;
+    use tokio::net::TcpListener;
+    use tokio_tungstenite::tungstenite::Message;
     use tokio_util::sync::CancellationToken;
+
+    async fn start_tab_initialization_server() -> (String, tokio::task::JoinHandle<Vec<String>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let handle = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let websocket = tokio_tungstenite::accept_async(stream).await.unwrap();
+            let (mut write, mut read) = websocket.split();
+            let mut methods = Vec::new();
+
+            while methods.len() < 4 {
+                let message = read.next().await.unwrap().unwrap();
+                let Message::Text(text) = message else {
+                    continue;
+                };
+                let command: Value = serde_json::from_str(&text).unwrap();
+                let id = command["id"].as_u64().unwrap();
+                let method = command["method"].as_str().unwrap().to_string();
+                methods.push(method.clone());
+
+                if method == "Page.enable" {
+                    let event = json!({
+                        "method": "Runtime.consoleAPICalled",
+                        "sessionId": "TEST-SESSION",
+                        "params": {
+                            "type": "log",
+                            "args": [],
+                            "executionContextId": 1,
+                            "timestamp": 1.0
+                        }
+                    });
+                    write
+                        .send(Message::Text(event.to_string().into()))
+                        .await
+                        .unwrap();
+                }
+
+                let response = json!({"id": id, "result": {}});
+                write
+                    .send(Message::Text(response.to_string().into()))
+                    .await
+                    .unwrap();
+            }
+
+            methods
+        });
+
+        (format!("ws://{address}"), handle)
+    }
+
+    #[tokio::test]
+    async fn real_cdp_subscription_is_registered_before_domain_enable() {
+        let (url, server) = start_tab_initialization_server().await;
+        let cdp = cdpkit::CDP::connect_ws(&url).await.unwrap();
+
+        let mut subscriptions = prepare_session_tab_subscriptions(&cdp, "TEST-SESSION")
+            .await
+            .unwrap();
+        let event = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            subscriptions.console.next(),
+        )
+        .await
+        .expect("console event emitted during Page.enable was lost")
+        .expect("console event stream ended")
+        .unwrap();
+
+        assert_eq!(event.type_.as_ref(), "log");
+        assert_eq!(
+            server.await.unwrap(),
+            vec![
+                "Page.enable",
+                "Page.setLifecycleEventsEnabled",
+                "Runtime.enable",
+                "Network.enable",
+            ]
+        );
+    }
 
     #[test]
     fn target_tracking_keeps_only_page_targets() {

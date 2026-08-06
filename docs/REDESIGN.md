@@ -92,7 +92,9 @@ state migration layer.
 
 - Subscribe before triggering actions that produce CDP events.
 - Use flattened CDP sessions through cdpkit.
-- Keep high-rate observation bounded and report overflow or dropped events.
+- Long-lived CDP event channels are unbounded and must be drained promptly;
+  only `wait networkidle` uses `Bounded(256)`. Finite operations remain bounded
+  by count/deadline, and independent business buffers report overflow or drops.
 - Close only browserkit-owned targets; detach user-owned targets.
 - Cancel session subscriptions during disconnect and cleanup.
 - Report partial cleanup explicitly instead of claiming full success.

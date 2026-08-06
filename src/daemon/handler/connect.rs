@@ -12,7 +12,9 @@ use crate::browser::finder;
 use crate::daemon::protocol::{Request, Response};
 use crate::daemon::session::{Session, SessionMode};
 use crate::daemon::state::DaemonState;
-use crate::daemon::target_lifecycle::{ensure_target_watcher, spawn_session_tab_subscriptions};
+use crate::daemon::target_lifecycle::{
+    ensure_target_watcher, spawn_session_tab_subscriptions, PreparedSessionTab,
+};
 use crate::error::ErrorCode;
 
 use super::common::session_name_param;
@@ -121,10 +123,10 @@ fn build_new_session_for_connect(
     ))
 }
 
-#[derive(Debug, PartialEq, Eq)]
-struct ReconnectResult {
+#[derive(Debug)]
+struct ReconnectResult<S> {
     tab_count: usize,
-    subscriptions: Vec<(String, String)>,
+    subscriptions: Vec<S>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -144,17 +146,19 @@ impl SessionBindStatus {
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
-pub(crate) struct SessionBindResult {
+#[derive(Debug)]
+pub(crate) struct SessionBindResult<S = PreparedSessionTab> {
     pub(crate) status: SessionBindStatus,
     pub(crate) tab_count: usize,
-    subscriptions: Vec<(String, String)>,
+    subscriptions: Vec<S>,
 }
 
 trait SessionReconnectBackend {
+    type Subscription;
+
     async fn browser_context_available(&self, session: &Session) -> bool;
     async fn create_browser_context(&self, session_name: &str) -> Result<String, Response>;
-    async fn reattach_tabs(&self, session: &mut Session) -> Vec<(String, String)>;
+    async fn reattach_tabs(&self, session: &mut Session) -> Vec<Self::Subscription>;
 }
 
 struct CdpReconnectBackend<'a> {
@@ -162,6 +166,8 @@ struct CdpReconnectBackend<'a> {
 }
 
 impl SessionReconnectBackend for CdpReconnectBackend<'_> {
+    type Subscription = PreparedSessionTab;
+
     async fn browser_context_available(&self, session: &Session) -> bool {
         crate::daemon::persist::browser_context_available(session, self.cdp).await
     }
@@ -181,7 +187,7 @@ impl SessionReconnectBackend for CdpReconnectBackend<'_> {
             })
     }
 
-    async fn reattach_tabs(&self, session: &mut Session) -> Vec<(String, String)> {
+    async fn reattach_tabs(&self, session: &mut Session) -> Vec<Self::Subscription> {
         crate::daemon::persist::reattach_session_tabs(session, self.cdp).await
     }
 }
@@ -191,7 +197,7 @@ async fn reconnect_existing_session<B: SessionReconnectBackend>(
     session_name: &str,
     browser_host: &str,
     backend: &B,
-) -> Result<ReconnectResult, Response> {
+) -> Result<ReconnectResult<B::Subscription>, Response> {
     let mut session = state
         .sessions
         .get(session_name)
@@ -239,7 +245,7 @@ async fn bind_session_state<B: SessionReconnectBackend>(
     session_name: &str,
     browser_host: &str,
     backend: &B,
-) -> Result<SessionBindResult, Response> {
+) -> Result<SessionBindResult<B::Subscription>, Response> {
     let _bind_guard = state.session_bind_lock.lock().await;
     let lifecycle = state.session_lifecycle_lock(session_name);
     let _lifecycle_guard = lifecycle.write().await;
@@ -251,7 +257,7 @@ async fn bind_session_state_unlocked<B: SessionReconnectBackend>(
     session_name: &str,
     browser_host: &str,
     backend: &B,
-) -> Result<SessionBindResult, Response> {
+) -> Result<SessionBindResult<B::Subscription>, Response> {
     check_new_session_limit_for_connect(state, session_name)?;
 
     if let Some(existing) = state.sessions.get(session_name) {
@@ -335,15 +341,17 @@ pub(crate) async fn bind_session_to_browser(
     let _lifecycle_guard = lifecycle.write().await;
     validate_current_browser_connection(state, browser_host, cdp)?;
     let backend = CdpReconnectBackend { cdp };
-    let result = bind_session_state_unlocked(state, session_name, browser_host, &backend).await?;
+    let mut result =
+        bind_session_state_unlocked(state, session_name, browser_host, &backend).await?;
 
-    for (target_id, cdp_session_id) in &result.subscriptions {
+    for prepared in result.subscriptions.drain(..) {
         spawn_session_tab_subscriptions(
             Arc::clone(state),
             session_name.to_string(),
-            target_id.clone(),
+            prepared.target_id,
             Arc::clone(cdp),
-            cdp_session_id.clone(),
+            prepared.cdp_session_id,
+            prepared.subscriptions,
         );
     }
     state.request_persist();
@@ -541,6 +549,8 @@ mod tests {
     }
 
     impl SessionReconnectBackend for FakeReconnectBackend {
+        type Subscription = (String, String);
+
         async fn browser_context_available(&self, _session: &Session) -> bool {
             self.context_available
         }
@@ -575,6 +585,8 @@ mod tests {
     }
 
     impl SessionReconnectBackend for CountingBindBackend {
+        type Subscription = (String, String);
+
         async fn browser_context_available(&self, _session: &Session) -> bool {
             false
         }

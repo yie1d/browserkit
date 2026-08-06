@@ -182,7 +182,7 @@ bk session cookies get              # Get cookies for the current session
 | Command | Description |
 |---------|-------------|
 | `browser discover` | Discover Chrome and bind the selected session |
-| `browser connect` | Connect an endpoint and bind the selected session |
+| `browser connect` | Connect `host:port`, `http://host:port`, or `ws://host:port/path` and bind the selected session (`https://` and `wss://` are unsupported) |
 | `browser list` | List connected browsers |
 | `browser disconnect` | Disconnect a browser |
 | `daemon start` | Start the local daemon |

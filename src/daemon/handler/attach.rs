@@ -2,14 +2,13 @@ use std::sync::Arc;
 
 use serde_json::json;
 
-use crate::daemon::console::spawn_console_subscription;
-use crate::daemon::dialog::spawn_dialog_subscription;
 use crate::daemon::protocol::{Request, Response};
 use crate::daemon::session::{Session, SessionMode, SessionTab};
 use crate::daemon::state::DaemonState;
 use crate::daemon::target_close::detach_unregistered_target_session;
 use crate::daemon::target_lifecycle::{
-    find_target_owner, is_trackable_page_target, register_session_tab,
+    find_target_owner, is_trackable_page_target, prepare_session_tab_subscriptions,
+    register_session_tab, spawn_session_tab_subscriptions,
 };
 use crate::error::ErrorCode;
 
@@ -246,48 +245,17 @@ pub async fn handle_attach(req: &Request, state: &Arc<DaemonState>) -> Response 
             }
         };
     let cdp_session_id = attach_response.session_id.clone();
-    let cdp_session = cdp.session(&cdp_session_id);
-
-    if let Err(error) = cdpkit::page::methods::Enable::new()
-        .send(&cdp_session)
-        .await
+    let subscriptions = match prepare_session_tab_subscriptions(cdp.as_ref(), &cdp_session_id).await
     {
-        let _ = detach_unregistered_target_session(cdp.as_ref(), cdp_session_id).await;
-        return error_response(
-            ErrorCode::DaemonError,
-            format!("failed to enable Page: {error}"),
-        );
-    }
-    if let Err(error) = cdpkit::page::methods::SetLifecycleEventsEnabled::new(true)
-        .send(&cdp_session)
-        .await
-    {
-        let _ = detach_unregistered_target_session(cdp.as_ref(), cdp_session_id).await;
-        return error_response(
-            ErrorCode::DaemonError,
-            format!("failed to enable page lifecycle events: {error}"),
-        );
-    }
-    if let Err(error) = cdpkit::runtime::methods::Enable::new()
-        .send(&cdp_session)
-        .await
-    {
-        let _ = detach_unregistered_target_session(cdp.as_ref(), cdp_session_id).await;
-        return error_response(
-            ErrorCode::DaemonError,
-            format!("failed to enable Runtime: {error}"),
-        );
-    }
-    if let Err(error) = cdpkit::network::methods::Enable::new()
-        .send(&cdp_session)
-        .await
-    {
-        let _ = detach_unregistered_target_session(cdp.as_ref(), cdp_session_id).await;
-        return error_response(
-            ErrorCode::DaemonError,
-            format!("failed to enable Network: {error}"),
-        );
-    }
+        Ok(subscriptions) => subscriptions,
+        Err(error) => {
+            let _ = detach_unregistered_target_session(cdp.as_ref(), cdp_session_id).await;
+            return error_response(
+                ErrorCode::DaemonError,
+                format!("failed to initialize target session: {error}"),
+            );
+        }
+    };
 
     let tab = SessionTab::new_attached(
         candidate.target_id.clone(),
@@ -304,19 +272,13 @@ pub async fn handle_attach(req: &Request, state: &Arc<DaemonState>) -> Response 
         );
     }
 
-    spawn_dialog_subscription(
-        Arc::clone(state),
-        session_name.to_string(),
-        candidate.target_id.clone(),
-        Arc::clone(&cdp),
-        cdp_session_id.clone(),
-    );
-    spawn_console_subscription(
+    spawn_session_tab_subscriptions(
         Arc::clone(state),
         session_name.to_string(),
         candidate.target_id.clone(),
         Arc::clone(&cdp),
         cdp_session_id,
+        subscriptions,
     );
 
     Response::ok(json!({

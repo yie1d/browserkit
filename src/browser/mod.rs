@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use cdpkit::CDP;
 use tokio::time::timeout;
+use url::{Host, Url};
 
 use crate::daemon::state::{Browser, DaemonState};
 use crate::daemon::target_lifecycle::ensure_target_watcher;
@@ -15,38 +16,132 @@ use crate::error::BkError;
 /// Default timeout for CDP connection attempts (seconds).
 const CONNECT_TIMEOUT_SECS: u64 = 10;
 
-/// Normalize a browser connection target into a canonical `host:port` key.
+/// A validated browser connection endpoint.
 ///
-/// This ensures that different connection strings pointing to the same Chrome
-/// instance (e.g. `ws://localhost:9222/devtools/browser/<guid>` vs `localhost:9222`)
-/// resolve to the same key in `state.browsers`, preventing duplicate entries.
-///
-/// Rules:
-/// - `ws://host:port/...` or `wss://host:port/...` → `host:port`
-/// - `http://host:port/...` or `https://host:port/...` → `host:port`
-/// - `host:port` (no scheme) → returned as-is
-/// - Unparseable input → returned as-is (fallback, no panic)
-pub fn normalize_browser_key(target: &str) -> String {
-    // Check for scheme prefix
-    let schemes = ["ws://", "wss://", "http://", "https://"];
-    for scheme in &schemes {
-        if let Some(rest) = target.strip_prefix(scheme) {
-            // Extract authority: everything up to the next '/' or end of string
-            let authority = match rest.find('/') {
-                Some(idx) => &rest[..idx],
-                None => rest,
-            };
-            if !authority.is_empty() {
-                return authority.to_string();
-            }
-        }
-    }
-    // No recognized scheme — return as-is (e.g. "localhost:9222")
-    target.to_string()
+/// Supported inputs are a bare `host:port`, an HTTP discovery origin such as
+/// `http://host:port`, or a direct `ws://host:port/path` endpoint. Secure
+/// schemes, HTTP discovery paths, and ambiguous or malformed inputs are rejected.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct BrowserEndpoint {
+    key: String,
+    connect_target: String,
+    direct_websocket: bool,
 }
 
-fn is_direct_websocket_target(target: &str) -> bool {
-    target.starts_with("ws://") || target.starts_with("wss://")
+impl BrowserEndpoint {
+    pub(crate) fn key(&self) -> &str {
+        &self.key
+    }
+
+    pub(crate) fn connect_target(&self) -> &str {
+        &self.connect_target
+    }
+
+    pub(crate) fn is_direct_websocket(&self) -> bool {
+        self.direct_websocket
+    }
+}
+
+fn explicit_endpoint_port(target: &str) -> Option<u16> {
+    let authority_and_rest = target
+        .split_once("://")
+        .map_or(target, |(_, remainder)| remainder);
+    let authority = authority_and_rest
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or_default();
+    let host_and_port = authority
+        .rsplit_once('@')
+        .map_or(authority, |(_, host)| host);
+
+    let port = if let Some(ipv6) = host_and_port.strip_prefix('[') {
+        let closing_bracket = ipv6.find(']')? + 1;
+        host_and_port
+            .get(closing_bracket + 1..)?
+            .strip_prefix(':')?
+    } else {
+        host_and_port.rsplit_once(':')?.1
+    };
+
+    port.parse().ok()
+}
+
+fn endpoint_key(url: &Url, port: u16) -> Result<String, BkError> {
+    if !url.username().is_empty() || url.password().is_some() {
+        return Err(BkError::InvalidRequest(
+            "browser endpoint credentials are not supported".into(),
+        ));
+    }
+    let host = match url.host() {
+        Some(Host::Domain(host)) => host.to_string(),
+        Some(Host::Ipv4(host)) => host.to_string(),
+        Some(Host::Ipv6(host)) => format!("[{host}]"),
+        None => {
+            return Err(BkError::InvalidRequest(
+                "browser endpoint must include a host".into(),
+            ))
+        }
+    };
+    Ok(format!("{host}:{port}"))
+}
+
+pub(crate) fn parse_browser_endpoint(target: &str) -> Result<BrowserEndpoint, BkError> {
+    let target = target.trim();
+    if target.is_empty() {
+        return Err(BkError::InvalidRequest(
+            "browser endpoint must not be empty".into(),
+        ));
+    }
+
+    let explicit_port = explicit_endpoint_port(target).ok_or_else(|| {
+        BkError::InvalidRequest("browser endpoint must include an explicit port".into())
+    })?;
+
+    let (url, direct_websocket) = if target.contains("://") {
+        let url = Url::parse(target).map_err(|error| {
+            BkError::InvalidRequest(format!("invalid browser endpoint: {error}"))
+        })?;
+        match url.scheme() {
+            "ws" => (url, true),
+            "http" => (url, false),
+            scheme => {
+                return Err(BkError::InvalidRequest(format!(
+                    "unsupported browser endpoint scheme '{scheme}'; use host:port, http://host:port, or ws://host:port/path"
+                )))
+            }
+        }
+    } else {
+        let url = Url::parse(&format!("http://{target}")).map_err(|error| {
+            BkError::InvalidRequest(format!("invalid browser endpoint: {error}"))
+        })?;
+        (url, false)
+    };
+
+    if url.query().is_some() || url.fragment().is_some() {
+        return Err(BkError::InvalidRequest(
+            "browser endpoint must not include a query or fragment".into(),
+        ));
+    }
+    if !direct_websocket && url.path() != "/" {
+        return Err(BkError::InvalidRequest(
+            "HTTP discovery accepts only host:port and always requests /json/version".into(),
+        ));
+    }
+
+    let key = endpoint_key(&url, explicit_port)?;
+    let connect_target = if direct_websocket {
+        target.to_string()
+    } else if target.contains("://") {
+        format!("http://{key}")
+    } else {
+        key.clone()
+    };
+
+    Ok(BrowserEndpoint {
+        key,
+        connect_target,
+        direct_websocket,
+    })
 }
 
 /// Connect to a Chrome instance at the given target.
@@ -61,12 +156,13 @@ fn is_direct_websocket_target(target: &str) -> bool {
 /// Returns a shared `Arc<CDP>` handle suitable for storing in a `Browser`.
 pub async fn connect_to_browser(target: &str) -> Result<Arc<CDP>, BkError> {
     let duration = Duration::from_secs(CONNECT_TIMEOUT_SECS);
+    let endpoint = parse_browser_endpoint(target)?;
 
     let cdp = timeout(duration, async {
-        if is_direct_websocket_target(target) {
-            CDP::connect_ws_with_timeout(target, duration).await
+        if endpoint.is_direct_websocket() {
+            CDP::connect_ws_with_timeout(endpoint.connect_target(), duration).await
         } else {
-            CDP::connect_with_timeout(target, duration).await
+            CDP::connect_with_timeout(endpoint.connect_target(), duration).await
         }
     })
     .await
@@ -171,6 +267,62 @@ pub fn spawn_disconnect_monitor(state: Arc<DaemonState>, host: String, cdp: Arc<
 mod tests {
     use super::*;
 
+    #[test]
+    fn parse_browser_endpoint_accepts_canonical_inputs() {
+        let bare = parse_browser_endpoint("127.0.0.1:9222").unwrap();
+        assert_eq!(bare.key(), "127.0.0.1:9222");
+        assert_eq!(bare.connect_target(), "127.0.0.1:9222");
+        assert!(!bare.is_direct_websocket());
+
+        let http = parse_browser_endpoint("http://localhost:9222").unwrap();
+        assert_eq!(http.key(), "localhost:9222");
+        assert_eq!(http.connect_target(), "http://localhost:9222");
+        assert!(!http.is_direct_websocket());
+
+        let default_http_port = parse_browser_endpoint("http://localhost:80").unwrap();
+        assert_eq!(default_http_port.key(), "localhost:80");
+        assert_eq!(default_http_port.connect_target(), "http://localhost:80");
+
+        let ws = parse_browser_endpoint(
+            "ws://localhost:9222/devtools/browser/b5c3e8a0-1234-5678-abcd-ef0123456789",
+        )
+        .unwrap();
+        assert_eq!(ws.key(), "localhost:9222");
+        assert_eq!(
+            ws.connect_target(),
+            "ws://localhost:9222/devtools/browser/b5c3e8a0-1234-5678-abcd-ef0123456789"
+        );
+        assert!(ws.is_direct_websocket());
+
+        let default_ws_port =
+            parse_browser_endpoint("ws://localhost:80/devtools/browser/default-port").unwrap();
+        assert_eq!(default_ws_port.key(), "localhost:80");
+
+        let ipv6 = parse_browser_endpoint("ws://[::1]:9222/devtools/browser/ipv6").unwrap();
+        assert_eq!(ipv6.key(), "[::1]:9222");
+        assert_eq!(
+            ipv6.connect_target(),
+            "ws://[::1]:9222/devtools/browser/ipv6"
+        );
+    }
+
+    #[test]
+    fn parse_browser_endpoint_rejects_unsupported_or_ambiguous_inputs() {
+        for target in [
+            "wss://remote.example:443/devtools/browser/id",
+            "https://remote.example:443",
+            "http://localhost:9222/json/version",
+            "http://localhost",
+            "ws://localhost/devtools/browser/id",
+            "localhost:9222/json/version",
+            "not-a-url",
+            "",
+        ] {
+            let error = parse_browser_endpoint(target).unwrap_err();
+            assert_eq!(error.error_code(), crate::error::ErrorCode::InvalidArgument);
+        }
+    }
+
     // ─── build_ws_url tests ───────────────────────────────────────────────
 
     #[test]
@@ -202,101 +354,5 @@ mod tests {
         // When ws_path is empty, the URL is just ws://host (will go to /json/version via cdpkit)
         let url = build_ws_url("localhost:9222", "");
         assert_eq!(url, "ws://localhost:9222");
-    }
-
-    // ─── normalize_browser_key tests ──────────────────────────────────────
-
-    #[test]
-    fn normalize_ws_url_with_guid() {
-        let key = normalize_browser_key(
-            "ws://localhost:9222/devtools/browser/b5c3e8a0-1234-5678-abcd-ef0123456789",
-        );
-        assert_eq!(key, "localhost:9222");
-    }
-
-    #[test]
-    fn normalize_wss_url_with_guid() {
-        let key = normalize_browser_key(
-            "wss://192.168.1.10:9333/devtools/browser/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
-        );
-        assert_eq!(key, "192.168.1.10:9333");
-    }
-
-    #[test]
-    fn normalize_ws_url_no_path() {
-        let key = normalize_browser_key("ws://localhost:9222");
-        assert_eq!(key, "localhost:9222");
-    }
-
-    #[test]
-    fn normalize_http_url() {
-        let key = normalize_browser_key("http://localhost:9222/json/version");
-        assert_eq!(key, "localhost:9222");
-    }
-
-    #[test]
-    fn normalize_https_url() {
-        let key = normalize_browser_key("https://remote-host:9223/json");
-        assert_eq!(key, "remote-host:9223");
-    }
-
-    #[test]
-    fn normalize_bare_host_port() {
-        // No scheme — returned as-is
-        let key = normalize_browser_key("localhost:9222");
-        assert_eq!(key, "localhost:9222");
-    }
-
-    #[test]
-    fn direct_websocket_targets_are_detected_for_cdpkit_0_6() {
-        assert!(is_direct_websocket_target(
-            "ws://localhost:9222/devtools/browser/id"
-        ));
-        assert!(is_direct_websocket_target(
-            "wss://remote.example/devtools/browser/id"
-        ));
-        assert!(!is_direct_websocket_target("localhost:9222"));
-        assert!(!is_direct_websocket_target("http://localhost:9222"));
-    }
-
-    #[test]
-    fn normalize_bare_ip_port() {
-        let key = normalize_browser_key("127.0.0.1:9222");
-        assert_eq!(key, "127.0.0.1:9222");
-    }
-
-    #[test]
-    fn normalize_ws_url_with_trailing_slash() {
-        let key = normalize_browser_key("ws://localhost:9222/");
-        assert_eq!(key, "localhost:9222");
-    }
-
-    #[test]
-    fn normalize_empty_string_fallback() {
-        // Degenerate input — returned as-is
-        let key = normalize_browser_key("");
-        assert_eq!(key, "");
-    }
-
-    #[test]
-    fn normalize_garbage_input_fallback() {
-        // Unrecognized format — returned as-is
-        let key = normalize_browser_key("not-a-url");
-        assert_eq!(key, "not-a-url");
-    }
-
-    #[test]
-    fn normalize_ws_ipv6_loopback() {
-        // IPv6 loopback with brackets (common in URLs)
-        let key = normalize_browser_key("ws://[::1]:9222/devtools/browser/abc");
-        assert_eq!(key, "[::1]:9222");
-    }
-
-    #[test]
-    fn normalize_ws_dynamic_port() {
-        let key = normalize_browser_key(
-            "ws://localhost:41753/devtools/browser/deadbeef-cafe-babe-1234-567890abcdef",
-        );
-        assert_eq!(key, "localhost:41753");
     }
 }

@@ -1,6 +1,7 @@
 /target
 /.cargo-target-*/
 /AGENTS.md
+/docs/superpowers/
 .claude/
 .codex/
 .worktrees/

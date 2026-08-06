@@ -7,7 +7,7 @@ use serde::Serialize;
 use serde_json::json;
 use tracing::{info, warn};
 
-use crate::browser::normalize_browser_key;
+use crate::browser::parse_browser_endpoint;
 use crate::daemon::protocol::{Request, Response};
 use crate::daemon::session::SessionMode;
 use crate::daemon::state::DaemonState;
@@ -42,14 +42,14 @@ async fn do_browser_connect(req: &Request, state: &Arc<DaemonState>) -> Result<R
         .to_string();
     let session_name = session_name_param(&req.params)?;
 
-    // Normalize to host:port so ws:// URLs and bare host:port hit the same key
-    let key = normalize_browser_key(&arg);
+    let endpoint = parse_browser_endpoint(&arg).map_err(Response::from)?;
+    let key = endpoint.key().to_string();
 
     let already_connected = state.browsers.contains_key(&key);
 
     // Use the original arg as connect_target (may be a ws:// URL for direct connect),
     // but only when it differs from the normalized key.
-    let connect_target = if arg != key { Some(arg.as_str()) } else { None };
+    let connect_target = Some(endpoint.connect_target());
 
     let cdp = state
         .get_or_connect_browser_with_url(&key, connect_target)
