@@ -36,6 +36,41 @@ fn workflows_resolve_cdpkit_from_the_lockfile() {
 }
 
 #[test]
+fn release_and_ci_enforce_the_supported_toolchain_and_strict_audit() {
+    let manifest = repository_file("Cargo.toml");
+    assert!(
+        manifest.contains(r#"rust-version = "1.88""#),
+        "Cargo.toml must declare Rust 1.88 as the MSRV"
+    );
+
+    let readme = repository_file("README.md");
+    assert!(
+        readme.contains("Rust 1.88+"),
+        "README requirements must match the manifest MSRV"
+    );
+
+    for path in [".github/workflows/ci.yml", ".github/workflows/release.yml"] {
+        let workflow = repository_file(path);
+        assert!(
+            workflow.contains("toolchain: 1.88.0"),
+            "{path} must validate the declared MSRV"
+        );
+        assert!(
+            workflow.contains("cargo install cargo-audit --version 0.22.2 --locked"),
+            "{path} must install the reviewed cargo-audit version"
+        );
+        assert!(
+            workflow.contains("cargo audit --deny warnings"),
+            "{path} must reject vulnerabilities and informational warnings"
+        );
+        assert!(
+            !workflow.contains("1.75"),
+            "{path} must not retain the superseded MSRV"
+        );
+    }
+}
+
+#[test]
 fn maintained_docs_describe_the_actual_dependency_and_event_policies() {
     let readme = repository_file("README.md");
     assert!(

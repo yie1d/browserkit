@@ -1,8 +1,8 @@
 [package]
 name = "browserkit"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
-rust-version = "1.75"
+rust-version = "1.88"
 description = "Persistent browser runtime and CLI for AI agents, built on cdpkit-rs"
 license = "MIT"
 repository = "https://github.com/yie1d/browserkit"
@@ -21,7 +21,6 @@ thiserror = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tracing-appender = "0.2"
-rand = "0.8"
 base64 = "0.21"
 toml = "0.8"
 clap_complete = "4"
@@ -32,9 +31,7 @@ tokio-util = "0.7"
 fs2 = "0.4"
 const_format = "0.2"
 tempfile = "=3.25.0"
-# url 2.5.8 can resolve idna_adapter 1.2.2, whose edition-2024 manifest
-# cannot be parsed by the declared Cargo 1.75 MSRV.
-url = "=2.5.2"
+url = "=2.5.8"
 
 [dev-dependencies]
 static_assertions = "1"

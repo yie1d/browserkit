@@ -64,7 +64,7 @@ Low-level CDP support belongs in cdpkit-rs. browserkit composes those capabiliti
 
 ## Requirements
 
-- Rust 1.75+
+- Rust 1.88+
 - Chrome or Chromium with remote debugging enabled
 
 ## Build

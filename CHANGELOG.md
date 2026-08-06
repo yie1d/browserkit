@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-08-06
+
+### Breaking Changes
+
+- Raised the minimum supported Rust version from 1.75 to 1.88 so browserkit
+  can use maintained, security-fixed URL/IDNA and time dependency stacks
+  without compatibility pins.
+
 ### Changed
 
 - Upgraded the protocol layer to the published cdpkit 0.6.0 release.
@@ -30,6 +38,10 @@
 
 ### Security
 
+- Updated the URL/IDNA and logging time dependency stacks to resolve
+  RUSTSEC-2024-0421 and RUSTSEC-2026-0009.
+- Removed the unused direct rand dependency and updated the remaining
+  transitive rand release to resolve RUSTSEC-2026-0097.
 - Restricted the unauthenticated local daemon transport to an ephemeral IPv4
   loopback port; the port must not be exposed or forwarded to a network.
 - Restricted `open` and URL navigation to HTTP(S), canonical local/UNC `file:`
@@ -38,9 +50,7 @@
 
 ### Fixed
 
-- Restored the declared Rust 1.75 build by pinning the URL stack to an
-  MSRV-compatible release and removing temporary-array borrows from request
-  contract construction.
+- Removed temporary-array borrows from request contract construction.
 - Serialized target ownership changes and destructive session lifecycle work
   without blocking watcher-driven new-tab registration during ordinary actions.
 - Kept transient persistence failures retryable and exposed the latest error in
