@@ -49,6 +49,12 @@ fn release_and_ci_enforce_the_supported_toolchain_and_strict_audit() {
         "README requirements must match the manifest MSRV"
     );
 
+    let roadmap = repository_file("docs/ROADMAP.md");
+    assert!(
+        roadmap.contains("Rust 1.88 checks") && !roadmap.contains("Rust 1.75 checks"),
+        "roadmap must match the manifest MSRV"
+    );
+
     for path in [".github/workflows/ci.yml", ".github/workflows/release.yml"] {
         let workflow = repository_file(path);
         assert!(

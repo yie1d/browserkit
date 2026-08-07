@@ -14,7 +14,7 @@
   supported; there is no migration or compatibility layer.
 - Network observation, downloads, append-to-file evaluation, and deterministic
   snapshot budgets are available through canonical session commands.
-- CI, Rust 1.75 checks, release validation, and cross-platform artifacts are in
+- CI, Rust 1.88 checks, release validation, and cross-platform artifacts are in
   place.
 - The daemon is an unauthenticated host-local boundary restricted to an
   ephemeral IPv4 loopback port, with no per-user transport isolation.

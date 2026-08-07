@@ -351,7 +351,8 @@ mod tests {
 
     #[test]
     fn build_ws_url_empty_path_produces_bare_url() {
-        // When ws_path is empty, the URL is just ws://host (will go to /json/version via cdpkit)
+        // This helper only concatenates a direct WebSocket URL. Discovery uses
+        // host:port or http://host:port and is handled by a separate code path.
         let url = build_ws_url("localhost:9222", "");
         assert_eq!(url, "ws://localhost:9222");
     }
