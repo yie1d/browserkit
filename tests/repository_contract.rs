@@ -101,6 +101,44 @@ fn release_and_ci_enforce_the_supported_toolchain_and_strict_audit() {
 }
 
 #[test]
+fn release_publishes_and_verifies_the_sdk_before_github_assets() {
+    let changelog = repository_file("CHANGELOG.md");
+    assert!(
+        changelog.contains("## [0.4.0] - 2026-08-19"),
+        "the release changelog must contain the dated 0.4.0 section"
+    );
+
+    let workflow = repository_file(".github/workflows/release.yml");
+    for required in [
+        "concurrency:",
+        "publish:",
+        "id-token: write",
+        "rust-lang/crates-io-auth-action@c6f97d42243bad5fab37ca0427f495c86d5b1a18",
+        "cargo package --locked",
+        "cargo publish --locked",
+        "needs: [validate, publish]",
+        ".cargo_vcs_info.json",
+        "sha256sum --check --strict",
+        "git merge-base --is-ancestor",
+        "LOCAL_CHECKSUM",
+        "SHA256SUMS",
+    ] {
+        assert!(
+            workflow.contains(required),
+            "release workflow must preserve SDK publication contract: {required}"
+        );
+    }
+    assert!(
+        !workflow.contains("git fetch --force"),
+        "release workflow must never rewrite the release tag during provenance checks"
+    );
+    assert!(
+        !workflow.contains("] - 2026-08-19\" { capture"),
+        "release note extraction must not hard-code one release date"
+    );
+}
+
+#[test]
 fn maintained_docs_describe_the_actual_dependency_and_event_policies() {
     let readme = repository_file("README.md");
     assert!(

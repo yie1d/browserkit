@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-08-19
+
 ### Added
 
 - Added the client-neutral `BrowserRuntime -> BrowserSession -> Page -> Frame`

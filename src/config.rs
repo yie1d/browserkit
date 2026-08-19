@@ -73,7 +73,7 @@ pub fn load_config() -> Result<Config, BkError> {
     load_config_from_path(&config_file_path())
 }
 
-fn load_config_from_path(path: &Path) -> Result<Config, BkError> {
+pub(crate) fn load_config_from_path(path: &Path) -> Result<Config, BkError> {
     let content = match std::fs::read_to_string(path) {
         Ok(content) => content,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Config::default()),

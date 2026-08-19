@@ -338,8 +338,8 @@ fn write_json_atomic(path: &Path, value: &impl Serialize) -> Result<(), std::io:
     Ok(())
 }
 
-pub fn load_persisted_state() -> LoadStateResult {
-    let result = load_state_from_path(&state_file_path());
+fn load_persisted_state_from_path(path: &Path) -> LoadStateResult {
+    let result = load_state_from_path(path);
     if let Some(reason) = result.persist_disabled_reason.as_deref() {
         warn!(
             reason,
@@ -347,6 +347,10 @@ pub fn load_persisted_state() -> LoadStateResult {
         );
     }
     result
+}
+
+pub fn load_persisted_state() -> LoadStateResult {
+    load_persisted_state_from_path(&state_file_path())
 }
 
 pub(crate) async fn browser_context_available(session: &Session, cdp: &Arc<cdpkit::CDP>) -> bool {
@@ -474,16 +478,22 @@ fn prepare_loaded_state(state: &Arc<DaemonState>, loaded: LoadStateResult) {
     }
 }
 
-/// Load persisted metadata without performing network I/O. Sessions are made
-/// visible as disconnected so the daemon can safely advertise readiness.
-pub(crate) fn prepare_restore_into_state(state: &Arc<DaemonState>) {
-    prepare_loaded_state(state, load_persisted_state())
+pub(crate) fn prepare_restore_into_state_from_path(state: &Arc<DaemonState>, path: &Path) {
+    prepare_loaded_state(state, load_persisted_state_from_path(path))
 }
 
 /// A sender handle for the persistence debounce channel.
 pub type PersistTx = mpsc::Sender<()>;
 
-pub fn spawn_persist_task_with_rx(state: Arc<DaemonState>, mut rx: mpsc::Receiver<()>) {
+pub fn spawn_persist_task_with_rx(state: Arc<DaemonState>, rx: mpsc::Receiver<()>) {
+    spawn_persist_task_with_rx_at(state, rx, state_file_path())
+}
+
+pub(crate) fn spawn_persist_task_with_rx_at(
+    state: Arc<DaemonState>,
+    mut rx: mpsc::Receiver<()>,
+    state_path: PathBuf,
+) {
     tokio::spawn(async move {
         loop {
             if rx.recv().await.is_none() {
@@ -496,7 +506,7 @@ pub fn spawn_persist_task_with_rx(state: Arc<DaemonState>, mut rx: mpsc::Receive
                     Err(_) => break,
                 }
             }
-            let _ = do_persist(&state).await;
+            let _ = do_persist(&state, &state_path).await;
         }
     });
 }
@@ -532,7 +542,7 @@ fn record_runtime_persist_result(
     }
 }
 
-async fn do_persist(state: &Arc<DaemonState>) -> Result<(), String> {
+async fn do_persist(state: &Arc<DaemonState>, state_path: &Path) -> Result<(), String> {
     if state
         .persist_disabled
         .load(std::sync::atomic::Ordering::Relaxed)
@@ -546,11 +556,14 @@ async fn do_persist(state: &Arc<DaemonState>) -> Result<(), String> {
     }
 
     let persisted = build_persisted_state(state);
+    let state_path = state_path.to_owned();
     let result = tokio::task::spawn_blocking(move || -> Result<(), String> {
-        let bk_dir = bk_home();
-        std::fs::create_dir_all(&bk_dir)
+        let parent = state_path
+            .parent()
+            .ok_or_else(|| "persistence path has no parent directory".to_string())?;
+        std::fs::create_dir_all(parent)
             .map_err(|error| format!("failed to create persistence directory: {error}"))?;
-        write_json_atomic(&state_file_path(), &persisted)
+        write_json_atomic(&state_path, &persisted)
             .map_err(|error| format!("failed to persist state.json: {error}"))
     })
     .await
@@ -562,7 +575,7 @@ async fn do_persist(state: &Arc<DaemonState>) -> Result<(), String> {
 
 #[cfg(not(test))]
 pub(crate) async fn persist_now(state: &Arc<DaemonState>) -> Result<(), String> {
-    do_persist(state).await
+    do_persist(state, &state_file_path()).await
 }
 
 #[cfg(test)]

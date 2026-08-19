@@ -16,9 +16,6 @@ use std::sync::Arc;
 
 use fs2::FileExt;
 
-#[cfg(test)]
-pub(crate) static DAEMON_TEST_FS_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
 /// Return the `~/.bk` base directory.
 pub fn bk_home() -> PathBuf {
     let home = if cfg!(windows) {
@@ -27,6 +24,25 @@ pub fn bk_home() -> PathBuf {
         std::env::var("HOME").unwrap_or_else(|_| ".".into())
     };
     PathBuf::from(home).join(".bk")
+}
+
+#[derive(Debug, Clone)]
+struct DaemonPaths {
+    lock_file: PathBuf,
+    port_file: PathBuf,
+    config_file: PathBuf,
+    state_file: PathBuf,
+}
+
+impl DaemonPaths {
+    fn from_home(home: PathBuf) -> Self {
+        Self {
+            lock_file: home.join("daemon.lock"),
+            port_file: home.join("daemon.port"),
+            config_file: home.join("config.toml"),
+            state_file: home.join("state.json"),
+        }
+    }
 }
 
 /// Path to the daemon lock file (`~/.bk/daemon.lock`).
@@ -43,7 +59,11 @@ pub fn port_file_path() -> PathBuf {
 ///
 /// Returns `None` if the file does not exist or cannot be parsed.
 pub fn read_port_file() -> Option<u16> {
-    std::fs::read_to_string(port_file_path())
+    read_port_file_from_path(&port_file_path())
+}
+
+fn read_port_file_from_path(path: &std::path::Path) -> Option<u16> {
+    std::fs::read_to_string(path)
         .ok()
         .and_then(|s| s.trim().parse().ok())
 }
@@ -52,7 +72,10 @@ pub fn read_port_file() -> Option<u16> {
 ///
 /// Creates the `~/.bk` directory if it does not exist.
 pub fn write_port_file(port: u16) -> std::io::Result<()> {
-    let path = port_file_path();
+    write_port_file_to_path(&port_file_path(), port)
+}
+
+fn write_port_file_to_path(path: &std::path::Path, port: u16) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -61,7 +84,11 @@ pub fn write_port_file(port: u16) -> std::io::Result<()> {
 
 /// Remove the daemon port file (best-effort, ignores errors).
 pub fn remove_port_file() {
-    let _ = std::fs::remove_file(port_file_path());
+    remove_port_file_at(&port_file_path());
+}
+
+fn remove_port_file_at(path: &std::path::Path) {
+    let _ = std::fs::remove_file(path);
 }
 
 /// Attempt to acquire an exclusive OS-level lock on `~/.bk/daemon.lock`.
@@ -72,11 +99,14 @@ pub fn remove_port_file() {
 ///
 /// On failure (another process holds the lock) returns `None`.
 pub fn try_acquire_daemon_lock() -> std::io::Result<Option<File>> {
-    let path = lock_file_path();
+    try_acquire_daemon_lock_at(&lock_file_path())
+}
+
+fn try_acquire_daemon_lock_at(path: &std::path::Path) -> std::io::Result<Option<File>> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let file = File::create(&path)?;
+    let file = File::create(path)?;
     match file.try_lock_exclusive() {
         Ok(()) => Ok(Some(file)),
         Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock
@@ -93,7 +123,11 @@ pub fn try_acquire_daemon_lock() -> std::io::Result<Option<File>> {
 ///
 /// Returns `Some(port)` if a healthy daemon responds, `None` otherwise.
 pub async fn check_existing_daemon() -> Option<u16> {
-    let port = read_port_file()?;
+    check_existing_daemon_at(&port_file_path()).await
+}
+
+async fn check_existing_daemon_at(port_file: &std::path::Path) -> Option<u16> {
+    let port = read_port_file_from_path(port_file)?;
     crate::client::DaemonClient::connect_to_port(port)
         .await
         .ok()
@@ -127,8 +161,14 @@ pub struct DaemonStartResult {
 /// Persisted sessions are loaded as disconnected before readiness. A client
 /// must explicitly bind them to a live browser connection.
 pub async fn start_daemon() -> Result<DaemonStartResult, crate::error::BkError> {
+    start_daemon_with_paths(DaemonPaths::from_home(bk_home())).await
+}
+
+async fn start_daemon_with_paths(
+    paths: DaemonPaths,
+) -> Result<DaemonStartResult, crate::error::BkError> {
     // Acquire OS-level exclusive lock — this is the authoritative single-instance check.
-    let lock_file = match try_acquire_daemon_lock() {
+    let lock_file = match try_acquire_daemon_lock_at(&paths.lock_file) {
         Ok(Some(file)) => file,
         Ok(None) => {
             // Another daemon holds the lock. Do NOT touch the port file.
@@ -143,13 +183,13 @@ pub async fn start_daemon() -> Result<DaemonStartResult, crate::error::BkError> 
 
     // We hold the lock — if a stale port file exists, clean it up.
     // (The previous daemon crashed without cleaning up, but the lock was released by OS.)
-    if port_file_path().exists() {
+    if paths.port_file.exists() {
         tracing::info!("cleaning stale port file from previous daemon");
-        remove_port_file();
+        remove_port_file_at(&paths.port_file);
     }
 
     // Load configuration
-    let config = crate::config::load_config()?;
+    let config = crate::config::load_config_from_path(&paths.config_file)?;
     let cleanup_interval = config.daemon.cleanup_interval_seconds;
 
     // Create empty state (no restore yet — that happens in background after bind)
@@ -163,11 +203,15 @@ pub async fn start_daemon() -> Result<DaemonStartResult, crate::error::BkError> 
         .take()
         .expect("DaemonState::new() always creates a receiver");
     let state = Arc::new(fresh_state);
-    persist::spawn_persist_task_with_rx(Arc::clone(&state), persist_rx);
+    persist::spawn_persist_task_with_rx_at(
+        Arc::clone(&state),
+        persist_rx,
+        paths.state_file.clone(),
+    );
 
     // Load persisted session metadata before advertising readiness. Restored
     // sessions are visible as disconnected until a client binds a browser.
-    persist::prepare_restore_into_state(&state);
+    persist::prepare_restore_into_state_from_path(&state, &paths.state_file);
 
     // Bind TCP listener and write the port file after metadata restore.
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
@@ -178,7 +222,7 @@ pub async fn start_daemon() -> Result<DaemonStartResult, crate::error::BkError> 
         .await
         .map_err(crate::error::BkError::Io)?;
 
-    write_port_file(server.port).map_err(crate::error::BkError::Io)?;
+    write_port_file_to_path(&paths.port_file, server.port).map_err(crate::error::BkError::Io)?;
     tracing::info!(port = server.port, "daemon started (ready for connections)");
 
     // Spawn background cleanup task for expired sessions.
@@ -197,27 +241,60 @@ pub async fn start_daemon() -> Result<DaemonStartResult, crate::error::BkError> 
 /// through the handler. This function handles the file cleanup that
 /// should happen when the daemon process exits.
 pub fn stop_daemon_cleanup() {
-    remove_port_file();
+    stop_daemon_cleanup_at(&port_file_path());
+}
+
+fn stop_daemon_cleanup_at(port_file: &std::path::Path) {
+    remove_port_file_at(port_file);
     tracing::info!("daemon port file cleaned up");
 }
 
 #[cfg(test)]
-#[allow(clippy::await_holding_lock)]
 mod tests {
     use super::*;
+    use std::time::Duration;
 
-    /// Mutex to serialize ALL tests that touch `~/.bk/daemon.lock` or `daemon.port`.
-    ///
-    /// Using `std::sync::Mutex` (not `tokio::sync::Mutex`) because each
-    /// `#[tokio::test]` spawns an independent tokio runtime — a tokio mutex
-    /// would NOT provide cross-test serialization. A std mutex works because
-    /// all tests run in the same OS process.
-    use super::DAEMON_TEST_FS_MUTEX as DAEMON_FS_MUTEX;
+    fn isolated_paths() -> (tempfile::TempDir, DaemonPaths) {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = DaemonPaths::from_home(temp.path().join(".bk"));
+        (temp, paths)
+    }
 
-    /// Clean up both daemon.lock and daemon.port to ensure a pristine state.
-    fn cleanup_daemon_files() {
-        let _ = std::fs::remove_file(lock_file_path());
-        remove_port_file();
+    #[tokio::test]
+    async fn explicit_daemon_home_isolates_config_runtime_files_and_background_persistence() {
+        let temp = tempfile::tempdir().unwrap();
+        let daemon_home = temp.path().join("isolated-bk");
+        std::fs::create_dir_all(&daemon_home).unwrap();
+        std::fs::write(
+            daemon_home.join("config.toml"),
+            "[daemon]\ncleanup_interval_seconds = 7\n",
+        )
+        .unwrap();
+        let paths = DaemonPaths::from_home(daemon_home.clone());
+
+        let result = start_daemon_with_paths(paths).await.unwrap();
+
+        assert_eq!(
+            result.server.state.config.daemon.cleanup_interval_seconds,
+            7
+        );
+        assert!(daemon_home.join("daemon.lock").exists());
+        assert_eq!(
+            std::fs::read_to_string(daemon_home.join("daemon.port")).unwrap(),
+            result.server.port.to_string()
+        );
+
+        result.server.state.request_persist();
+        let state_path = daemon_home.join("state.json");
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while !state_path.exists() {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("background persistence should use the explicit daemon home");
+
+        drop(result);
     }
 
     #[test]
@@ -242,61 +319,47 @@ mod tests {
 
     #[test]
     fn read_port_file_returns_none_when_missing() {
-        let _guard = DAEMON_FS_MUTEX.lock().unwrap();
-        cleanup_daemon_files();
-        // With lock/port files removed, read_port_file must return None
-        assert_eq!(read_port_file(), None);
+        let (_temp, paths) = isolated_paths();
+        assert_eq!(read_port_file_from_path(&paths.port_file), None);
     }
 
     #[test]
     fn write_and_read_port_file_roundtrip() {
-        let _guard = DAEMON_FS_MUTEX.lock().unwrap();
-        cleanup_daemon_files();
+        let (_temp, paths) = isolated_paths();
 
-        write_port_file(8080).unwrap();
-        assert_eq!(read_port_file(), Some(8080));
-
-        // Clean up
-        cleanup_daemon_files();
+        write_port_file_to_path(&paths.port_file, 8080).unwrap();
+        assert_eq!(read_port_file_from_path(&paths.port_file), Some(8080));
     }
 
     #[tokio::test]
     async fn check_existing_daemon_returns_none_when_no_daemon() {
-        let _guard = DAEMON_FS_MUTEX.lock().unwrap();
-        cleanup_daemon_files();
-        // With no port file, should return None
-        let result = check_existing_daemon().await;
+        let (_temp, paths) = isolated_paths();
+        let result = check_existing_daemon_at(&paths.port_file).await;
         assert_eq!(result, None);
     }
 
     #[tokio::test]
     async fn start_daemon_creates_server_and_writes_port_file() {
-        let _guard = DAEMON_FS_MUTEX.lock().unwrap();
-        cleanup_daemon_files();
+        let (_temp, paths) = isolated_paths();
 
-        let result = start_daemon().await.unwrap();
+        let result = start_daemon_with_paths(paths.clone()).await.unwrap();
         assert!(result.server.port > 0);
 
         // Verify port file was written
-        let port = read_port_file();
+        let port = read_port_file_from_path(&paths.port_file);
         assert_eq!(port, Some(result.server.port));
-
-        // Clean up — drop result first to release the OS lock
-        drop(result);
-        cleanup_daemon_files();
     }
 
     #[tokio::test]
     async fn start_daemon_rejects_when_already_running() {
-        let _guard = DAEMON_FS_MUTEX.lock().unwrap();
-        cleanup_daemon_files();
+        let (_temp, paths) = isolated_paths();
 
         // Start first daemon (holds the lock)
-        let result1 = start_daemon().await.unwrap();
+        let result1 = start_daemon_with_paths(paths.clone()).await.unwrap();
         let _port1 = result1.server.port;
 
         // Try to start second daemon — should fail because lock is held
-        let result = start_daemon().await;
+        let result = start_daemon_with_paths(paths).await;
         let err_msg = match result {
             Err(e) => e.to_string(),
             Ok(_) => panic!("expected error, got Ok"),
@@ -306,63 +369,51 @@ mod tests {
             "error should mention already running: {}",
             err_msg
         );
-
-        // Clean up
-        drop(result1);
-        cleanup_daemon_files();
     }
 
     #[tokio::test]
     async fn start_daemon_cleans_stale_port_file() {
-        let _guard = DAEMON_FS_MUTEX.lock().unwrap();
-        cleanup_daemon_files();
+        let (_temp, paths) = isolated_paths();
 
         // Write a stale port file pointing to a port nothing is listening on
         let stale_port: u16 = 19999;
-        write_port_file(stale_port).unwrap();
+        write_port_file_to_path(&paths.port_file, stale_port).unwrap();
 
         // start_daemon should detect the stale file, clean it, and start fresh
-        let result = start_daemon().await.unwrap();
+        let result = start_daemon_with_paths(paths.clone()).await.unwrap();
         assert!(result.server.port > 0);
         assert_ne!(result.server.port, stale_port);
 
         // Verify port file now has the new port
-        let port = read_port_file();
+        let port = read_port_file_from_path(&paths.port_file);
         assert_eq!(port, Some(result.server.port));
-
-        // Clean up
-        drop(result);
-        cleanup_daemon_files();
     }
 
     #[test]
     fn stop_daemon_cleanup_removes_port_file() {
-        let _guard = DAEMON_FS_MUTEX.lock().unwrap();
-        cleanup_daemon_files();
+        let (_temp, paths) = isolated_paths();
 
         // Write a port file, then clean up
-        write_port_file(12345).unwrap();
-        stop_daemon_cleanup();
-        assert_eq!(read_port_file(), None);
+        write_port_file_to_path(&paths.port_file, 12345).unwrap();
+        stop_daemon_cleanup_at(&paths.port_file);
+        assert_eq!(read_port_file_from_path(&paths.port_file), None);
     }
 
     #[test]
     fn remove_port_file_is_idempotent() {
-        let _guard = DAEMON_FS_MUTEX.lock().unwrap();
-        cleanup_daemon_files();
+        let (_temp, paths) = isolated_paths();
         // Calling remove when file doesn't exist should not panic
-        remove_port_file();
-        remove_port_file();
+        remove_port_file_at(&paths.port_file);
+        remove_port_file_at(&paths.port_file);
     }
 
     // ── OS lock tests ────────────────────────────────────────────────
 
     #[test]
     fn try_acquire_daemon_lock_succeeds_when_free() {
-        let _guard = DAEMON_FS_MUTEX.lock().unwrap();
-        cleanup_daemon_files();
+        let (_temp, paths) = isolated_paths();
 
-        let result = try_acquire_daemon_lock();
+        let result = try_acquire_daemon_lock_at(&paths.lock_file);
         assert!(
             result.is_ok(),
             "should not return IO error: {:?}",
@@ -377,16 +428,15 @@ mod tests {
 
     #[test]
     fn try_acquire_daemon_lock_fails_when_already_held() {
-        let _guard = DAEMON_FS_MUTEX.lock().unwrap();
-        cleanup_daemon_files();
+        let (_temp, paths) = isolated_paths();
 
         // Acquire the lock once
-        let held = try_acquire_daemon_lock()
+        let held = try_acquire_daemon_lock_at(&paths.lock_file)
             .unwrap()
             .expect("should acquire lock");
 
         // While held, a second attempt in the same process should fail
-        let second = try_acquire_daemon_lock();
+        let second = try_acquire_daemon_lock_at(&paths.lock_file);
         match second {
             Ok(None) => {} // expected: lock held by us
             Ok(Some(_)) => {
@@ -400,24 +450,20 @@ mod tests {
 
     #[test]
     fn failed_lock_path_does_not_touch_port_file() {
-        let _guard = DAEMON_FS_MUTEX.lock().unwrap();
-        cleanup_daemon_files();
+        let (_temp, paths) = isolated_paths();
 
         // Write a port file
-        write_port_file(54321).unwrap();
+        write_port_file_to_path(&paths.port_file, 54321).unwrap();
 
         // Acquire the lock so subsequent attempts return None
-        let held = try_acquire_daemon_lock().unwrap();
+        let held = try_acquire_daemon_lock_at(&paths.lock_file).unwrap();
 
         // The design guarantees: when try_acquire_daemon_lock returns None,
         // start_daemon returns early WITHOUT calling remove_port_file().
         // We verify that contract here at the unit level.
-        let port_before = read_port_file();
+        let port_before = read_port_file_from_path(&paths.port_file);
         assert_eq!(port_before, Some(54321));
-
-        // Clean up
         drop(held);
-        cleanup_daemon_files();
     }
 
     /// Regression test: after `daemon.stop` is sent, the shutdown_rx fires,
@@ -426,10 +472,9 @@ mod tests {
     /// propagation that makes exit reachable.
     #[tokio::test]
     async fn shutdown_signal_propagates_to_caller_rx() {
-        let _guard = DAEMON_FS_MUTEX.lock().unwrap();
-        cleanup_daemon_files();
+        let (_temp, paths) = isolated_paths();
 
-        let result = start_daemon().await.unwrap();
+        let result = start_daemon_with_paths(paths).await.unwrap();
         let port = result.server.port;
         let mut shutdown_rx = result.shutdown_rx;
         // Keep the lock file guard alive; drop server/lock at end via _lock_file
@@ -480,6 +525,5 @@ mod tests {
         assert!(failed, "server should stop accepting after shutdown signal");
 
         drop(_lock_file);
-        cleanup_daemon_files();
     }
 }

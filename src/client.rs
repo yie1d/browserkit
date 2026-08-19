@@ -57,7 +57,13 @@ impl DaemonClient {
 
     /// Try to connect to the daemon using the port from the port file.
     async fn try_connect() -> Result<Self, BkError> {
-        let port = crate::daemon::read_port_file()
+        Self::try_connect_from_port_file(&crate::daemon::port_file_path()).await
+    }
+
+    async fn try_connect_from_port_file(path: &std::path::Path) -> Result<Self, BkError> {
+        let port = std::fs::read_to_string(path)
+            .ok()
+            .and_then(|value| value.trim().parse().ok())
             .ok_or_else(|| BkError::Other("no daemon port file found".into()))?;
 
         Self::connect_to_port(port).await
@@ -134,6 +140,13 @@ impl DaemonClient {
 
     /// Poll the daemon until it responds to ping, returning that live connection.
     async fn wait_for_daemon_ready(timeout: Duration) -> Result<Self, BkError> {
+        Self::wait_for_daemon_ready_at(timeout, &crate::daemon::port_file_path()).await
+    }
+
+    async fn wait_for_daemon_ready_at(
+        timeout: Duration,
+        port_file: &std::path::Path,
+    ) -> Result<Self, BkError> {
         let deadline = tokio::time::Instant::now() + timeout;
         let poll_interval = Duration::from_millis(100);
 
@@ -144,7 +157,8 @@ impl DaemonClient {
             }
 
             let remaining = deadline.saturating_duration_since(now);
-            match tokio::time::timeout(remaining, Self::try_connect()).await {
+            match tokio::time::timeout(remaining, Self::try_connect_from_port_file(port_file)).await
+            {
                 Ok(Ok(client)) => return Ok(client),
                 Err(_) => return Err(BkError::Other("timeout waiting for daemon to start".into())),
                 Ok(Err(_)) => {}
@@ -239,26 +253,13 @@ pub fn build_request(cmd: &str, params: serde_json::Value) -> Request {
 mod tests {
     use super::*;
 
-    struct PortFileGuard {
-        original: Option<Vec<u8>>,
-    }
-
-    impl PortFileGuard {
-        fn replace_with(port: u16) -> Self {
-            let original = std::fs::read(crate::daemon::port_file_path()).ok();
-            crate::daemon::write_port_file(port).unwrap();
-            Self { original }
+    fn isolated_port_file(port: Option<u16>) -> (tempfile::TempDir, std::path::PathBuf) {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("daemon.port");
+        if let Some(port) = port {
+            std::fs::write(&path, port.to_string()).unwrap();
         }
-    }
-
-    impl Drop for PortFileGuard {
-        fn drop(&mut self) {
-            if let Some(original) = &self.original {
-                let _ = std::fs::write(crate::daemon::port_file_path(), original);
-            } else {
-                crate::daemon::remove_port_file();
-            }
-        }
+        (temp, path)
     }
 
     #[test]
@@ -384,22 +385,14 @@ mod tests {
     }
 
     #[tokio::test]
-    #[allow(clippy::await_holding_lock)]
     async fn connect_only_returns_error_when_no_daemon() {
-        let _guard = crate::daemon::DAEMON_TEST_FS_MUTEX.lock().unwrap();
-        // connect_only must fail gracefully when no daemon is running.
-        // We can't guarantee no daemon is running in CI, but we can verify
-        // the method exists and returns a Result (not panic).
-        // If a real daemon happens to be running, this test still passes.
-        let result = DaemonClient::connect_only().await;
-        // Either Ok (daemon running) or Err (no daemon) — neither should panic.
-        let _ = result;
+        let (_temp, port_file) = isolated_port_file(None);
+        let result = DaemonClient::try_connect_from_port_file(&port_file).await;
+        assert!(result.is_err());
     }
 
     #[tokio::test]
-    #[allow(clippy::await_holding_lock)]
     async fn connect_only_succeeds_when_daemon_is_running() {
-        let _guard = crate::daemon::DAEMON_TEST_FS_MUTEX.lock().unwrap();
         // Start a mini TCP server that echoes a ping response (simulates daemon)
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
@@ -420,9 +413,9 @@ mod tests {
             writer.flush().await.unwrap();
         });
 
-        let _port_file = PortFileGuard::replace_with(port);
+        let (_temp, port_file) = isolated_port_file(Some(port));
 
-        let result = DaemonClient::connect_only().await;
+        let result = DaemonClient::try_connect_from_port_file(&port_file).await;
         assert!(
             result.is_ok(),
             "connect_only should succeed when daemon is reachable"
@@ -432,13 +425,10 @@ mod tests {
     }
 
     #[tokio::test]
-    #[allow(clippy::await_holding_lock)]
     async fn readiness_returns_the_pinged_connection_for_reuse() {
-        let _guard = crate::daemon::DAEMON_TEST_FS_MUTEX.lock().unwrap();
-
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
-        let _port_file = PortFileGuard::replace_with(port);
+        let (_temp, port_file) = isolated_port_file(Some(port));
 
         let server_task = tokio::spawn(async move {
             let (stream, _) = listener.accept().await.unwrap();
@@ -462,7 +452,7 @@ mod tests {
             }
         });
 
-        let mut client = DaemonClient::wait_for_daemon_ready(Duration::from_secs(2))
+        let mut client = DaemonClient::wait_for_daemon_ready_at(Duration::from_secs(2), &port_file)
             .await
             .unwrap();
         let response = client
@@ -482,18 +472,17 @@ mod tests {
     }
 
     #[tokio::test]
-    #[allow(clippy::await_holding_lock)]
     async fn readiness_deadline_includes_a_stalled_ping() {
-        let _guard = crate::daemon::DAEMON_TEST_FS_MUTEX.lock().unwrap();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
-        let _port_file = PortFileGuard::replace_with(port);
+        let (_temp, port_file) = isolated_port_file(Some(port));
         let server_task = tokio::spawn(async move {
             let (_stream, _) = listener.accept().await.unwrap();
             tokio::time::sleep(Duration::from_secs(2)).await;
         });
 
-        let result = DaemonClient::wait_for_daemon_ready(Duration::from_millis(100)).await;
+        let result =
+            DaemonClient::wait_for_daemon_ready_at(Duration::from_millis(100), &port_file).await;
 
         let error = match result {
             Ok(_) => panic!("stalled ping unexpectedly became ready"),
