@@ -934,7 +934,7 @@ async fn execute_fill(
 // ── Press execution ──────────────────────────────────────────────────────────
 
 /// Parse a key string like "Control+Shift+Enter" and dispatch keyDown/keyUp events.
-async fn dispatch_key_combo(session: &cdpkit::Session<'_>, key_str: &str) -> Result<(), BkError> {
+async fn dispatch_key_combo(session: &cdpkit::Session, key_str: &str) -> Result<(), BkError> {
     let parts: Vec<&str> = key_str.split('+').collect();
 
     let mut modifiers: i64 = 0;
@@ -1082,7 +1082,7 @@ async fn dispatch_key_combo(session: &cdpkit::Session<'_>, key_str: &str) -> Res
 }
 
 async fn send_key_event(
-    session: &cdpkit::Session<'_>,
+    session: &cdpkit::Session,
     type_: cdpkit::input::types::DispatchKeyEventType,
     key: &str,
     code: &str,

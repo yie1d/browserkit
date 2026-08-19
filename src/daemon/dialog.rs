@@ -185,22 +185,15 @@ pub(crate) struct DialogEventStreams {
     closed: cdpkit::EventStream<cdpkit::page::events::JavascriptDialogClosed>,
 }
 
-/// Subscribe synchronously so Page events are buffered before Page.enable.
-pub(crate) fn subscribe_dialog_events(
+/// Complete registration before Page.enable can emit initial events.
+pub(crate) async fn subscribe_dialog_events(
     cdp: &cdpkit::CDP,
     cdp_session_id: &str,
-) -> DialogEventStreams {
+) -> Result<DialogEventStreams, cdpkit::CdpError> {
     let session = cdp.session(cdp_session_id);
-    DialogEventStreams {
-        opened: cdpkit::page::events::JavascriptDialogOpening::subscribe(
-            &session,
-            cdpkit::EventBuffer::Unbounded,
-        ),
-        closed: cdpkit::page::events::JavascriptDialogClosed::subscribe(
-            &session,
-            cdpkit::EventBuffer::Unbounded,
-        ),
-    }
+    let opened = cdpkit::page::events::JavascriptDialogOpening::subscribe(&session).await?;
+    let closed = cdpkit::page::events::JavascriptDialogClosed::subscribe(&session).await?;
+    Ok(DialogEventStreams { opened, closed })
 }
 
 /// Spawn a background task that consumes pre-created dialog event streams and
@@ -252,7 +245,7 @@ fn spawn_dialog_subscription_for_key(
         .insert(key.clone(), cancel.clone());
 
     tokio::spawn(async move {
-        let owned_session = cdp.owned_session(&cdp_session_id);
+        let session = cdp.session(&cdp_session_id);
         let mut dialog_stream = streams.opened;
         let mut closed_stream = streams.closed;
 
@@ -324,7 +317,7 @@ fn spawn_dialog_subscription_for_key(
                             if let Some(ref default_text) = ev.default_prompt {
                                 cmd = cmd.with_prompt_text(default_text.clone());
                             }
-                            match cmd.send(&owned_session).await {
+                            match cmd.send(&session).await {
                                 Ok(()) => {
                                     info!(
                                         owner = %key.0,
@@ -348,7 +341,7 @@ fn spawn_dialog_subscription_for_key(
                         DialogPolicy::Dismiss => {
                             // Auto-dismiss
                             let cmd = cdpkit::page::methods::HandleJavaScriptDialog::new(false);
-                            match cmd.send(&owned_session).await {
+                            match cmd.send(&session).await {
                                 Ok(()) => {
                                     info!(
                                         owner = %key.0,

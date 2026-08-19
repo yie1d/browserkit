@@ -15,14 +15,14 @@ fn next_object_group_name(operation: &str) -> String {
 /// current Tokio runtime.
 pub(crate) struct RemoteObjectScope {
     name: Option<String>,
-    session: Option<cdpkit::OwnedSession>,
+    session: Option<cdpkit::Session>,
 }
 
 impl RemoteObjectScope {
     pub(crate) fn new(cdp: &cdpkit::CDP, session_id: &str, operation: &str) -> Self {
         Self {
             name: Some(next_object_group_name(operation)),
-            session: Some(cdp.owned_session(session_id)),
+            session: Some(cdp.session(session_id)),
         }
     }
 
@@ -66,7 +66,7 @@ impl Drop for RemoteObjectScope {
     }
 }
 
-async fn release_object_group(name: String, session: cdpkit::OwnedSession) {
+async fn release_object_group(name: String, session: cdpkit::Session) {
     if let Err(error) = cdpkit::runtime::methods::ReleaseObjectGroup::new(&name)
         .send(&session)
         .await

@@ -383,14 +383,28 @@ pub async fn handle_download(req: &Request, state: &Arc<DaemonState>) -> Respons
         Err(_) => return timeout_response("download timed out while resolving the page frame"),
     };
 
-    let begin_events = cdpkit::browser::events::DownloadWillBegin::subscribe(
-        &*ctx.cdp,
-        cdpkit::EventBuffer::Unbounded,
-    );
-    let progress_events = cdpkit::browser::events::DownloadProgress::subscribe(
-        &*ctx.cdp,
-        cdpkit::EventBuffer::Unbounded,
-    );
+    let begin_events = match cdpkit::browser::events::DownloadWillBegin::subscribe(&*ctx.cdp).await
+    {
+        Ok(events) => events,
+        Err(error) => {
+            return Response::error_detail(
+                ErrorCode::DaemonError,
+                format!("failed to subscribe to download starts: {error}"),
+                None,
+            )
+        }
+    };
+    let progress_events =
+        match cdpkit::browser::events::DownloadProgress::subscribe(&*ctx.cdp).await {
+            Ok(events) => events,
+            Err(error) => {
+                return Response::error_detail(
+                    ErrorCode::DaemonError,
+                    format!("failed to subscribe to download progress: {error}"),
+                    None,
+                )
+            }
+        };
     let enable = download_behavior(
         cdpkit::browser::types::SetDownloadBehaviorBehavior::Allow,
         Some(&params.output_dir),

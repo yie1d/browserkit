@@ -6,7 +6,7 @@ allowed-tools: Bash(bk *) Bash(bk.exe *) Bash(tasklist*) Bash(pgrep*) Bash(test 
 metadata:
   code: bk-browser
   skillCode: bk-browser
-version: 0.2.0
+version: 0.4.0
 tags: [浏览器自动化, 网页交互, RPA, AI-Agent, 数据抽取]
 ---
 
@@ -229,7 +229,7 @@ bk session cookies clear              # 清除 cookies
 
 8. **daemon 自动启动**：第一次运行任何命令会自动启动 daemon，无需手动启动
 
-9. **输出永远 JSON**：所有命令输出 JSON 格式，无 --format 选项
+9. **区分运行时与帮助输出**：运行时命令结果为 JSON，无 --format 选项；`--help` 与 shell completions 输出文本
 
 ---
 

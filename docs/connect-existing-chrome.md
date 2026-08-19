@@ -1,9 +1,11 @@
 # Connecting to an Existing Chrome or Edge Instance
 
-browserkit is a persistent browser runtime for AI agents. Its default client,
-`bk`, connects to the user's already-running Chrome or Edge, reuses the user's
+This guide describes the historical `bk` CLI and daemon attach workflow. `bk`
+connects to the user's already-running Chrome or Edge, reuses the user's
 logged-in browser context, and keeps session/tab state in the local daemon.
-browserkit does not launch, manage, or terminate the browser process.
+The `bk` attach workflow does not launch, manage, or terminate the browser
+process. Rust SDK users can instead start an owned private-profile browser with
+`BrowserRuntime::launch`.
 
 ## Prerequisites
 

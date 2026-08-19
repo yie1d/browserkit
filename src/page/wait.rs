@@ -209,28 +209,18 @@ pub async fn wait_for_conditions(
 
     // Set up networkidle tracking if requested.
     // Subscribe BEFORE any polling begins so we don't miss events.
-    let event_buffer = cdpkit::EventBuffer::Bounded(std::num::NonZeroUsize::new(256).unwrap());
     let mut req_stream = if conditions.networkidle {
-        Some(cdpkit::network::events::RequestWillBeSent::subscribe(
-            &session,
-            event_buffer,
-        ))
+        Some(cdpkit::network::events::RequestWillBeSent::subscribe(&session).await?)
     } else {
         None
     };
     let mut fin_stream = if conditions.networkidle {
-        Some(cdpkit::network::events::LoadingFinished::subscribe(
-            &session,
-            event_buffer,
-        ))
+        Some(cdpkit::network::events::LoadingFinished::subscribe(&session).await?)
     } else {
         None
     };
     let mut fail_stream = if conditions.networkidle {
-        Some(cdpkit::network::events::LoadingFailed::subscribe(
-            &session,
-            event_buffer,
-        ))
+        Some(cdpkit::network::events::LoadingFailed::subscribe(&session).await?)
     } else {
         None
     };
@@ -327,7 +317,7 @@ pub async fn wait_for_conditions(
 /// Check poll-based conditions via Runtime.evaluate. Returns Some(met_list) if all
 /// poll conditions are satisfied, None otherwise.
 async fn check_poll_conditions(
-    session: &cdpkit::Session<'_>,
+    session: &cdpkit::Session,
     conditions: &WaitConditions,
 ) -> Option<Vec<String>> {
     let js = build_condition_check_js(conditions);

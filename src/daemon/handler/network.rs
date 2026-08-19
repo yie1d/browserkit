@@ -360,16 +360,39 @@ pub async fn handle_network_watch(req: &Request, state: &Arc<DaemonState>) -> Re
     };
 
     let session = ctx.cdp.session(&ctx.cdp_session_id);
-    let mut response_events = cdpkit::network::events::ResponseReceived::subscribe(
-        &session,
-        cdpkit::EventBuffer::Unbounded,
-    );
-    let mut finished_events = cdpkit::network::events::LoadingFinished::subscribe(
-        &session,
-        cdpkit::EventBuffer::Unbounded,
-    );
-    let mut failed_events =
-        cdpkit::network::events::LoadingFailed::subscribe(&session, cdpkit::EventBuffer::Unbounded);
+    let mut response_events =
+        match cdpkit::network::events::ResponseReceived::subscribe(&session).await {
+            Ok(events) => events,
+            Err(error) => {
+                return Response::error_detail(
+                    crate::error::ErrorCode::DaemonError,
+                    format!("failed to subscribe to network responses: {error}"),
+                    None,
+                )
+            }
+        };
+    let mut finished_events =
+        match cdpkit::network::events::LoadingFinished::subscribe(&session).await {
+            Ok(events) => events,
+            Err(error) => {
+                return Response::error_detail(
+                    crate::error::ErrorCode::DaemonError,
+                    format!("failed to subscribe to completed network requests: {error}"),
+                    None,
+                )
+            }
+        };
+    let mut failed_events = match cdpkit::network::events::LoadingFailed::subscribe(&session).await
+    {
+        Ok(events) => events,
+        Err(error) => {
+            return Response::error_detail(
+                crate::error::ErrorCode::DaemonError,
+                format!("failed to subscribe to failed network requests: {error}"),
+                None,
+            )
+        }
+    };
 
     if let Err(error) = cdpkit::network::methods::Enable::new().send(&session).await {
         return Response::error_detail(

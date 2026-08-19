@@ -84,7 +84,7 @@ dependencies = [
 
 [[package]]
 name = "browserkit"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "base64",
  "cdpkit",
@@ -118,9 +118,9 @@ checksum = "1e748733b7cbc798e1434b6ac524f0c1ff2ab456fe201501e6497c8417a4fc33"
 
 [[package]]
 name = "cdpkit"
-version = "0.6.0"
+version = "0.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "899f0f74da48f3e5c0a42381b0dc97e8f27f48a0aa0353c1a14b51ecf8ca89b3"
+checksum = "29b716e9969c025cd76ebae21d1a2a5e335d9b92c305792f5271c0aa3e2ebd74"
 dependencies = [
  "futures",
  "httparse",

@@ -243,8 +243,8 @@ pub(crate) async fn prepare_session_tab_subscriptions(
     cdp_session_id: &str,
 ) -> Result<SessionTabSubscriptions, cdpkit::CdpError> {
     let subscriptions = SessionTabSubscriptions {
-        console: subscribe_console_events(cdp, cdp_session_id),
-        dialog: subscribe_dialog_events(cdp, cdp_session_id),
+        console: subscribe_console_events(cdp, cdp_session_id).await?,
+        dialog: subscribe_dialog_events(cdp, cdp_session_id).await?,
     };
     enable_session_tab_domains(cdp, cdp_session_id).await?;
     Ok(subscriptions)
@@ -396,18 +396,30 @@ async fn run_target_watcher(
     cdp: Arc<cdpkit::CDP>,
     cancel: CancellationToken,
 ) {
-    let mut created_stream = cdpkit::target::events::TargetCreated::subscribe(
-        cdp.as_ref(),
-        cdpkit::EventBuffer::Unbounded,
-    );
-    let mut destroyed_stream = cdpkit::target::events::TargetDestroyed::subscribe(
-        cdp.as_ref(),
-        cdpkit::EventBuffer::Unbounded,
-    );
-    let mut info_changed_stream = cdpkit::target::events::TargetInfoChanged::subscribe(
-        cdp.as_ref(),
-        cdpkit::EventBuffer::Unbounded,
-    );
+    let mut created_stream =
+        match cdpkit::target::events::TargetCreated::subscribe(cdp.as_ref()).await {
+            Ok(events) => events,
+            Err(error) => {
+                warn!(%host, %error, "target watcher: failed to subscribe to target creation");
+                return;
+            }
+        };
+    let mut destroyed_stream =
+        match cdpkit::target::events::TargetDestroyed::subscribe(cdp.as_ref()).await {
+            Ok(events) => events,
+            Err(error) => {
+                warn!(%host, %error, "target watcher: failed to subscribe to target destruction");
+                return;
+            }
+        };
+    let mut info_changed_stream =
+        match cdpkit::target::events::TargetInfoChanged::subscribe(cdp.as_ref()).await {
+            Ok(events) => events,
+            Err(error) => {
+                warn!(%host, %error, "target watcher: failed to subscribe to target info changes");
+                return;
+            }
+        };
 
     if let Err(error) = cdpkit::target::methods::SetDiscoverTargets::new(true)
         .send(cdp.as_ref())

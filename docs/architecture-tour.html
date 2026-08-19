@@ -140,8 +140,8 @@
     <main id="main">
       <section id="overview" data-title="项目定位">
         <div class="eyebrow">01 / Positioning</div><h2>不是脚本包装，而是持久运行时</h2>
-        <p>browserkit 构建在 <code>cdpkit 0.6.0</code> 之上。它将命令行进程与浏览器生命周期分开：Agent 可以连续运行多个独立的 <code>bk</code> 命令，而后台 daemon 保持同一条 CDP WebSocket、同一个登录态和一致的 Tab 所有权。</p>
-        <div class="fact-row"><div class="fact"><b>CLI 是 client</b><span>解析参数、发送 JSON、保存本地输出，不拥有浏览器状态。</span></div><div class="fact"><b>Daemon 是边界</b><span>管理连接、Session、Watcher、清理与持久化；仅监听 loopback，不提供鉴权。</span></div><div class="fact"><b>cdpkit 是协议层</b><span>负责 typed CDP、Sender、WebSocket 与事件流。</span></div></div>
+        <p>本页说明 browserkit 中历史 <code>bk</code> CLI/daemon 的架构；新版 Rust 生命周期 SDK 是同一项目中的独立入口。browserkit 构建在 <code>cdpkit 0.7.1</code> 之上。<code>bk</code> 将命令行进程与浏览器连接状态分开：调用方可以连续运行多个独立命令，而后台 daemon 保持同一条 CDP WebSocket、同一个登录态和一致的 Tab 所有权。</p>
+        <div class="fact-row"><div class="fact"><b>CLI 是 client</b><span>解析参数、发送 JSON、保存本地输出，不拥有浏览器状态。</span></div><div class="fact"><b>Daemon 是 bk 边界</b><span>管理该命令入口的连接、Session、Watcher、清理与持久化；仅监听 loopback，不提供鉴权。</span></div><div class="fact"><b>cdpkit 是协议层</b><span>负责 typed CDP、Sender、WebSocket 与事件流。</span></div></div>
         <p>当前二进制只连接用户已经运行并开启远程调试的 Chrome 或 Edge，不负责启动浏览器。默认 Session 复用用户登录态，命名 Session 使用独立 BrowserContext。</p>
       </section>
 
@@ -234,7 +234,7 @@
       daemon:{title:'browserkit daemon',role:'长期持有浏览器连接、Session、事件订阅、清理和持久化状态，并写入 screenshot/PDF 产物。',inputs:'loopback TCP 请求、Chrome 事件',outputs:'结构化 JSON 响应、状态变更、产物文件',files:'src/daemon/mod.rs · src/daemon/server.rs'},
       handlers:{title:'Command handlers',role:'实现 Agent 可见的 canonical command 合同，并把请求路由到运行时和页面能力。',inputs:'Request.params、Session/Target 选择器',outputs:'Response、CDP 操作、状态更新',files:'src/daemon/handler/mod.rs · src/daemon/handler/'},
       page:{title:'Page capability layer',role:'提供导航、交互、页面状态、截图、等待和元素引用等确定性能力。',inputs:'attached CDP session、操作参数',outputs:'页面结果、state diff、稳定 ref',files:'src/page/'},
-      cdpkit:{title:'cdpkit 0.6.0',role:'协议层：typed CDP、WebSocket、Sender 和 EventStream。',inputs:'浏览器级或页面级 CDP 命令',outputs:'typed response 与事件流',files:'Cargo.toml · external cdpkit-rs'},
+      cdpkit:{title:'cdpkit 0.7.1',role:'协议层：typed CDP、WebSocket、Sender 和 EventStream。',inputs:'浏览器级或页面级 CDP 命令',outputs:'typed response 与事件流',files:'Cargo.toml · external cdpkit-rs'},
       chrome:{title:'User Chrome / Edge',role:'用户已经运行并开启远程调试的浏览器；当前 browserkit 不负责启动它。',inputs:'CDP 命令',outputs:'页面状态、Target/Network/Dialog 事件',files:'src/browser/discover.rs · src/browser/finder.rs'},
       state:{title:'DaemonState',role:'用 DashMap、原子量和细粒度锁承载 Browser、Session、订阅与持久化健康状态。',inputs:'handler 和 watcher 的状态变更',outputs:'一致的运行时视图',files:'src/daemon/state.rs · src/daemon/session.rs'},
       watchers:{title:'Runtime watchers',role:'订阅 Target、console、dialog 和断连事件，把浏览器反向变化映射回正确 Session。',inputs:'cdpkit EventStream',outputs:'Tab 注册/删除、buffer、disconnected 状态',files:'src/daemon/target_lifecycle.rs · src/daemon/console.rs · src/daemon/dialog.rs'},

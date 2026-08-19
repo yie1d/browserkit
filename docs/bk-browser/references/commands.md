@@ -161,8 +161,9 @@ Use these only for diagnostics or controlled debugging.
 
 ## Runtime state
 
-browserkit connects only to already-running Chrome or Edge CDP endpoints. It
-does not launch, manage, or terminate browser processes. The daemon persists
+The historical `bk` executable and daemon connect only to already-running
+Chrome or Edge CDP endpoints. They do not launch, manage, or terminate browser
+processes. The daemon persists
 strict schema v1 state containing Session metadata and tab ownership, but no
 browser process metadata. After a daemon restart, restored Sessions remain
 disconnected until an explicit `bk connect`.

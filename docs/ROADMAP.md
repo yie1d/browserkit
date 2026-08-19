@@ -1,39 +1,21 @@
 # browserkit Roadmap
 
-## Current State
+## Current phase: lifecycle spine
 
-- browserkit is the persistent browser runtime and agent-facing JSON API.
-- cdpkit-rs is the typed CDP protocol layer.
-- The default session attaches to the user's browser context.
-- Named sessions use isolated BrowserContexts.
-- browserkit connects only to already-running Chrome or Edge CDP endpoints and
-  never manages the browser process.
-- Schema v1 persists sessions and target ownership. Restored sessions remain
-  disconnected until an explicit `bk connect`.
-- Only the current command, configuration, and persisted-state contracts are
-  supported; there is no migration or compatibility layer.
-- Network observation, downloads, append-to-file evaluation, and deterministic
-  snapshot budgets are available through canonical session commands.
-- CI, Rust 1.88 checks, release validation, and cross-platform artifacts are in
-  place.
-- The daemon is an unauthenticated host-local boundary restricted to an
-  ephemeral IPv4 loopback port, with no per-user transport isolation.
-  Navigation rejects active-content and
-  browser-internal schemes without blocking localhost or canonical `file:`
-  URLs, and lifecycle cleanup is serialized against active session work.
+- `BrowserRuntime`, `BrowserSession`, `Page`, and `Frame` are the public SDK identities.
+- Runtime instances may attach to an existing CDP endpoint or launch a private browser profile. Only the latter owns process termination.
+- Default and isolated BrowserContexts share one session API while retaining explicit cleanup ownership.
+- Frame trees are bootstrapped from `Page.getFrameTree`, reduced from Page-scoped attach and connection-scoped detach events, and preserve IDs across out-of-process routing changes.
+- Explicit close produces `CloseReport`; Drop performs no protocol I/O. The runtime retains ownership of SDK-created targets and isolated BrowserContexts so root close can clean resources whose child handles were dropped.
+- Explicitly closing the default session is terminal for that runtime.
+- Rust 1.88 checks and the repository contract validate the public surface.
 
-## Maintenance Priorities
+## Event discipline
 
-1. Keep README, CLI help, the bundled skill source, CHANGELOG, and this roadmap
-   aligned with each release.
-2. Add protocol capabilities to cdpkit first, then consume the released crate
-   from browserkit.
-3. Preserve session ownership and structured errors. Long-lived CDP event
-   channels remain unbounded; only `wait networkidle` uses `Bounded(256)`, while
-   finite operations use count/deadline bounds and explicit business-buffer
-   overflow reporting.
-4. Add new transports or SDKs only when they reuse the same daemon/runtime
-   contract rather than creating a parallel automation model.
+Every generated event subscription uses `Event::subscribe(&sender).await` with the sender matching the CDP delivery scope: target/page-scoped events use `&session`; browser/connection-scoped events use `&cdp`. Subscription registration is awaited before enabling its domain or triggering an action. Each subscriber has an independent unbounded queue; finite operations define their own bounds.
 
-Completed implementation history remains available in Git; it is not maintained
-as the current command or behavior contract.
+The explicit CDP escape hatches are `runtime.cdp()`, `page.cdp_session()`, and `frame.cdp_session()`.
+
+## Later phases
+
+Locators, interactions, expectations, waiting, network and download support, and dialog handling remain outside the current lifecycle SDK phase. The historical `bk` CLI and daemon keep their existing capabilities and are migrated separately.

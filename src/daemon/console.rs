@@ -21,13 +21,13 @@ pub struct ConsoleEntry {
 
 pub(crate) type ConsoleEventStream = cdpkit::EventStream<cdpkit::runtime::events::ConsoleApiCalled>;
 
-/// Subscribe synchronously so Runtime events are buffered before Runtime.enable.
-pub(crate) fn subscribe_console_events(
+/// Complete registration before Runtime.enable can emit initial events.
+pub(crate) async fn subscribe_console_events(
     cdp: &cdpkit::CDP,
     cdp_session_id: &str,
-) -> ConsoleEventStream {
+) -> Result<ConsoleEventStream, cdpkit::CdpError> {
     let session = cdp.session(cdp_session_id);
-    cdpkit::runtime::events::ConsoleApiCalled::subscribe(&session, cdpkit::EventBuffer::Unbounded)
+    cdpkit::runtime::events::ConsoleApiCalled::subscribe(&session).await
 }
 
 /// Spawn a background task that consumes a pre-created Runtime.consoleAPICalled
@@ -76,7 +76,7 @@ fn spawn_console_subscription_for_key(
         .insert(key.clone(), cancel.clone());
 
     tokio::spawn(async move {
-        let owned_session = cdp.owned_session(&cdp_session_id);
+        let session = cdp.session(&cdp_session_id);
         debug!(owner = %key.0, target = %key.1, "console: subscription started");
 
         loop {
@@ -115,7 +115,7 @@ fn spawn_console_subscription_for_key(
                         .collect();
                     for object_id in remote_object_ids {
                         if let Err(error) = cdpkit::runtime::methods::ReleaseObject::new(object_id)
-                            .send(&owned_session)
+                            .send(&session)
                             .await
                         {
                             debug!(

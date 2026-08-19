@@ -2,6 +2,38 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added the client-neutral `BrowserRuntime -> BrowserSession -> Page -> Frame`
+  lifecycle SDK, including attach and private-profile launch modes, explicit
+  ownership, structured close reports, document epochs, and recursive OOPIF
+  Session routing.
+- Added compile-checked connect and launch examples with direct CDP escape
+  hatches at runtime, page, and frame scope.
+
+### Breaking Changes
+
+- Raised the browserkit crate version to 0.4.0 and upgraded the public protocol
+  dependency from cdpkit 0.6.0 to the exact cdpkit 0.7.1 release. Public APIs
+  containing cdpkit types now require the 0.7.1 types, owned `Session` handles,
+  and asynchronous subscription registration; downstream crates must migrate
+  their cdpkit dependency and await subscription setup before enabling a
+  domain or triggering events. This is a breaking 0.x public API migration.
+
+### Changed
+
+- Migrated the historical executable surface to cdpkit 0.7.1 sender and event
+  contracts so the existing CLI and daemon continue to compile alongside the
+  new SDK lifecycle spine.
+- Retained ownership of SDK-created targets and isolated BrowserContexts at the
+  root runtime so `BrowserRuntime::close()` still cleans them after child
+  handles are dropped, without repeating resources already closed explicitly.
+- Made public Runtime, Session, and Page close operations cancellation-safe: a
+  single managed cleanup continues after caller cancellation, retries share its
+  report, and concurrent target destruction is treated as completed cleanup.
+- Aligned the maintained guides, bundled `bk` skill, architecture tour, and
+  SDK examples with the 0.4.0 lifecycle and launch contracts.
+
 ## [0.3.0] - 2026-08-06
 
 ### Breaking Changes
