@@ -1,6 +1,6 @@
 [package]
 name = "browserkit"
-version = "0.4.1"
+version = "0.4.2"
 edition = "2021"
 rust-version = "1.88"
 description = "Browser runtime and lifecycle SDK built on cdpkit-rs"

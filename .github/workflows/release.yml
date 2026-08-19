@@ -235,7 +235,8 @@ jobs:
         env:
           VERSION: ${{ needs.validate.outputs.version }}
         run: |
-          status=$(curl --silent --show-error --output crate-version.json --write-out '%{http_code}' \
+          status=$(curl --user-agent "browserkit-release/$VERSION (https://github.com/yie1d/browserkit)" \
+            --silent --show-error --output crate-version.json --write-out '%{http_code}' \
             "https://crates.io/api/v1/crates/browserkit/$VERSION")
           case "$status" in
             200) echo "published=true" >> "$GITHUB_OUTPUT" ;;
@@ -262,7 +263,8 @@ jobs:
           LOCAL_CHECKSUM: ${{ steps.package.outputs.checksum }}
         run: |
           for attempt in $(seq 1 30); do
-            status=$(curl --silent --show-error --output crate-version.json --write-out '%{http_code}' \
+            status=$(curl --user-agent "browserkit-release/$VERSION (https://github.com/yie1d/browserkit)" \
+              --silent --show-error --output crate-version.json --write-out '%{http_code}' \
               "https://crates.io/api/v1/crates/browserkit/$VERSION")
             [ "$status" = 200 ] && break
             [ "$status" = 404 ] || { echo "::error::crates.io returned HTTP $status"; exit 1; }
@@ -274,7 +276,8 @@ jobs:
             echo "::error::Published crate checksum differs from the locally verified package"
             exit 1
           }
-          curl --fail --location --silent --show-error \
+          curl --user-agent "browserkit-release/$VERSION (https://github.com/yie1d/browserkit)" \
+            --fail --location --silent --show-error \
             "https://crates.io/api/v1/crates/browserkit/$VERSION/download" \
             --output browserkit.crate
           echo "$LOCAL_CHECKSUM  browserkit.crate" | sha256sum --check --strict
