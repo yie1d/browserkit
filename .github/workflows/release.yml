@@ -226,7 +226,8 @@ jobs:
           ! tar -tzf "$crate" | grep -F "browserkit-$VERSION/docs/REDESIGN.md" >/dev/null
           packaged_commit=$(tar -xOzf "$crate" "browserkit-$VERSION/.cargo_vcs_info.json" | jq -r '.git.sha1')
           test "$packaged_commit" = "$RELEASE_COMMIT"
-          echo "checksum=$(sha256sum "$crate" | awk '{print $1}')" >> "$GITHUB_OUTPUT"
+          checksum=$(sha256sum "$crate" | awk '{print $1}')
+          echo "checksum=$checksum" >> "$GITHUB_OUTPUT"
 
       - name: Check whether the exact crate version exists
         id: crate
@@ -306,7 +307,7 @@ jobs:
           fi
           test "$remote_commit" = "$RELEASE_COMMIT"
           awk -v version="$VERSION" '
-            $0 ~ "^## \\[" version "\\] - " { capture = 1; next }
+            index($0, "## [" version "] - ") == 1 { capture = 1; next }
             capture && /^## \[/ { exit }
             capture { print }
           ' CHANGELOG.md > RELEASE_NOTES.md
