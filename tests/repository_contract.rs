@@ -23,7 +23,7 @@ fn manifest_uses_the_published_cdpkit_release() {
         "cdpkit must not use path or git dependency overrides"
     );
     assert!(
-        manifest.contains(r#"version = "0.4.2""#),
+        manifest.contains(r#"version = "0.4.3""#),
         "the cdpkit 0.7.1 public-type migration and runtime SDK require a breaking 0.x version bump"
     );
     assert!(
@@ -136,6 +136,10 @@ fn release_publishes_and_verifies_the_sdk_before_github_assets() {
     assert!(
         workflow.matches("--user-agent \"browserkit-release/").count() >= 3,
         "every crates.io API and crate download request must identify the browserkit release client"
+    );
+    assert!(
+        workflow.contains("--silent --show-error --output /dev/null --write-out '%{http_code}'"),
+        "the pre-publish existence check must not dirty the release checkout"
     );
     assert!(
         !workflow.contains("] - 2026-08-19\" { capture"),

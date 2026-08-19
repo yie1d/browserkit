@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+## [0.4.3] - 2026-08-19
+
+### Fixed
+
+- Kept the pre-publish crates.io existence check from creating an untracked
+  response file that caused `cargo publish` to reject the release checkout.
+- Added the required identifying User-Agent to crates.io API and download
+  requests in the Trusted Publisher release workflow.
+- Kept strict Rust 1.88 Clippy validation while exempting the legacy
+  `uninlined_format_args` style lint from release gating.
+
 ## [0.4.2] - 2026-08-19
 
 ### Fixed

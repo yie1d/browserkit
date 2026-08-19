@@ -236,7 +236,7 @@ jobs:
           VERSION: ${{ needs.validate.outputs.version }}
         run: |
           status=$(curl --user-agent "browserkit-release/$VERSION (https://github.com/yie1d/browserkit)" \
-            --silent --show-error --output crate-version.json --write-out '%{http_code}' \
+            --silent --show-error --output /dev/null --write-out '%{http_code}' \
             "https://crates.io/api/v1/crates/browserkit/$VERSION")
           case "$status" in
             200) echo "published=true" >> "$GITHUB_OUTPUT" ;;
