@@ -7,6 +7,7 @@ fn repository_file(path: &str) -> String {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     fs::read_to_string(root.join(path))
         .unwrap_or_else(|error| panic!("failed to read repository file '{path}': {error}"))
+        .replace("\r\n", "\n")
 }
 
 #[test]
@@ -22,7 +23,7 @@ fn manifest_uses_the_published_cdpkit_release() {
         "cdpkit must not use path or git dependency overrides"
     );
     assert!(
-        manifest.contains(r#"version = "0.4.0""#),
+        manifest.contains(r#"version = "0.4.1""#),
         "the cdpkit 0.7.1 public-type migration and runtime SDK require a breaking 0.x version bump"
     );
     assert!(

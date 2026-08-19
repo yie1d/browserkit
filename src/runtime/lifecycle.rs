@@ -430,10 +430,10 @@ impl PendingOwnershipRegistry {
         loop {
             {
                 let data = self.inner.data.lock();
-                if !data
+                if data
                     .entries
                     .get(&resource)
-                    .is_some_and(|entry| entry.token == token)
+                    .is_none_or(|entry| entry.token != token)
                 {
                     return data
                         .completed

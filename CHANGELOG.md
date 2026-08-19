@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-08-19
+
+### Fixed
+
+- Kept strict Rust 1.88 Clippy validation while exempting the legacy
+  `uninlined_format_args` style lint from release gating.
+
 ## [0.4.0] - 2026-08-19
 
 ### Added
