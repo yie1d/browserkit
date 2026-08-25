@@ -2509,7 +2509,7 @@ mod tests {
             .filter(|command| command["method"] == "DOM.getFrameOwner")
             .collect::<Vec<_>>();
         assert_eq!(owners.len(), 6);
-        assert!(owners.chunks_exact(2).all(|sample| {
+        assert!(owners.as_chunks::<2>().0.iter().all(|sample| {
             sample[0]["params"]["frameId"] == "same"
                 && sample[0]["sessionId"] == "oopif-child"
                 && sample[1]["params"]["frameId"] == "child"

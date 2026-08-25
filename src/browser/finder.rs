@@ -200,7 +200,7 @@ pub fn build_setup_success_json(browser: &str) -> serde_json::Value {
         "data": {
             "status": "ready",
             "browser": browser,
-            "message": format!("Remote debugging enabled. Run 'bk connect' to start.")
+            "message": "Remote debugging enabled. Run 'bk connect' to start.".to_string()
         }
     })
 }

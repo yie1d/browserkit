@@ -450,7 +450,7 @@ async fn map_session_quad_to_top_page(
     let top = read_top_viewport(&top_session, operation).await?;
     ensure_quad_within_size(mapped, top.aperture, operation)?;
     let mut coordinates = mapped.coordinates;
-    for point in coordinates.chunks_exact_mut(2) {
+    for point in coordinates.as_chunks_mut::<2>().0.iter_mut() {
         point[0] += top.page_x;
         point[1] += top.page_y;
     }
@@ -696,8 +696,10 @@ fn inverse_project_owner_rect(
     let mut local = [0.0; 8];
     for (source, destination) in quad
         .coordinates
-        .chunks_exact(2)
-        .zip(local.chunks_exact_mut(2))
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .zip(local.as_chunks_mut::<2>().0.iter_mut())
     {
         let (u, v) = transform.unproject(source[0], source[1], operation)?;
         destination[0] = u * border.width;
@@ -968,7 +970,7 @@ fn ensure_quad_within_frame_viewport(
     let top = viewport.payload.visual_offset_top;
     let right = left + viewport.payload.visual_width;
     let bottom = top + viewport.payload.visual_height;
-    if quad.coordinates.chunks_exact(2).all(|point| {
+    if quad.coordinates.as_chunks::<2>().0.iter().all(|point| {
         point[0] >= left - EPSILON
             && point[1] >= top - EPSILON
             && point[0] <= right + EPSILON
@@ -988,7 +990,7 @@ fn ensure_quad_within_size<Space>(
     size: Size<TopViewport>,
     operation: &'static str,
 ) -> Result<(), BrowserError> {
-    if quad.coordinates.chunks_exact(2).all(|point| {
+    if quad.coordinates.as_chunks::<2>().0.iter().all(|point| {
         point[0] >= -EPSILON
             && point[1] >= -EPSILON
             && point[0] <= size.width + EPSILON
@@ -1010,7 +1012,9 @@ fn ensure_quad_within_quad(
 ) -> Result<(), BrowserError> {
     let points = aperture
         .coordinates
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|point| (point[0], point[1]))
         .collect::<Vec<_>>();
     let mut orientation = 0.0_f64;
@@ -1036,7 +1040,7 @@ fn ensure_quad_within_quad(
             "frame owner content aperture is degenerate",
         ));
     }
-    if quad.coordinates.chunks_exact(2).all(|point| {
+    if quad.coordinates.as_chunks::<2>().0.iter().all(|point| {
         (0..4).all(|index| {
             let start = points[index];
             let end = points[(index + 1) % 4];
@@ -1092,8 +1096,10 @@ fn project_quad(
     let mut denominator_sign = None;
     for (input, output) in quad
         .coordinates
-        .chunks_exact(2)
-        .zip(projected.chunks_exact_mut(2))
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .zip(projected.as_chunks_mut::<2>().0.iter_mut())
     {
         let u = input[0] / source.width;
         let v = input[1] / source.height;
@@ -1572,7 +1578,7 @@ mod tests {
     fn top_page_conversion_is_css_pixels_and_never_applies_dpr() {
         let viewport = session_quad([1.0, 2.0, 35.0, 2.0, 35.0, 24.0, 1.0, 24.0]);
         let mut coordinates = viewport.coordinates();
-        for point in coordinates.chunks_exact_mut(2) {
+        for point in coordinates.as_chunks_mut::<2>().0.iter_mut() {
             point[0] += 7.0;
             point[1] += 11.0;
         }

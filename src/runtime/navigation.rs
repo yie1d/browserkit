@@ -1431,9 +1431,10 @@ mod tests {
         assert!(error.wait_failure().is_some());
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn expect_navigation_timeout_after_successful_action_marks_action_completed() {
         let (page, _) = fake_navigation_page("loader-requested").await;
+        tokio::time::pause();
         let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let action_calls = Arc::clone(&calls);
         let (action_completed, mut action_completed_rx) = tokio::sync::oneshot::channel();

@@ -354,10 +354,11 @@ mod tests {
         assert_eq!(finish(cdp, server).await, vec!["Target.closeTarget"]);
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn event_timeout_with_present_target_is_structured_failure() {
         let (cdp, acked, _, inventory_seen, inventory_response, server) =
             server(Behavior::TimeoutPresent).await;
+        tokio::time::pause();
         let deadline = TargetCloseDeadline::after(Duration::from_millis(80));
         let close_cdp = cdp.clone();
         let closing = tokio::spawn(async move {
@@ -365,15 +366,19 @@ mod tests {
         });
 
         wait_for_notification_without_advancing(&acked).await;
+        let responder = tokio::spawn(async move {
+            inventory_seen.notified().await;
+            inventory_response.notify_one();
+        });
         tokio::time::advance(
             deadline
                 .confirm_at
                 .saturating_duration_since(Instant::now()),
         )
         .await;
-        wait_for_notification_without_advancing(&inventory_seen).await;
-        inventory_response.notify_one();
+        tokio::time::resume();
         let error = closing.await.unwrap().unwrap_err();
+        responder.await.unwrap();
         assert_eq!(
             error,
             OwnershipCleanupError::TargetStillPresent {
