@@ -1,6 +1,9 @@
 /target
 /.cargo-target-*/
 /AGENTS.md
+/docs/REDESIGN.md
+/docs/ROADMAP.md
+/docs/architecture-tour.html
 /docs/superpowers/
 .claude/
 .codex/

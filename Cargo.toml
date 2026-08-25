@@ -1,19 +1,19 @@
 [package]
 name = "browserkit"
-version = "0.4.3"
+version = "0.4.4"
 edition = "2021"
 rust-version = "1.88"
 description = "Browser runtime and lifecycle SDK built on cdpkit-rs"
 license = "MIT"
 repository = "https://github.com/yie1d/browserkit"
-exclude = ["docs/REDESIGN.md"]
+exclude = ["semantic-review/**", "todo/**"]
 
 [[bin]]
 name = "bk"
 path = "src/main.rs"
 
 [dependencies]
-cdpkit = "=0.7.1"
+cdpkit = "=0.7.2"
 tokio = { version = "1", features = ["full"] }
 clap = { version = "4", features = ["derive", "env"] }
 serde = { version = "1", features = ["derive"] }
@@ -33,7 +33,12 @@ fs2 = "0.4"
 const_format = "0.2"
 tempfile = "=3.25.0"
 url = "=2.5.8"
+regex = "=1.11.1"
 
 [dev-dependencies]
+png = "=0.17.16"
+rcgen = { version = "=0.13.2", default-features = false, features = ["ring"] }
 static_assertions = "1"
+tokio = { version = "=1.49.0", features = ["test-util"] }
+tokio-rustls = { version = "=0.26.4", default-features = false, features = ["ring", "tls12"] }
 tokio-tungstenite = "=0.28.0"

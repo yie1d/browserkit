@@ -2,6 +2,29 @@
 
 ## [Unreleased]
 
+## [0.4.4] - 2026-08-24
+
+### Added
+
+- Published the complete client-neutral Runtime API on the lifecycle spine,
+  including context configuration and capabilities; locators and interactions;
+  navigation, expectations and waits; evaluation and dialogs; network,
+  downloads and storage; artifacts, snapshots, diagnostics and typed events.
+
+### Fixed
+
+- Routed remote `Target.targetDestroyed` through the shared cancellation-safe
+  Page finalizer, closing local reducers and event hubs and preserving cleanup
+  failures without sending another close or detach command to the dead target.
+- Made `BrowserSession::new_page` publish a page only after the requested
+  main-frame navigation commits, FrameStore applies the authoritative document
+  identity, and the final document identity is confirmed, without waiting for
+  the full `Load` event.
+- Kept cancellation and failure cleanup ordered as route rollback followed by
+  target cleanup, with each cleanup action performed exactly once.
+- Upgraded to cdpkit 0.7.2 solely for its independent event-dispatch fairness
+  hardening.
+
 ## [0.4.3] - 2026-08-19
 
 ### Fixed
