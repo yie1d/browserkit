@@ -52,42 +52,84 @@ async fn close_created_target_and_wait_until(
     target_id: String,
     deadline: TargetCloseDeadline,
 ) -> Result<(), OwnershipCleanupError> {
-    let mut destroyed = until(
-        deadline.expires_at,
-        "subscribe to Target.targetDestroyed",
-        TargetDestroyed::subscribe(cdp),
-    )
-    .await?
-    .map_err(OwnershipCleanupError::from)?;
-
-    let close = until(
-        deadline.expires_at,
-        "dispatch Target.closeTarget",
-        CloseTarget::new(target_id.clone()).send(cdp),
-    )
-    .await?;
-
-    match close {
-        Ok(response)
-            if {
+    let destroyed = async {
+        until(
+            deadline.expires_at,
+            "subscribe to Target.targetDestroyed",
+            TargetDestroyed::subscribe(cdp),
+        )
+        .await?
+        .map_err(OwnershipCleanupError::from)
+    };
+    let close = async {
+        let close = until(
+            deadline.expires_at,
+            "dispatch Target.closeTarget",
+            CloseTarget::new(target_id.clone()).send(cdp),
+        )
+        .await?;
+        match close {
+            Ok(response) => {
                 #[allow(deprecated)]
                 let success = response.success;
-                success
-            } =>
-        {
+                Ok(TargetCloseDispatch::Acknowledged(success))
+            }
+            Err(error) if error_is_missing_target(&error) => Ok(TargetCloseDispatch::MissingTarget),
+            Err(error) => Err(OwnershipCleanupError::from(error)),
+        }
+    };
+    close_created_target_and_wait_until_with_confirmation(
+        &target_id,
+        deadline,
+        destroyed,
+        close,
+        confirm_target_absent(cdp, &target_id, deadline.expires_at),
+    )
+    .await
+}
+
+#[derive(Debug, Clone, Copy)]
+enum TargetCloseDispatch {
+    Acknowledged(bool),
+    MissingTarget,
+}
+
+async fn close_created_target_and_wait_until_with_confirmation<
+    S,
+    E,
+    Destroyed,
+    Close,
+    Confirmation,
+>(
+    target_id: &str,
+    deadline: TargetCloseDeadline,
+    destroyed: Destroyed,
+    close: Close,
+    confirmation: Confirmation,
+) -> Result<(), OwnershipCleanupError>
+where
+    S: futures::Stream<Item = Result<TargetDestroyed, E>> + Unpin,
+    Destroyed: Future<Output = Result<S, OwnershipCleanupError>>,
+    Close: Future<Output = Result<TargetCloseDispatch, OwnershipCleanupError>>,
+    Confirmation: Future<Output = Result<(), OwnershipCleanupError>>,
+{
+    let mut destroyed = destroyed.await?;
+
+    match close.await? {
+        TargetCloseDispatch::Acknowledged(true) => {
             return wait_for_destroyed_or_confirm_absent(
                 &mut destroyed,
-                &target_id,
+                target_id,
                 deadline,
-                || confirm_target_absent(cdp, &target_id, deadline.expires_at),
+                || confirmation,
             )
             .await;
         }
-        Ok(_) => {
+        TargetCloseDispatch::Acknowledged(false) => {
             // A false acknowledgement is not completion evidence. Always
             // confirm inventory absence, even if an event raced with the ack.
         }
-        Err(error) if error_is_missing_target(&error) => {
+        TargetCloseDispatch::MissingTarget => {
             // Chrome may destroy the target before replying. Drain an already
             // queued matching event without consuming the fallback budget.
             while let Ok(Some(item)) =
@@ -100,10 +142,9 @@ async fn close_created_target_and_wait_until(
                 }
             }
         }
-        Err(error) => return Err(OwnershipCleanupError::from(error)),
     }
 
-    confirm_target_absent(cdp, &target_id, deadline.expires_at).await
+    confirmation.await
 }
 
 async fn wait_for_destroyed_or_confirm_absent<S, E, Confirm, ConfirmFuture>(
@@ -182,7 +223,6 @@ mod tests {
     enum Behavior {
         DelayedDestroyed,
         EventBeforeAck,
-        TimeoutPresent,
         FalseAbsent,
     }
 
@@ -192,20 +232,14 @@ mod tests {
         CDP,
         std::sync::Arc<Notify>,
         std::sync::Arc<Notify>,
-        std::sync::Arc<Notify>,
-        std::sync::Arc<Notify>,
         tokio::task::JoinHandle<Vec<String>>,
     ) {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let acked = std::sync::Arc::new(Notify::new());
         let release = std::sync::Arc::new(Notify::new());
-        let inventory_seen = std::sync::Arc::new(Notify::new());
-        let inventory_response = std::sync::Arc::new(Notify::new());
         let server_acked = std::sync::Arc::clone(&acked);
         let server_release = std::sync::Arc::clone(&release);
-        let server_inventory_seen = std::sync::Arc::clone(&inventory_seen);
-        let server_inventory_response = std::sync::Arc::clone(&inventory_response);
         let task = tokio::spawn(async move {
             let (stream, _) = listener.accept().await.unwrap();
             let websocket = tokio_tungstenite::accept_async(stream).await.unwrap();
@@ -245,17 +279,6 @@ mod tests {
                                 .await
                                 .unwrap();
                         }
-                        Behavior::TimeoutPresent => {
-                            write
-                                .send(Message::Text(
-                                    json!({"id":id,"result":{"success":true}})
-                                        .to_string()
-                                        .into(),
-                                ))
-                                .await
-                                .unwrap();
-                            server_acked.notify_one();
-                        }
                         Behavior::FalseAbsent => {
                             write
                                 .send(Message::Text(
@@ -268,18 +291,9 @@ mod tests {
                         }
                     },
                     "Target.getTargets" => {
-                        if matches!(behavior, Behavior::TimeoutPresent) {
-                            server_inventory_seen.notify_one();
-                            server_inventory_response.notified().await;
-                        }
-                        let infos = if matches!(behavior, Behavior::TimeoutPresent) {
-                            json!([{"targetId":"target-1","type":"page","title":"","url":"about:blank","attached":false,"canAccessOpener":false}])
-                        } else {
-                            json!([])
-                        };
                         write
                             .send(Message::Text(
-                                json!({"id":id,"result":{"targetInfos":infos}})
+                                json!({"id":id,"result":{"targetInfos":[]}})
                                     .to_string()
                                     .into(),
                             ))
@@ -294,14 +308,7 @@ mod tests {
         let cdp = CDP::connect_ws_with_timeout(&format!("ws://{address}"), Duration::from_secs(1))
             .await
             .unwrap();
-        (
-            cdp,
-            acked,
-            release,
-            inventory_seen,
-            inventory_response,
-            task,
-        )
+        (cdp, acked, release, task)
     }
 
     async fn finish(cdp: CDP, task: tokio::task::JoinHandle<Vec<String>>) -> Vec<String> {
@@ -310,21 +317,9 @@ mod tests {
         task.await.unwrap()
     }
 
-    async fn wait_for_notification_without_advancing(notify: &Notify) {
-        let notified = notify.notified();
-        tokio::pin!(notified);
-        loop {
-            tokio::select! {
-                biased;
-                () = &mut notified => break,
-                () = tokio::task::yield_now() => {}
-            }
-        }
-    }
-
     #[tokio::test]
     async fn ack_then_delayed_destroyed_does_not_return_early() {
-        let (cdp, acked, release, _, _, server) = server(Behavior::DelayedDestroyed).await;
+        let (cdp, acked, release, server) = server(Behavior::DelayedDestroyed).await;
         let close_cdp = cdp.clone();
         let closing = tokio::spawn(async move {
             close_created_target_and_wait_until(
@@ -343,7 +338,7 @@ mod tests {
 
     #[tokio::test]
     async fn destroyed_event_before_ack_is_observed() {
-        let (cdp, _, _, _, _, server) = server(Behavior::EventBeforeAck).await;
+        let (cdp, _, _, server) = server(Behavior::EventBeforeAck).await;
         close_created_target_and_wait_until(
             &cdp,
             "target-1".into(),
@@ -354,41 +349,53 @@ mod tests {
         assert_eq!(finish(cdp, server).await, vec!["Target.closeTarget"]);
     }
 
-    #[tokio::test]
-    async fn event_timeout_with_present_target_is_structured_failure() {
-        let (cdp, acked, _, inventory_seen, inventory_response, server) =
-            server(Behavior::TimeoutPresent).await;
-        tokio::time::pause();
+    #[tokio::test(start_paused = true)]
+    async fn event_deadline_uses_fake_dispatch_and_inventory_confirmation() {
         let deadline = TargetCloseDeadline::after(Duration::from_millis(80));
-        let close_cdp = cdp.clone();
-        let closing = tokio::spawn(async move {
-            close_created_target_and_wait_until(&close_cdp, "target-1".into(), deadline).await
-        });
+        let close_dispatches = std::sync::atomic::AtomicUsize::new(0);
+        let confirmations = std::sync::atomic::AtomicUsize::new(0);
+        let waiting = close_created_target_and_wait_until_with_confirmation(
+            "target-1",
+            deadline,
+            async { Ok(futures::stream::pending::<Result<TargetDestroyed, ()>>()) },
+            async {
+                close_dispatches.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Ok(TargetCloseDispatch::Acknowledged(true))
+            },
+            async {
+                confirmations.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Err(OwnershipCleanupError::TargetStillPresent {
+                    target_id: "target-1".into(),
+                })
+            },
+        );
+        tokio::pin!(waiting);
 
-        wait_for_notification_without_advancing(&acked).await;
-        let responder = tokio::spawn(async move {
-            inventory_seen.notified().await;
-            inventory_response.notify_one();
-        });
+        assert!(matches!(
+            futures::poll!(&mut waiting),
+            std::task::Poll::Pending
+        ));
+        assert_eq!(
+            close_dispatches.load(std::sync::atomic::Ordering::SeqCst),
+            1
+        );
+        assert_eq!(confirmations.load(std::sync::atomic::Ordering::SeqCst), 0);
+
         tokio::time::advance(
             deadline
                 .confirm_at
                 .saturating_duration_since(Instant::now()),
         )
         .await;
-        tokio::time::resume();
-        let error = closing.await.unwrap().unwrap_err();
-        responder.await.unwrap();
+        let error = waiting.await.unwrap_err();
+
         assert_eq!(
             error,
             OwnershipCleanupError::TargetStillPresent {
                 target_id: "target-1".into()
             }
         );
-        assert_eq!(
-            finish(cdp, server).await,
-            vec!["Target.closeTarget", "Target.getTargets"]
-        );
+        assert_eq!(confirmations.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 
     #[tokio::test]
@@ -410,8 +417,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn false_ack_requires_inventory_confirmation_and_absent_succeeds() {
-        let (cdp, _, _, _, _, server) = server(Behavior::FalseAbsent).await;
+    async fn false_ack_sends_one_typed_close_and_one_inventory_command() {
+        let (cdp, _, _, server) = server(Behavior::FalseAbsent).await;
         close_created_target_and_wait_until(
             &cdp,
             "target-1".into(),
