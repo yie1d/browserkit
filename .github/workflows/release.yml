@@ -220,10 +220,27 @@ jobs:
           VERSION: ${{ needs.validate.outputs.version }}
           RELEASE_COMMIT: ${{ needs.validate.outputs.commit }}
         run: |
+          forbidden_paths=(
+            "docs/REDESIGN.md"
+            "docs/ROADMAP.md"
+            "docs/architecture-tour.html"
+          )
+          for forbidden in "${forbidden_paths[@]}"; do
+            if git ls-files --error-unmatch -- "$forbidden" >/dev/null 2>&1; then
+              echo "::error file=$forbidden::release-forbidden path is tracked"
+              exit 1
+            fi
+          done
+
           cargo package --locked
           crate="target/package/browserkit-$VERSION.crate"
           tar -tzf "$crate" | grep -F "browserkit-$VERSION/src/lib.rs" >/dev/null
-          ! tar -tzf "$crate" | grep -F "browserkit-$VERSION/docs/REDESIGN.md" >/dev/null
+          for forbidden in "${forbidden_paths[@]}"; do
+            if tar -tzf "$crate" | grep -Fx "browserkit-$VERSION/$forbidden" >/dev/null; then
+              echo "::error file=$forbidden::release-forbidden path entered the crate package"
+              exit 1
+            fi
+          done
           packaged_commit=$(tar -xOzf "$crate" "browserkit-$VERSION/.cargo_vcs_info.json" | jq -r '.git.sha1')
           test "$packaged_commit" = "$RELEASE_COMMIT"
           checksum=$(sha256sum "$crate" | awk '{print $1}')

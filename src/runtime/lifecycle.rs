@@ -135,26 +135,39 @@ impl OperationGate {
         })
     }
 
-    /// Returns true when this call transitioned the gate from open to closing.
-    pub(crate) async fn begin_close(&self) -> bool {
-        let transitioned = {
-            let mut state = self.inner.state.lock();
-            match state.handle {
-                HandleState::Open => {
-                    state.handle = HandleState::Closing;
-                    true
-                }
-                HandleState::Closing => false,
-                HandleState::Closed => return false,
+    /// Atomically transitions the gate from open to closing.
+    ///
+    /// This method never waits, so callers can establish close intent before
+    /// observing or cancelling any child state.
+    pub(crate) fn start_close(&self) -> bool {
+        let mut state = self.inner.state.lock();
+        match state.handle {
+            HandleState::Open => {
+                state.handle = HandleState::Closing;
+                true
             }
-        };
+            HandleState::Closing | HandleState::Closed => false,
+        }
+    }
 
+    /// Waits until every operation admitted before close intent has released
+    /// its permit.
+    pub(crate) async fn wait_for_drain(&self) {
         loop {
             if self.inner.state.lock().active == 0 {
-                return transitioned;
+                return;
             }
             self.inner.drained.notified().await;
         }
+    }
+
+    /// Transitions to closing and waits for all admitted operations to drain.
+    /// Returns true when this call performed the transition.
+    #[cfg(test)]
+    pub(crate) async fn begin_close(&self) -> bool {
+        let transitioned = self.start_close();
+        self.wait_for_drain().await;
+        transitioned
     }
 
     pub(crate) fn finish_close(&self) {
@@ -163,6 +176,7 @@ impl OperationGate {
     }
 
     /// Invalidates a remotely destroyed resource without issuing protocol I/O.
+    #[cfg(test)]
     pub(crate) fn invalidate(&self) -> bool {
         let mut state = self.inner.state.lock();
         if state.handle == HandleState::Closed {
@@ -201,6 +215,8 @@ impl Drop for OperationPermit {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum OwnershipCleanupError {
     Protocol { code: i64, message: String },
+    TargetStillPresent { target_id: String },
+    DeadlineExceeded { stage: &'static str },
     Other(String),
 }
 
@@ -228,6 +244,15 @@ impl std::fmt::Display for OwnershipCleanupError {
         match self {
             Self::Protocol { code, message } => {
                 write!(formatter, "Protocol error {code}: {message}")
+            }
+            Self::TargetStillPresent { target_id } => {
+                write!(
+                    formatter,
+                    "target {target_id} is still present after close confirmation"
+                )
+            }
+            Self::DeadlineExceeded { stage } => {
+                write!(formatter, "target close deadline exceeded during {stage}")
             }
             Self::Other(message) => formatter.write_str(message),
         }
@@ -450,6 +475,19 @@ impl PendingOwnershipRegistry {
         }
     }
 
+    pub(crate) fn abandon_all(&self) -> Vec<(String, Result<(), OwnershipCleanupError>)> {
+        let mut data = self.inner.data.lock();
+        data.entries.clear();
+        let mut completed = std::mem::take(&mut data.completed)
+            .into_iter()
+            .map(|(resource, _, result)| (resource, result))
+            .collect::<Vec<_>>();
+        completed.sort_by(|left, right| left.0.cmp(&right.0));
+        drop(data);
+        self.inner.changed.notify_waiters();
+        completed
+    }
+
     pub(crate) async fn cleanup_all(&self) -> Vec<(String, Result<(), OwnershipCleanupError>)> {
         loop {
             if let Some((resource, token, cleanup)) = self.claim_next() {
@@ -564,10 +602,16 @@ impl PendingOwnershipGuard {
         let Some(resource) = self.resource.take() else {
             return Ok(());
         };
-        self.registry.cleanup_one(resource, self.token).await
+        let result = self
+            .registry
+            .cleanup_one(resource.clone(), self.token)
+            .await;
+        self.registry.forget_completion(&resource, self.token);
+        result
     }
 }
 
+#[derive(Debug)]
 pub(crate) struct RetainedOwnership {
     registry: PendingOwnershipRegistry,
     resource: Option<String>,
@@ -585,6 +629,15 @@ impl RetainedOwnership {
             .await;
         self.registry.forget_completion(&resource, self.token);
         result
+    }
+
+    /// Hands retained ownership back to the registry for asynchronous cleanup.
+    /// The completion remains available to `cleanup_all`, so a later root close
+    /// observes the same result instead of losing detach-time failures.
+    pub(crate) fn schedule(mut self) {
+        if let Some(resource) = self.resource.take() {
+            self.registry.schedule(resource, self.token);
+        }
     }
 
     pub(crate) fn disarm(mut self) {
@@ -927,5 +980,62 @@ mod tests {
         assert_eq!(cleaned.load(Ordering::SeqCst), 1);
         assert_eq!(outcomes, vec![("page:in-flight".to_owned(), Ok(()))]);
         assert_eq!(registry.pending_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn repeated_explicit_successful_cleanup_leaves_no_completed_metadata() {
+        let registry = PendingOwnershipRegistry::new();
+
+        for resource in ["locator:first", "locator:second", "locator:third"] {
+            let owner = registry.register(resource, || async { Ok(()) });
+            assert_eq!(owner.cleanup().await, Ok(()));
+        }
+
+        assert_eq!(registry.pending_count(), 0);
+        assert_eq!(registry.cleanup_all().await, Vec::new());
+    }
+
+    #[tokio::test]
+    async fn explicit_cleanup_failure_is_returned_without_being_replayed() {
+        let registry = PendingOwnershipRegistry::new();
+        let expected = OwnershipCleanupError::Other("release failed".to_owned());
+        let cleanup_error = expected.clone();
+        let owner = registry.register("locator:failed", move || async move { Err(cleanup_error) });
+
+        assert_eq!(owner.cleanup().await, Err(expected));
+        assert_eq!(registry.pending_count(), 0);
+        assert_eq!(registry.cleanup_all().await, Vec::new());
+    }
+
+    #[tokio::test]
+    async fn cancelled_explicit_cleanup_is_reported_by_cleanup_all_exactly_once() {
+        let registry = PendingOwnershipRegistry::new();
+        let cleaned = Arc::new(AtomicUsize::new(0));
+        let cleanup_count = Arc::clone(&cleaned);
+        let (release_tx, release_rx) = oneshot::channel();
+        let owner = registry.register("locator:cancelled", move || async move {
+            let _ = release_rx.await;
+            cleanup_count.fetch_add(1, Ordering::SeqCst);
+            Err(OwnershipCleanupError::Other("release failed".to_owned()))
+        });
+        let explicit = tokio::spawn(async move { owner.cleanup().await });
+        while registry.cleaning_count() == 0 {
+            tokio::task::yield_now().await;
+        }
+
+        explicit.abort();
+        let _ = explicit.await;
+        release_tx.send(()).unwrap();
+        let outcomes = registry.cleanup_all().await;
+
+        assert_eq!(cleaned.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            outcomes,
+            vec![(
+                "locator:cancelled".to_owned(),
+                Err(OwnershipCleanupError::Other("release failed".to_owned()))
+            )]
+        );
+        assert_eq!(registry.cleanup_all().await, Vec::new());
     }
 }

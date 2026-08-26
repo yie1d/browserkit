@@ -1,6 +1,6 @@
 # browserkit
 
-browserkit is a client-neutral Rust runtime for Chrome DevTools Protocol (CDP) connections, built on [cdpkit](https://crates.io/crates/cdpkit). It supplies a small lifecycle spine: `BrowserRuntime`, `BrowserSession`, `Page`, and `Frame`.
+browserkit is a client-neutral Rust runtime for Chrome DevTools Protocol (CDP) connections, built on [cdpkit](https://crates.io/crates/cdpkit). Its public lifecycle is `BrowserRuntime -> BrowserSession -> Page -> Frame`, with typed APIs for browser work on top of that ownership spine.
 
 ## Requirements
 
@@ -19,4 +19,4 @@ See [runtime_connect.rs](examples/runtime_connect.rs) and [runtime_launch.rs](ex
 
 ## Scope
 
-The lifecycle SDK currently provides identities, ownership, frame routing, document epochs, and explicit cleanup. Locators, interactions, expectations, waiting, network and download support, and dialog handling are later SDK phases. The historical `bk` CLI and daemon remain available with their existing command surface while they are migrated separately.
+The Runtime SDK includes lifecycle and ownership, recursive Frame/OOPIF routing and document epochs; context configuration and capability preflight; locators, interactions, navigation, expectations and waits; evaluation, dialogs and file choosers; network observation and bodies; downloads, storage and authentication state; screenshots, PDF/HTML and snapshots; diagnostics and typed event streams. These APIs remain client-neutral: browserkit does not provide workflow orchestration policy. The historical `bk` CLI and daemon remain a separate entry point with their existing command surface.

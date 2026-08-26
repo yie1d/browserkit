@@ -1,7 +1,14 @@
 use std::fs;
 use std::path::PathBuf;
+use std::process::Command;
 
 use browserkit::{BrowserError, BrowserRuntime, BrowserSession, CloseReport, Frame, Page};
+
+const RELEASE_FORBIDDEN_PATHS: [&str; 3] = [
+    "docs/REDESIGN.md",
+    "docs/ROADMAP.md",
+    "docs/architecture-tour.html",
+];
 
 fn repository_file(path: &str) -> String {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -10,26 +17,133 @@ fn repository_file(path: &str) -> String {
         .replace("\r\n", "\n")
 }
 
+fn dependency_version<'a>(dependency: &'a toml::Value, name: &str) -> Result<&'a str, String> {
+    match dependency {
+        toml::Value::String(version) => Ok(version),
+        toml::Value::Table(table) => table
+            .get("version")
+            .and_then(toml::Value::as_str)
+            .ok_or_else(|| format!("{name} must declare a registry version")),
+        _ => Err(format!("{name} must be a string or dependency table")),
+    }
+}
+
+fn validate_release_manifest(manifest: &str) -> Result<(), String> {
+    let manifest = manifest
+        .parse::<toml::Value>()
+        .map_err(|error| format!("failed to parse Cargo.toml: {error}"))?;
+    let root = manifest
+        .as_table()
+        .ok_or_else(|| "Cargo.toml root must be a table".to_owned())?;
+    let package = root
+        .get("package")
+        .and_then(toml::Value::as_table)
+        .ok_or_else(|| "Cargo.toml must contain [package]".to_owned())?;
+
+    if package.get("version").and_then(toml::Value::as_str) != Some("0.4.4") {
+        return Err("release metadata must identify browserkit 0.4.4".to_owned());
+    }
+
+    let excludes = package
+        .get("exclude")
+        .and_then(toml::Value::as_array)
+        .ok_or_else(|| "package.exclude must be an array".to_owned())?;
+    let required_excludes = ["semantic-review/**", "todo/**"];
+    if excludes.len() != required_excludes.len()
+        || required_excludes.iter().any(|required| {
+            !excludes
+                .iter()
+                .any(|value| value.as_str() == Some(required))
+        })
+    {
+        return Err(format!(
+            "package.exclude must contain exactly {required_excludes:?}"
+        ));
+    }
+
+    let dependencies = root
+        .get("dependencies")
+        .and_then(toml::Value::as_table)
+        .ok_or_else(|| "Cargo.toml must contain [dependencies]".to_owned())?;
+    let cdpkit = dependencies
+        .get("cdpkit")
+        .ok_or_else(|| "Cargo.toml must depend on cdpkit".to_owned())?;
+    if dependency_version(cdpkit, "cdpkit")? != "=0.7.2" {
+        return Err("cdpkit must use the exact published 0.7.2 release".to_owned());
+    }
+    if let Some(table) = cdpkit.as_table() {
+        for source_override in ["path", "git", "branch", "tag", "rev", "registry"] {
+            if table.contains_key(source_override) {
+                return Err(format!(
+                    "cdpkit must not use the {source_override} dependency override"
+                ));
+            }
+        }
+    }
+
+    if let Some(patches) = root.get("patch").and_then(toml::Value::as_table) {
+        for source in patches.values().filter_map(toml::Value::as_table) {
+            if source.iter().any(|(name, dependency)| {
+                name == "cdpkit"
+                    || dependency
+                        .as_table()
+                        .and_then(|table| table.get("package"))
+                        .and_then(toml::Value::as_str)
+                        == Some("cdpkit")
+            }) {
+                return Err("cdpkit must not be replaced through [patch]".to_owned());
+            }
+        }
+    }
+
+    let dev_dependencies = root
+        .get("dev-dependencies")
+        .and_then(toml::Value::as_table)
+        .ok_or_else(|| "Cargo.toml must contain [dev-dependencies]".to_owned())?;
+    let tokio = dev_dependencies
+        .get("tokio")
+        .ok_or_else(|| "dev-dependencies must include tokio".to_owned())?;
+    if dependency_version(tokio, "dev-dependency tokio")? != "=1.49.0" {
+        return Err("the test-util tokio dependency must stay pinned to 1.49.0".to_owned());
+    }
+    let tokio_features = tokio
+        .as_table()
+        .and_then(|table| table.get("features"))
+        .and_then(toml::Value::as_array)
+        .ok_or_else(|| "dev-dependency tokio must declare features".to_owned())?;
+    if !tokio_features
+        .iter()
+        .any(|feature| feature.as_str() == Some("test-util"))
+    {
+        return Err("dev-dependency tokio must enable test-util".to_owned());
+    }
+
+    Ok(())
+}
+
+fn manifest_fixture(cdpkit: &str, patch: &str) -> String {
+    format!(
+        r#"
+[package]
+name = "browserkit"
+version = "0.4.4"
+exclude = ["semantic-review/**", "todo/**"]
+
+[dependencies]
+{cdpkit}
+
+[dev-dependencies]
+tokio = {{ version = "=1.49.0", features = ["test-util"] }}
+
+{patch}
+"#
+    )
+}
+
 #[test]
 fn manifest_uses_the_published_cdpkit_release() {
     let manifest = repository_file("Cargo.toml");
-
-    assert!(
-        manifest.contains(r#"cdpkit = "=0.7.1""#),
-        "browserkit must use the exact published cdpkit 0.7.1 release"
-    );
-    assert!(
-        !manifest.contains("cdpkit = {"),
-        "cdpkit must not use path or git dependency overrides"
-    );
-    assert!(
-        manifest.contains(r#"version = "0.4.3""#),
-        "the cdpkit 0.7.1 public-type migration and runtime SDK require a breaking 0.x version bump"
-    );
-    assert!(
-        manifest.contains(r#"exclude = ["docs/REDESIGN.md"]"#),
-        "local REDESIGN notes must not be included in the published crate"
-    );
+    validate_release_manifest(&manifest).unwrap_or_else(|error| panic!("{error}"));
 
     let changelog = repository_file("CHANGELOG.md");
     for required in [
@@ -42,6 +156,104 @@ fn manifest_uses_the_published_cdpkit_release() {
         assert!(
             changelog.contains(required),
             "CHANGELOG must document the runtime and cdpkit migration: {required}"
+        );
+    }
+}
+
+#[test]
+fn release_manifest_accepts_source_and_normalized_cdpkit_syntax() {
+    for cdpkit in [
+        r#"cdpkit = "=0.7.2""#,
+        "[dependencies.cdpkit]\nversion = \"=0.7.2\"",
+    ] {
+        validate_release_manifest(&manifest_fixture(cdpkit, ""))
+            .unwrap_or_else(|error| panic!("equivalent cdpkit dependency was rejected: {error}"));
+    }
+}
+
+#[test]
+fn release_manifest_rejects_cdpkit_overrides_and_non_exact_versions() {
+    for (case, cdpkit, patch) in [
+        ("non-exact", r#"cdpkit = "0.7.2""#, ""),
+        (
+            "path",
+            r#"cdpkit = { version = "=0.7.2", path = "../cdpkit" }"#,
+            "",
+        ),
+        (
+            "git",
+            r#"cdpkit = { version = "=0.7.2", git = "https://example.invalid/cdpkit" }"#,
+            "",
+        ),
+        (
+            "patch",
+            r#"cdpkit = "=0.7.2""#,
+            r#"[patch.crates-io]
+cdpkit = { git = "https://example.invalid/cdpkit" }"#,
+        ),
+    ] {
+        assert!(
+            validate_release_manifest(&manifest_fixture(cdpkit, patch)).is_err(),
+            "{case} cdpkit dependency must be rejected"
+        );
+    }
+}
+
+#[test]
+fn release_manifest_requires_the_minimal_internal_excludes() {
+    let manifest = manifest_fixture(r#"cdpkit = "=0.7.2""#, "");
+    let incomplete_manifests = [
+        manifest.replace(r#""semantic-review/**", "#, ""),
+        manifest.replace(r#", "todo/**""#, ""),
+    ];
+    for incomplete in incomplete_manifests {
+        assert!(
+            validate_release_manifest(&incomplete).is_err(),
+            "every required package exclude must be enforced"
+        );
+    }
+    let overly_broad = manifest.replace(r#""todo/**"]"#, r#""todo/**", "tests/**"]"#);
+    assert!(
+        validate_release_manifest(&overly_broad).is_err(),
+        "unreviewed broad package excludes must be rejected"
+    );
+}
+
+#[test]
+fn release_forbidden_paths_are_ignored_and_untracked() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let ignore = repository_file(".gitignore");
+    let ignore_lines = ignore.lines().collect::<Vec<_>>();
+    for path in RELEASE_FORBIDDEN_PATHS {
+        assert!(
+            ignore_lines.contains(&format!("/{path}").as_str()),
+            "{path} must have an exact root-relative .gitignore entry"
+        );
+    }
+
+    let output = Command::new("git")
+        .args(["ls-files", "--"])
+        .args(RELEASE_FORBIDDEN_PATHS)
+        .current_dir(root)
+        .output()
+        .expect("git must be available for repository contract checks");
+    assert!(output.status.success(), "git ls-files failed");
+    assert!(
+        output.stdout.is_empty(),
+        "release-forbidden paths must not be tracked:\n{}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+}
+
+#[test]
+fn release_preflight_rejects_forbidden_tracked_and_packaged_paths() {
+    let workflow = repository_file(".github/workflows/release.yml");
+    assert!(workflow.contains("git ls-files --error-unmatch -- \"$forbidden\""));
+    assert!(workflow.contains("grep -Fx \"browserkit-$VERSION/$forbidden\""));
+    for path in RELEASE_FORBIDDEN_PATHS {
+        assert!(
+            workflow.contains(&format!("\"{path}\"")),
+            "release preflight must cover {path}"
         );
     }
 }
@@ -72,12 +284,6 @@ fn release_and_ci_enforce_the_supported_toolchain_and_strict_audit() {
     assert!(
         readme.contains("Rust 1.88+"),
         "README requirements must match the manifest MSRV"
-    );
-
-    let roadmap = repository_file("docs/ROADMAP.md");
-    assert!(
-        roadmap.contains("Rust 1.88 checks") && !roadmap.contains("Rust 1.75 checks"),
-        "roadmap must match the manifest MSRV"
     );
 
     for path in [".github/workflows/ci.yml", ".github/workflows/release.yml"] {
@@ -148,25 +354,12 @@ fn release_publishes_and_verifies_the_sdk_before_github_assets() {
 }
 
 #[test]
-fn maintained_docs_describe_the_actual_dependency_and_event_policies() {
+fn maintained_docs_use_the_published_dependency() {
     let readme = repository_file("README.md");
     assert!(
         !readme.contains("Until cdpkit 0.6.0 is published")
             && !readme.contains("git clone https://github.com/yie1d/cdpkit-rs"),
         "source-build instructions must use the published cdpkit release"
-    );
-
-    let roadmap = repository_file("docs/ROADMAP.md");
-    let normalized = roadmap.split_whitespace().collect::<Vec<_>>().join(" ");
-    assert!(
-        normalized.contains("Event::subscribe(&sender).await")
-            && normalized.contains("target/page-scoped events use `&session`")
-            && normalized.contains("browser/connection-scoped events use `&cdp`")
-            && normalized.contains("independent unbounded queue")
-            && normalized.contains(
-                "registration is awaited before enabling its domain or triggering an action"
-            ),
-        "docs/ROADMAP.md must describe cdpkit 0.7.1 registration, scoped senders, and queue semantics"
     );
 }
 
@@ -192,14 +385,6 @@ fn maintained_docs_separate_the_sdk_from_the_historical_bk_runtime() {
             && skill.contains("shell completions 输出文本")
             && !skill.contains("输出永远 JSON"),
         "the bundled skill must distinguish runtime JSON from textual help output"
-    );
-
-    let tour = repository_file("docs/architecture-tour.html");
-    assert!(
-        tour.contains("历史 <code>bk</code> CLI/daemon 的架构")
-            && tour.contains("cdpkit 0.7.1")
-            && !tour.contains("cdpkit 0.6.0"),
-        "the architecture tour must identify its legacy scope and current protocol dependency"
     );
 }
 
@@ -244,8 +429,28 @@ fn runtime_sdk_contract() {
         );
     }
 
-    for path in ["README.md", "docs/ROADMAP.md"] {
+    for path in ["README.md"] {
         let document = repository_file(path);
+        for current_capability in [
+            "locators",
+            "navigation",
+            "network",
+            "downloads",
+            "storage",
+            "snapshots",
+            "diagnostics",
+            "typed event streams",
+        ] {
+            assert!(
+                document.to_ascii_lowercase().contains(current_capability),
+                "{path} must describe the current Runtime capability: {current_capability}"
+            );
+        }
+        assert!(
+            !document.contains("remain outside the current lifecycle SDK phase")
+                && !document.contains("are later SDK phases"),
+            "{path} must not describe implemented Runtime APIs as future work"
+        );
         for escape_hatch in ["runtime.cdp()", "page.cdp_session()", "frame.cdp_session()"] {
             assert!(
                 document.contains(escape_hatch),
@@ -278,22 +483,27 @@ fn frame_target_lifecycle_observation_matches_cdp_delivery_scope() {
         frame_runtime.contains(
             "session.observe([\"Target.attachedToTarget\"]).await?",
         ) && frame_runtime.contains("spawn_target_attach_reducer")
+            && frame_runtime.contains("drain_initial_attached_targets")
             && frame_runtime.contains(
             "runtime.cdp().observe([\"Target.detachedFromTarget\"]).await?",
         )
             && frame_runtime.contains("graph.route_oopif(")
-            && frame_runtime.contains("SetAutoAttach::new(true, false)\n            .with_flatten(true)\n            .send(&main_session)"),
-        "Target attach observation must use the parent Page Session, detach observation must use the connection scope, and OOPIF routing must stay isolated to the page frame graph"
+            && frame_runtime.contains("SetAutoAttach::new(true, configure_every_route)")
+            && frame_runtime.contains("has_every_route_configuration"),
+        "Target attach observation must use each parent Session, initial configured OOPIFs must drain before attach returns, detach observation must use connection scope, and routing must stay page-local"
     );
-    let reducer_start = frame_runtime
-        .find("tokio::spawn(async move")
-        .expect("frame reducer task");
+    let prepare = frame_runtime
+        .find("Self::prepare_frame_session(&main_session)")
+        .expect("main route preparation");
     let auto_attach = frame_runtime
-        .find("SetAutoAttach::new(true, false)")
-        .expect("Target auto-attach command");
+        .find("SetAutoAttach::new(true, configure_every_route)")
+        .expect("configuration-aware Target auto-attach command");
+    let initial_drain = frame_runtime
+        .find("Self::drain_initial_attached_targets(&store, &mut main_target_attached)")
+        .expect("initial attached-target drain");
     assert!(
-        reducer_start < auto_attach,
-        "the frame reducer must be running before Target auto-attach can emit initial OOPIF events"
+        prepare < auto_attach && auto_attach < initial_drain,
+        "subscriptions must precede auto-attach and every configured initial target must drain after its response"
     );
 }
 
@@ -318,5 +528,91 @@ fn frame_store_does_not_retain_a_strong_page_handle() {
             && frame_runtime.contains("Self::prepare_frame_session(&session)")
             && frame_runtime.contains(".send(&session)"),
         "FrameStore must cancel reducers on drop and initialize each OOPIF Session recursively"
+    );
+}
+
+#[test]
+fn runtime_preflight_contracts_preserve_typed_truth_and_ownership_ordering() {
+    let session = repository_file("src/runtime/session.rs");
+    let new_page = &session[session
+        .find("pub async fn new_page")
+        .expect("new_page implementation")..];
+    let creation = new_page
+        .find("PageCreationTransaction::new")
+        .expect("new_page creation transaction");
+    let route_prepare = new_page
+        .find("super::route::prepare_main_route")
+        .expect("synchronous route preparation");
+    let route_install = new_page
+        .find("creation.install_route(rollback)")
+        .expect("route ownership transfer into creation transaction");
+    let route_apply = new_page
+        .find("super::route::apply_main_route")
+        .expect("asynchronous route application");
+    let navigation_commit = new_page
+        .find("super::navigation::commit_page_creation_navigation")
+        .expect("new_page navigation commit fence");
+    let ownership_handoff = new_page
+        .find("creation.finish_success(self, page)")
+        .expect("new_page ownership handoff");
+    assert!(
+        creation < route_prepare
+            && route_prepare < route_install
+            && route_install < route_apply
+            && route_apply < navigation_commit
+            && navigation_commit < ownership_handoff,
+        "the creation transaction must own admission and target before route configuration can await"
+    );
+
+    let success_handoff = &session[session
+        .find("fn finish_success")
+        .expect("page creation success handoff")..];
+    let retain_route = success_handoff
+        .find("route.retain();")
+        .expect("retained route ownership");
+    let retain_target = success_handoff
+        .find("page.retain_owned_target(target.retain())")
+        .expect("default target ownership transfer");
+    let publish = success_handoff
+        .find("session.publish_page")
+        .expect("new_page publication");
+    let release = success_handoff
+        .find("drop(admission);")
+        .expect("creation admission release");
+    assert!(
+        retain_route < publish && retain_target < publish && publish < release,
+        "route/target ownership and publication must become close-visible before admission is released"
+    );
+
+    let navigation = repository_file("src/runtime/navigation.rs");
+    let creation_commit = &navigation[navigation
+        .find("pub(super) async fn commit_page_creation_navigation")
+        .expect("new_page navigation commit helper")..];
+    assert!(
+        creation_commit.contains("validate_navigation_response(")
+            && creation_commit.contains("ActionCompletion::Completed"),
+        "new_page navigation commit must reject acknowledged navigation failures as completed"
+    );
+
+    let artifact = repository_file("src/runtime/artifact.rs");
+    assert!(
+        artifact.contains("page.capabilities().status(super::Capability::Pdf)")
+            && artifact.contains("ConfigurationFailure::UnsupportedCapability"),
+        "PDF preflight must use the owning session capability snapshot and preserve its typed reason"
+    );
+
+    let launch = repository_file("src/runtime/launch.rs");
+    let validate = launch
+        .find("validate_raw_arguments(&options)")
+        .expect("raw launch argument preflight");
+    let discovery = launch
+        .find("BrowserFinder::find()")
+        .expect("browser discovery");
+    assert!(
+        validate < discovery
+            && launch.contains("--headless")
+            && launch.contains("--proxy-pac-url")
+            && launch.contains("--proxy-auto-detect"),
+        "typed launch truth must be validated before browser discovery or spawn"
     );
 }
