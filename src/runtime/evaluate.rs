@@ -1115,15 +1115,32 @@ mod tests {
             suppress_context: false,
         })
         .await;
-        let evaluating = tokio::spawn(async move {
-            page.evaluate_value(Evaluation::new("__stall__").deadline(Duration::from_millis(10)))
-                .await
-        });
-        started.notified().await;
-        let error = evaluating.await.unwrap().unwrap_err();
-        assert!(error.to_string().contains("exceeded"));
-        assert_eq!(error.phase(), OperationPhase::Observation);
-        release.notify_one();
+        let evaluating =
+            page.evaluate_value(Evaluation::new("__stall__").deadline(Duration::from_millis(10)));
+        tokio::pin!(evaluating);
+        tokio::time::timeout(Duration::from_secs(1), async {
+            tokio::select! {
+                biased;
+                _ = started.notified() => {
+                    let error = (&mut evaluating).await.unwrap_err();
+                    assert!(error.to_string().contains("exceeded"));
+                    assert_eq!(error.operation_name(), Some("evaluate JavaScript"));
+                    assert_eq!(error.phase(), OperationPhase::Observation);
+                    assert_eq!(error.action_completed(), ActionCompletion::Unknown);
+                    release.notify_one();
+                }
+                result = &mut evaluating => {
+                    let error = result.unwrap_err();
+                    assert!(error.to_string().contains("exceeded"));
+                    assert_eq!(error.operation_name(), Some("evaluate JavaScript"));
+                    assert_eq!(error.phase(), OperationPhase::Observation);
+                    assert_eq!(error.action_completed(), ActionCompletion::Unknown);
+                    release.notify_one();
+                }
+            }
+        })
+        .await
+        .expect("evaluation deadline coordination exceeded one second");
         tokio::time::timeout(Duration::from_secs(1), async {
             loop {
                 if commands
@@ -1137,7 +1154,7 @@ mod tests {
             }
         })
         .await
-        .unwrap();
+        .expect("releaseObjectGroup was not observed within one second");
     }
 
     #[tokio::test]
