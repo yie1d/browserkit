@@ -1589,7 +1589,7 @@ const shadow = document.querySelector('#shadow').attachShadow({{mode:'open'}});
 shadow.innerHTML = '<button id=shadow-button>Shadow action</button>';
 document.querySelector('#focused').focus();
 </script>
-<iframe src=/same></iframe><iframe src="http://child.test:{oopif_port}/"></iframe>"#,
+<iframe src=/same></iframe><iframe src="http://localhost:{oopif_port}/"></iframe>"#,
             "X".repeat(8_192)
         );
         let parent_server = tokio::spawn(serve_fixture(parent_listener, parent, child.clone()));
@@ -1597,8 +1597,7 @@ document.querySelector('#focused').focus();
         let runtime = BrowserRuntime::launch(
             LaunchOptions::default()
                 .headless(true)
-                .arg("--site-per-process")
-                .arg("--host-resolver-rules=MAP *.test 127.0.0.1"),
+                .arg("--site-per-process"),
         )
         .await
         .unwrap();
@@ -1606,7 +1605,7 @@ document.querySelector('#focused').focus();
             .default_session()
             .await
             .unwrap()
-            .new_page(format!("http://parent.test:{parent_port}/"))
+            .new_page(format!("http://127.0.0.1:{parent_port}/"))
             .await
             .unwrap();
         tokio::time::timeout(Duration::from_secs(5), async {
@@ -1756,7 +1755,7 @@ document.querySelector('#focused').focus();
             );
         }
         cdpkit::page::methods::Navigate::new(format!(
-            "http://parent.test:{parent_port}/?replacement"
+            "http://127.0.0.1:{parent_port}/?replacement"
         ))
         .send(page.cdp_session())
         .await

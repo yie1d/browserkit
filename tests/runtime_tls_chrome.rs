@@ -23,7 +23,7 @@ use tokio_rustls::TlsAcceptor;
 use tokio_util::sync::CancellationToken;
 
 const TEST_DEADLINE: Duration = Duration::from_secs(15);
-const TLS_HOST: &str = "tls.test";
+const TLS_HOST: &str = "localhost";
 const TLS_MARKER: &str = "browserkit-task12-local-tls";
 
 struct TlsFixture {
@@ -36,7 +36,7 @@ impl TlsFixture {
     async fn start() -> Self {
         let CertifiedKey { cert, key_pair } =
             generate_simple_self_signed(vec![TLS_HOST.to_owned()])
-                .expect("self-signed tls.test cert");
+                .expect("self-signed localhost cert");
         let key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key_pair.serialize_der()));
         let config = ServerConfig::builder()
             .with_no_client_auth()
@@ -68,7 +68,18 @@ impl TlsFixture {
                             let Ok(stream) = acceptor.accept(stream).await else {
                                 return;
                             };
-                            serve_marker(stream).await.expect("serve TLS marker response");
+                            match serve_marker(stream).await {
+                                Ok(()) => {}
+                                Err(error)
+                                    if matches!(
+                                        error.kind(),
+                                        std::io::ErrorKind::ConnectionReset
+                                            | std::io::ErrorKind::ConnectionAborted
+                                            | std::io::ErrorKind::BrokenPipe
+                                            | std::io::ErrorKind::UnexpectedEof
+                                    ) => {}
+                                Err(error) => panic!("serve TLS marker response: {error}"),
+                            }
                         });
                     }
                 }
@@ -127,14 +138,13 @@ async fn serve_marker(
     stream.shutdown().await
 }
 
-fn chrome_args(port: u16) -> [String; 6] {
+fn chrome_args(port: u16) -> [String; 5] {
     [
         "--disable-background-networking".to_owned(),
         "--disable-component-update".to_owned(),
         "--disable-default-apps".to_owned(),
         "--disable-sync".to_owned(),
         format!("--explicitly-allowed-ports={port}"),
-        format!("--host-resolver-rules=MAP {TLS_HOST} 127.0.0.1"),
     ]
 }
 
@@ -228,9 +238,9 @@ async fn browser_footprint(runtime: &BrowserRuntime) -> (BTreeSet<String>, BTree
 }
 
 #[tokio::test]
-#[ignore = "requires installed Chrome; uses a self-signed tls.test fixture, private profile, and loopback only"]
+#[ignore = "requires installed Chrome; uses a self-signed localhost fixture, private profile, and loopback only"]
 async fn chrome_local_tls_launched_default_and_isolated_scopes_do_not_leak() {
-    tokio::time::timeout(Duration::from_secs(90), launched_tls_scenario())
+    tokio::time::timeout(Duration::from_secs(90), Box::pin(launched_tls_scenario()))
         .await
         .expect("launched local TLS test deadline");
 }
@@ -431,7 +441,7 @@ fn chrome_executable() -> PathBuf {
 #[tokio::test]
 #[ignore = "requires installed Chrome; attaches only to a dedicated private-profile process and loopback TLS"]
 async fn chrome_local_tls_attached_default_preflight_and_isolated_scope() {
-    tokio::time::timeout(Duration::from_secs(60), attached_tls_scenario())
+    tokio::time::timeout(Duration::from_secs(60), Box::pin(attached_tls_scenario()))
         .await
         .expect("attached local TLS test deadline");
 }
