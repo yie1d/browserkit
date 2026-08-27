@@ -1633,7 +1633,7 @@ drop.addEventListener('dragover', e=>e.preventDefault()); drop.addEventListener(
 const root=document.querySelector('#shadow').attachShadow({{mode:'open'}}); root.innerHTML=`<button id=shadow-button>shadow</button>`;
 root.querySelector('button').onclick=()=>window.shadowClicked=true;
 </script>
-<iframe src='/same'></iframe><iframe src='http://child.test:{child_port}/'></iframe>"#
+<iframe src='/same'></iframe><iframe src='http://localhost:{child_port}/'></iframe>"#
         );
         let parent_server = tokio::spawn(serve_live_locator_fixture(
             parent_listener,
@@ -1649,14 +1649,13 @@ root.querySelector('button').onclick=()=>window.shadowClicked=true;
         let runtime = BrowserRuntime::launch(
             LaunchOptions::default()
                 .headless(true)
-                .arg("--site-per-process")
-                .arg("--host-resolver-rules=MAP *.test 127.0.0.1"),
+                .arg("--site-per-process"),
         )
         .await
         .unwrap();
         let session = runtime.default_session().await.unwrap();
         let page = session
-            .new_page(format!("http://parent.test:{parent_port}/"))
+            .new_page(format!("http://127.0.0.1:{parent_port}/"))
             .await
             .unwrap();
         tokio::time::timeout(Duration::from_secs(5), async {

@@ -1295,7 +1295,7 @@ mod tests {
         let parent_port = parent_listener.local_addr().unwrap().port();
         let parent_body = format!(
             r#"<!doctype html><script>globalThis.appGlobal='main';</script>
-            <iframe src='/same'></iframe><iframe src='http://child.test:{oopif_port}/'></iframe>"#
+            <iframe src='/same'></iframe><iframe src='http://localhost:{oopif_port}/'></iframe>"#
         );
         let same_body = "<!doctype html><script>globalThis.appGlobal='same';</script>".to_owned();
         let oopif_body = "<!doctype html><script>globalThis.appGlobal='oopif';</script>".to_owned();
@@ -1313,14 +1313,13 @@ mod tests {
         let runtime = BrowserRuntime::launch(
             LaunchOptions::default()
                 .headless(true)
-                .arg("--site-per-process")
-                .arg("--host-resolver-rules=MAP *.test 127.0.0.1"),
+                .arg("--site-per-process"),
         )
         .await
         .unwrap();
         let session = runtime.default_session().await.unwrap();
         let page = session
-            .new_page(format!("http://parent.test:{parent_port}/"))
+            .new_page(format!("http://127.0.0.1:{parent_port}/"))
             .await
             .unwrap();
         let main = page.main_frame().await.unwrap();

@@ -6281,7 +6281,7 @@ mod tests {
         let child_server = tokio::spawn(serve_fixture(
             child_listener,
             format!(
-                r#"<html><body>child<iframe src="http://grandchild.test:{grandchild_port}/"></iframe></body></html>"#
+                r#"<html><body>child<iframe src="http://127.0.0.1:{grandchild_port}/"></iframe></body></html>"#
             ),
         ));
         let grandchild_server = tokio::spawn(serve_fixture(
@@ -6291,21 +6291,20 @@ mod tests {
         let parent_server = tokio::spawn(serve_fixture(
             parent_listener,
             format!(
-                r#"<html><body><iframe src="http://child.test:{child_port}/"></iframe></body></html>"#
+                r#"<html><body><iframe src="http://localhost:{child_port}/"></iframe></body></html>"#
             ),
         ));
 
         let runtime = BrowserRuntime::launch(
             LaunchOptions::default()
                 .headless(true)
-                .arg("--site-per-process")
-                .arg("--host-resolver-rules=MAP *.test 127.0.0.1"),
+                .arg("--site-per-process"),
         )
         .await
         .expect("launch Chrome");
         let session = runtime.default_session().await.expect("default session");
         let page = session
-            .new_page(format!("http://parent.test:{parent_port}/"))
+            .new_page(format!("http://127.0.0.1:{parent_port}/"))
             .await
             .expect("open fixture");
         let main = page.main_frame().await.expect("main frame");

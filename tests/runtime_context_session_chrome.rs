@@ -428,7 +428,7 @@ async fn chrome_nested_future_oopif_routes_publish_configured_facts_without_view
         FixtureResponse::html("<html><body data-kind='nested'>nested</body></html>")
     }))
     .await;
-    let nested_url = format!("{}/nested", nested.origin("nested.test"));
+    let nested_url = format!("{}/nested", nested.origin("nested.localhost"));
     let child = LoopbackFixture::start(Arc::new(move |_| {
         FixtureResponse::html(format!(
             "<html><body data-kind='child'>child<iframe src={nested_url:?}></iframe></body></html>"
@@ -448,14 +448,13 @@ async fn chrome_nested_future_oopif_routes_publish_configured_facts_without_view
         LaunchOptions::default()
             .headless(true)
             .user_data_dir(profile.path())
-            .arg("--site-per-process")
-            .arg("--host-resolver-rules=MAP *.test 127.0.0.1"),
+            .arg("--site-per-process"),
         LaunchOptions::arg,
     );
     let runtime = BrowserRuntime::launch(options)
         .await
         .expect("launch private Chrome");
-    let parent_origin = parent.origin("parent.test");
+    let parent_origin = parent.origin("localhost");
     let session = runtime
         .isolated_session(IsolatedSessionOptions::default().context(configured_route(1000, 740)))
         .await
@@ -467,7 +466,7 @@ async fn chrome_nested_future_oopif_routes_publish_configured_facts_without_view
         .await
         .expect("subscribe before creating future OOPIF routes");
 
-    let child_url = format!("{}/child", child.origin("child.test"));
+    let child_url = format!("{}/child", child.origin("127.0.0.1"));
     let add_child = format!(
         "(() => {{ const frame = document.createElement('iframe'); frame.src = {child_url:?}; document.body.append(frame); return true; }})()"
     );

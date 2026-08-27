@@ -2793,7 +2793,7 @@ mod tests {
             let child_body = "<!doctype html><style>html,body{margin:0;background:#0000ff}#blue{width:34px;height:22px;background:#0000ff}iframe{position:absolute;left:25px;top:0;border:0;width:50px;height:40px}</style><div id=blue></div><iframe id=nested src=/same></iframe>".to_owned();
             let nested_body = "<!doctype html><style>html,body{margin:0;background:#ffff00}#yellow{width:26px;height:18px;background:#ffff00}</style><div id=yellow></div>".to_owned();
             let parent_body = format!(
-                r#"<!doctype html><style>html,body{{margin:0;background:white}}#red{{width:40px;height:30px;background:#ff0000}}iframe{{border:0;width:80px;height:60px}}#same{{position:absolute;left:100px;top:20px}}#cross{{position:absolute;left:200px;top:20px}}</style><div id=red></div><div id=host></div><script>const root=document.querySelector('#host').attachShadow({{mode:'open'}});root.innerHTML='<div id=purple style=\"width:36px;height:24px;background:#ff00ff\"></div>';</script><iframe id=same src=/same></iframe><iframe id=cross src="http://child.test:{child_port}/"></iframe>"#
+                r#"<!doctype html><style>html,body{{margin:0;background:white}}#red{{width:40px;height:30px;background:#ff0000}}iframe{{border:0;width:80px;height:60px}}#same{{position:absolute;left:100px;top:20px}}#cross{{position:absolute;left:200px;top:20px}}</style><div id=red></div><div id=host></div><script>const root=document.querySelector('#host').attachShadow({{mode:'open'}});root.innerHTML='<div id=purple style=\"width:36px;height:24px;background:#ff00ff\"></div>';</script><iframe id=same src=/same></iframe><iframe id=cross src="http://localhost:{child_port}/"></iframe>"#
             );
             let parent_server = tokio::spawn(serve_artifact_fixture(
                 parent_listener,
@@ -2809,7 +2809,6 @@ mod tests {
                 LaunchOptions::default()
                     .headless(true)
                     .arg("--site-per-process")
-                    .arg("--host-resolver-rules=MAP *.test 127.0.0.1")
                     .arg(explicitly_allowed_ports_arg([
                         parent_address.port(),
                         child_address.port(),
@@ -2823,7 +2822,7 @@ mod tests {
             let initial_epoch = initial_main.document_epoch();
             let initial_generation = page.generation();
             let mut events = page.subscribe_events().await.unwrap();
-            let target_url = format!("http://parent.test:{parent_port}/");
+            let target_url = format!("http://127.0.0.1:{parent_port}/");
             let navigation = page.goto(target_url.as_str()).await.unwrap();
             assert_eq!(navigation.final_url(), target_url);
             let committed = tokio::time::timeout(std::time::Duration::from_secs(8), async {

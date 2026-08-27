@@ -1274,7 +1274,7 @@ pub(crate) mod tests {
   closedRoot.innerHTML = `<button id="closed-button">Closed</button>`;
 </script>
 <iframe src="/same"></iframe>
-<iframe src="http://child.test:{oopif_port}/"></iframe>"#
+<iframe src="http://localhost:{oopif_port}/"></iframe>"#
         );
         let parent_server = tokio::spawn(serve_live_locator_fixture(
             parent_listener,
@@ -1290,14 +1290,13 @@ pub(crate) mod tests {
         let runtime = BrowserRuntime::launch(
             LaunchOptions::default()
                 .headless(true)
-                .arg("--site-per-process")
-                .arg("--host-resolver-rules=MAP *.test 127.0.0.1"),
+                .arg("--site-per-process"),
         )
         .await
         .expect("launch private Chrome");
         let session = runtime.default_session().await.expect("default session");
         let page = session
-            .new_page(format!("http://parent.test:{parent_port}/"))
+            .new_page(format!("http://127.0.0.1:{parent_port}/"))
             .await
             .expect("open locator fixture");
         let main = page.main_frame().await.expect("main frame");
@@ -1508,7 +1507,7 @@ pub(crate) mod tests {
 
         let stale_document = page.locator("#text-only");
         cdpkit::page::methods::Navigate::new(format!(
-            "http://parent.test:{parent_port}/?replacement"
+            "http://127.0.0.1:{parent_port}/?replacement"
         ))
         .send(page.cdp_session())
         .await

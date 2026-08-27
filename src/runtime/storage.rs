@@ -1639,73 +1639,30 @@ mod tests {
         (port, task)
     }
 
-    #[tokio::test]
-    #[ignore = "requires installed Chrome and loopback sockets"]
-    async fn live_chrome_storage_routes_contexts_origins_frames_and_page_session_storage() {
-        let (second_port, second_server) = start_http_fixture(|path| match path {
-            "/oopif" => "<!doctype html><title>oopif leaf</title><body data-page='oopif'>oopif storage</body>".into(),
-            _ => format!(
-                "<!doctype html><title>second storage</title><body data-path={path:?}>second storage for {path}</body>"
-            ),
-        })
-        .await;
-        let (first_port, first_server) = start_http_fixture(move |path| match path {
-            "/page-one" => format!(
-                "<!doctype html><title>page one</title><body data-page='page-one'><iframe src='/same'></iframe><iframe src='http://localhost:{second_port}/oopif'></iframe></body>"
-            ),
-            "/same" => "<!doctype html><title>same leaf</title><body data-page='same'>same storage</body>".into(),
-            _ => format!(
-                "<!doctype html><title>first storage</title><body data-path={path:?}>first storage for {path}</body>"
-            ),
-        })
-        .await;
-        let runtime = super::super::BrowserRuntime::launch(
-            super::super::LaunchOptions::default()
-                .headless(true)
-                .arg("--site-per-process"),
-        )
-        .await
-        .unwrap();
-        let default_session = runtime.default_session().await.unwrap();
-        let default_url = format!("http://127.0.0.1:{first_port}/default");
-        let default_page = default_session.new_page("about:blank").await.unwrap();
-        fence_live_document(&default_page, &default_url).await;
-        default_page
-            .local_storage()
-            .set("default-sentinel", "preserve")
-            .await
-            .unwrap();
-        default_session
-            .set_cookie(
-                BrowserCookie::new("default-sentinel", "preserve")
-                    .url(format!("http://127.0.0.1:{first_port}/")),
-            )
-            .await
-            .unwrap();
-        let session = runtime
-            .isolated_session(super::super::IsolatedSessionOptions::default())
-            .await
-            .unwrap();
-        let page_one_url = format!("http://127.0.0.1:{first_port}/page-one");
-        let same_frame_url = format!("http://127.0.0.1:{first_port}/same");
-        let oopif_frame_url = format!("http://localhost:{second_port}/oopif");
-        let page_one = session.new_page("about:blank").await.unwrap();
-        let mut page_one_events = page_one.subscribe_events().await.unwrap();
-        fence_live_document(&page_one, &page_one_url).await;
-        let page_two_url = format!("http://127.0.0.1:{second_port}/");
-        let page_two = session.new_page("about:blank").await.unwrap();
-        fence_live_document(&page_two, &page_two_url).await;
-        let page_same_origin_url = format!("http://127.0.0.1:{first_port}/other");
-        let page_same_origin = session.new_page("about:blank").await.unwrap();
-        fence_live_document(&page_same_origin, &page_same_origin_url).await;
-        let other_session = runtime
-            .isolated_session(super::super::IsolatedSessionOptions::default())
-            .await
-            .unwrap();
-        let other_page_url = format!("http://127.0.0.1:{first_port}/other-context");
-        let other_page = other_session.new_page("about:blank").await.unwrap();
-        fence_live_document(&other_page, &other_page_url).await;
+    struct LiveStorageScopes<'a> {
+        default_session: &'a BrowserSession,
+        default_page: &'a Page,
+        session: &'a BrowserSession,
+        page_one: &'a Page,
+        page_two: &'a Page,
+        page_same_origin: &'a Page,
+        other_session: &'a BrowserSession,
+        other_page: &'a Page,
+        first_port: u16,
+    }
 
+    async fn assert_context_and_page_storage(scopes: LiveStorageScopes<'_>) {
+        let LiveStorageScopes {
+            default_session,
+            default_page,
+            session,
+            page_one,
+            page_two,
+            page_same_origin,
+            other_session,
+            other_page,
+            first_port,
+        } = scopes;
         page_one
             .local_storage()
             .set("context", "one")
@@ -1831,376 +1788,9 @@ mod tests {
                 .as_deref(),
             Some("other")
         );
+    }
 
-        let main = page_one.main_frame().await.unwrap();
-        let main_frame_id = main.id().as_str().to_owned();
-        let main_session = main.cdp_session().await.unwrap().id().to_owned();
-        let route_deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
-        let (oopif_frame_id, old_oopif_session, new_oopif_session, oopif_target_id) = loop {
-            let envelope = tokio::time::timeout_at(route_deadline, page_one_events.next())
-                .await
-                .unwrap_or_else(|_| panic!("deadline waiting for the OOPIF FrameRouteChanged"))
-                .expect("page-one event stream closed before the OOPIF route changed")
-                .unwrap_or_else(|error| {
-                    panic!("page-one event stream failed before the OOPIF route changed: {error}")
-                });
-            match envelope.into_event() {
-                super::super::PageEvent::FrameRouteChanged {
-                    frame_id,
-                    previous_session_id,
-                    session_id,
-                    target_id: Some(target_id),
-                } if session_id != main_session => {
-                    break (
-                        frame_id.as_str().to_owned(),
-                        previous_session_id,
-                        session_id,
-                        target_id,
-                    );
-                }
-                _ => {}
-            }
-        };
-        assert!(
-            !oopif_target_id.is_empty(),
-            "OOPIF route event must identify its target"
-        );
-
-        let frames = page_one.frames().await.unwrap();
-        let active_frames = frames
-            .into_iter()
-            .map(|frame| (frame.id().as_str().to_owned(), frame))
-            .collect::<BTreeMap<_, _>>();
-        assert_eq!(
-            active_frames.len(),
-            3,
-            "page-one must have exactly its main frame and the two fixture leaf frames"
-        );
-        assert!(
-            active_frames.contains_key(&main_frame_id),
-            "active frame snapshot must contain the main frame"
-        );
-        let oopif_frame = active_frames
-            .get(&oopif_frame_id)
-            .expect("OOPIF route event must identify an active frame")
-            .clone();
-        let mut same_frames = active_frames
-            .iter()
-            .filter(|(frame_id, _)| {
-                frame_id.as_str() != main_frame_id && frame_id.as_str() != oopif_frame_id
-            })
-            .map(|(_, frame)| frame.clone());
-        let same_frame = same_frames
-            .next()
-            .expect("active frame snapshot must contain the same-process child");
-        assert!(
-            same_frames.next().is_none(),
-            "active frame snapshot must contain only one same-process child"
-        );
-        let same_parent = same_frame.parent().await.unwrap().unwrap();
-        let oopif_parent = oopif_frame.parent().await.unwrap().unwrap();
-        assert_eq!(same_parent.id().as_str(), main_frame_id);
-        assert_eq!(oopif_parent.id().as_str(), main_frame_id);
-        assert_eq!(same_parent.id(), oopif_parent.id());
-
-        let same_session = same_frame.cdp_session().await.unwrap().id().to_owned();
-        let oopif_session = oopif_frame.cdp_session().await.unwrap().id().to_owned();
-        assert_eq!(same_session, main_session);
-        assert_eq!(old_oopif_session, main_session);
-        assert_eq!(oopif_session, new_oopif_session);
-        assert_ne!(oopif_session, main_session);
-
-        let same_location: Value = same_frame
-            .evaluate("({url: location.href, origin: location.origin})")
-            .await
-            .unwrap();
-        let oopif_location: Value = oopif_frame
-            .evaluate("({url: location.href, origin: location.origin})")
-            .await
-            .unwrap();
-        assert_eq!(
-            same_location,
-            json!({
-                "url": same_frame_url,
-                "origin": format!("http://127.0.0.1:{first_port}"),
-            })
-        );
-        assert_eq!(
-            oopif_location,
-            json!({
-                "url": oopif_frame_url,
-                "origin": format!("http://localhost:{second_port}"),
-            })
-        );
-
-        let children = [same_frame, oopif_frame];
-        for (index, child) in children.iter().enumerate() {
-            child
-                .local_storage()
-                .set("frame", format!("child-{index}"))
-                .await
-                .unwrap();
-            assert_eq!(
-                child.local_storage().get("frame").await.unwrap().as_deref(),
-                Some(format!("child-{index}").as_str())
-            );
-            child
-                .session_storage()
-                .set("frame-session", format!("child-{index}"))
-                .await
-                .unwrap();
-            assert_eq!(
-                child
-                    .session_storage()
-                    .get("frame-session")
-                    .await
-                    .unwrap()
-                    .as_deref(),
-                Some(format!("child-{index}").as_str())
-            );
-        }
-
-        let exported = session
-            .export_auth_state(&[page_two.clone(), page_one.clone()])
-            .await
-            .unwrap();
-        assert_eq!(exported.origins().len(), 2);
-        assert!(exported
-            .origins()
-            .windows(2)
-            .all(|pair| pair[0].origin() < pair[1].origin()));
-        page_one.local_storage().clear().await.unwrap();
-        page_two.local_storage().clear().await.unwrap();
-        session
-            .import_auth_state(
-                &exported,
-                AuthStateImport::new(AuthImportMode::Merge)
-                    .page(page_one.clone())
-                    .page(page_two.clone()),
-            )
-            .await
-            .unwrap();
-        assert_eq!(
-            page_one
-                .local_storage()
-                .get("one")
-                .await
-                .unwrap()
-                .as_deref(),
-            Some("value-one")
-        );
-        assert_eq!(
-            page_two
-                .local_storage()
-                .get("two")
-                .await
-                .unwrap()
-                .as_deref(),
-            Some("value-two")
-        );
-        page_one
-            .local_storage()
-            .set("extra", "remove-me")
-            .await
-            .unwrap();
-        session
-            .set_cookie(
-                BrowserCookie::new("extra", "remove-me")
-                    .url(format!("http://127.0.0.1:{first_port}/")),
-            )
-            .await
-            .unwrap();
-        session
-            .import_auth_state(
-                &exported,
-                AuthStateImport::new(AuthImportMode::ReplaceAuthScope)
-                    .page(page_one.clone())
-                    .page(page_two.clone()),
-            )
-            .await
-            .unwrap();
-        assert_eq!(page_one.local_storage().get("extra").await.unwrap(), None);
-        assert_eq!(
-            page_one
-                .local_storage()
-                .get("one")
-                .await
-                .unwrap()
-                .as_deref(),
-            Some("value-one")
-        );
-        let replaced_cookies = session.cookies().await.unwrap();
-        assert!(!replaced_cookies
-            .iter()
-            .any(|cookie| cookie.name() == "extra"));
-        assert!(replaced_cookies
-            .iter()
-            .any(|cookie| cookie.name() == "context-cookie" && cookie.value() == "one"));
-
-        let origin = format!("http://127.0.0.1:{first_port}");
-        session
-            .set_cookies(vec![
-                BrowserCookie::new("sid", "delete-me")
-                    .url(format!("{origin}/app"))
-                    .path("/app"),
-                BrowserCookie::new("sid", "keep-me")
-                    .url(format!("{origin}/other"))
-                    .path("/other"),
-            ])
-            .await
-            .unwrap();
-        let exact = session
-            .cookies()
-            .await
-            .unwrap()
-            .into_iter()
-            .find(|cookie| cookie.name() == "sid" && cookie.path_value() == Some("/app"))
-            .unwrap();
-        session
-            .delete_cookie(
-                CookieDeletion::new("sid")
-                    .domain(exact.domain_value().unwrap())
-                    .path("/app"),
-            )
-            .await
-            .unwrap();
-        let remaining = session.cookies().await.unwrap();
-        assert!(!remaining
-            .iter()
-            .any(|cookie| cookie.name() == "sid" && cookie.path_value() == Some("/app")));
-        assert!(remaining.iter().any(|cookie| cookie.name() == "sid"
-            && cookie.path_value() == Some("/other")
-            && cookie.value() == "keep-me"));
-
-        session
-            .set_cookies(vec![
-                BrowserCookie::new("host-neighbor", "delete-host")
-                    .url(format!("{origin}/scope"))
-                    .path("/scope"),
-                BrowserCookie::new("host-neighbor", "keep-localhost")
-                    .url(format!("http://localhost:{second_port}/scope"))
-                    .path("/scope"),
-            ])
-            .await
-            .unwrap();
-        let host_cookie = session
-            .cookies()
-            .await
-            .unwrap()
-            .into_iter()
-            .find(|cookie| cookie.name() == "host-neighbor" && cookie.value() == "delete-host")
-            .unwrap();
-        session
-            .delete_cookie(
-                CookieDeletion::new("host-neighbor")
-                    .domain(host_cookie.domain_value().unwrap())
-                    .path("/scope"),
-            )
-            .await
-            .unwrap();
-        let host_remaining = session.cookies().await.unwrap();
-        assert!(!host_remaining
-            .iter()
-            .any(|cookie| cookie.name() == "host-neighbor" && cookie.value() == "delete-host"));
-        assert!(host_remaining
-            .iter()
-            .any(|cookie| cookie.name() == "host-neighbor" && cookie.value() == "keep-localhost"));
-
-        let closed_page = session
-            .new_page(format!("{origin}/closed-preflight"))
-            .await
-            .unwrap();
-        let closed_page_report = closed_page.close().await;
-        assert!(
-            closed_page_report.is_complete(),
-            "closed-page cleanup failures: {:#?}; report: {closed_page_report:#?}",
-            closed_page_report.failures()
-        );
-        let preflight_state = AuthenticationState::from_parts(
-            vec![BrowserCookie::new("must-not-apply", "secret").url(format!("{origin}/"))],
-            vec![OriginStorageState::new(origin.clone(), Vec::new())],
-        );
-        let preflight_error = session
-            .import_auth_state(
-                &preflight_state,
-                AuthStateImport::new(AuthImportMode::Merge).page(closed_page),
-            )
-            .await
-            .unwrap_err();
-        assert_eq!(
-            preflight_error.action_completed(),
-            ActionCompletion::NotStarted
-        );
-        assert!(!session
-            .cookies()
-            .await
-            .unwrap()
-            .iter()
-            .any(|cookie| cookie.name() == "must-not-apply"));
-
-        let partial_state = AuthenticationState::from_parts(
-            vec![BrowserCookie::new("partial-cookie", "applied").url(format!("{origin}/"))],
-            vec![
-                OriginStorageState::new(
-                    origin.clone(),
-                    (0..2_000)
-                        .map(|index| StorageEntry::new(format!("batch-{index}"), "value"))
-                        .collect(),
-                ),
-                OriginStorageState::new(
-                    format!("http://127.0.0.1:{second_port}"),
-                    vec![StorageEntry::new("must-not-land", "secret")],
-                ),
-            ],
-        );
-        let import_session = session.clone();
-        let import_page_one = page_one.clone();
-        let import_page_two = page_two.clone();
-        let import = tokio::spawn(async move {
-            import_session
-                .import_auth_state(
-                    &partial_state,
-                    AuthStateImport::new(AuthImportMode::Merge)
-                        .page(import_page_one)
-                        .page(import_page_two),
-                )
-                .await
-        });
-        tokio::time::timeout(std::time::Duration::from_secs(5), async {
-            loop {
-                if session
-                    .cookies()
-                    .await
-                    .unwrap()
-                    .iter()
-                    .any(|cookie| cookie.name() == "partial-cookie")
-                {
-                    break;
-                }
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .unwrap();
-        page_two
-            .goto(format!("http://127.0.0.1:{second_port}/invalidate-import"))
-            .await
-            .unwrap();
-        let partial_error = import.await.unwrap().unwrap_err();
-        assert_eq!(partial_error.action_completed(), ActionCompletion::Unknown);
-        assert!(partial_error.to_string().contains("mutation batches"));
-        assert!(!partial_error.to_string().contains("secret"));
-        assert!(session
-            .cookies()
-            .await
-            .unwrap()
-            .iter()
-            .any(|cookie| cookie.name() == "partial-cookie" && cookie.value() == "applied"));
-        session
-            .delete_cookie(CookieDeletion::new("partial-cookie").url(format!("{origin}/")))
-            .await
-            .unwrap();
-
+    async fn assert_partitioned_cookie_lifecycle(session: &BrowserSession, origin: &str) {
         let partition = CookiePartitionKey {
             top_level_site: "http://127.0.0.1".into(),
             has_cross_site_ancestor: false,
@@ -2242,7 +1832,16 @@ mod tests {
                 assert_eq!(error.storage_failure(), Some(&StorageFailure::Unsupported));
             }
         }
+    }
 
+    async fn close_live_storage_fixture(
+        runtime: super::super::BrowserRuntime,
+        default_session: BrowserSession,
+        session: BrowserSession,
+        other_session: BrowserSession,
+        first_server: tokio::task::JoinHandle<()>,
+        second_server: tokio::task::JoinHandle<()>,
+    ) {
         let cleanup_session = runtime
             .isolated_session(
                 super::super::IsolatedSessionOptions::default().close_pages_before_context(true),
@@ -2284,5 +1883,484 @@ mod tests {
         );
         first_server.abort();
         second_server.abort();
+    }
+
+    #[tokio::test]
+    #[ignore = "requires installed Chrome and loopback sockets"]
+    async fn live_chrome_storage_routes_contexts_origins_frames_and_page_session_storage() {
+        Box::pin(live_chrome_storage_scenario()).await;
+    }
+
+    async fn live_chrome_storage_scenario() {
+        let (second_port, second_server) = start_http_fixture(|path| match path {
+            "/oopif" => "<!doctype html><title>oopif leaf</title><body data-page='oopif'>oopif storage</body>".into(),
+            _ => format!(
+                "<!doctype html><title>second storage</title><body data-path={path:?}>second storage for {path}</body>"
+            ),
+        })
+        .await;
+        let (first_port, first_server) = start_http_fixture(move |path| match path {
+            "/page-one" => format!(
+                "<!doctype html><title>page one</title><body data-page='page-one'><iframe src='/same'></iframe><iframe src='http://localhost:{second_port}/oopif'></iframe></body>"
+            ),
+            "/same" => "<!doctype html><title>same leaf</title><body data-page='same'>same storage</body>".into(),
+            _ => format!(
+                "<!doctype html><title>first storage</title><body data-path={path:?}>first storage for {path}</body>"
+            ),
+        })
+        .await;
+        let runtime = super::super::BrowserRuntime::launch(
+            super::super::LaunchOptions::default()
+                .headless(true)
+                .arg("--site-per-process"),
+        )
+        .await
+        .unwrap();
+        let default_session = runtime.default_session().await.unwrap();
+        let default_url = format!("http://127.0.0.1:{first_port}/default");
+        let default_page = default_session.new_page("about:blank").await.unwrap();
+        fence_live_document(&default_page, &default_url).await;
+        default_page
+            .local_storage()
+            .set("default-sentinel", "preserve")
+            .await
+            .unwrap();
+        default_session
+            .set_cookie(
+                BrowserCookie::new("default-sentinel", "preserve")
+                    .url(format!("http://127.0.0.1:{first_port}/")),
+            )
+            .await
+            .unwrap();
+        let session = runtime
+            .isolated_session(super::super::IsolatedSessionOptions::default())
+            .await
+            .unwrap();
+        let page_one_url = format!("http://127.0.0.1:{first_port}/page-one");
+        let same_frame_url = format!("http://127.0.0.1:{first_port}/same");
+        let oopif_frame_url = format!("http://localhost:{second_port}/oopif");
+        let page_one = session.new_page("about:blank").await.unwrap();
+        let mut page_one_events = page_one.subscribe_events().await.unwrap();
+        fence_live_document(&page_one, &page_one_url).await;
+        let page_two_url = format!("http://127.0.0.1:{second_port}/");
+        let page_two = session.new_page("about:blank").await.unwrap();
+        fence_live_document(&page_two, &page_two_url).await;
+        let page_same_origin_url = format!("http://127.0.0.1:{first_port}/other");
+        let page_same_origin = session.new_page("about:blank").await.unwrap();
+        fence_live_document(&page_same_origin, &page_same_origin_url).await;
+        let other_session = runtime
+            .isolated_session(super::super::IsolatedSessionOptions::default())
+            .await
+            .unwrap();
+        let other_page_url = format!("http://127.0.0.1:{first_port}/other-context");
+        let other_page = other_session.new_page("about:blank").await.unwrap();
+        fence_live_document(&other_page, &other_page_url).await;
+
+        Box::pin(assert_context_and_page_storage(LiveStorageScopes {
+            default_session: &default_session,
+            default_page: &default_page,
+            session: &session,
+            page_one: &page_one,
+            page_two: &page_two,
+            page_same_origin: &page_same_origin,
+            other_session: &other_session,
+            other_page: &other_page,
+            first_port,
+        }))
+        .await;
+
+        Box::pin(async {
+            let main = page_one.main_frame().await.unwrap();
+            let main_frame_id = main.id().as_str().to_owned();
+            let main_session = main.cdp_session().await.unwrap().id().to_owned();
+            let route_deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+            let (oopif_frame_id, old_oopif_session, new_oopif_session, oopif_target_id) =
+                loop {
+                    let envelope = tokio::time::timeout_at(route_deadline, page_one_events.next())
+                .await
+                .unwrap_or_else(|_| panic!("deadline waiting for the OOPIF FrameRouteChanged"))
+                .expect("page-one event stream closed before the OOPIF route changed")
+                .unwrap_or_else(|error| {
+                    panic!("page-one event stream failed before the OOPIF route changed: {error}")
+                });
+                    match envelope.into_event() {
+                        super::super::PageEvent::FrameRouteChanged {
+                            frame_id,
+                            previous_session_id,
+                            session_id,
+                            target_id: Some(target_id),
+                        } if session_id != main_session => {
+                            break (
+                                frame_id.as_str().to_owned(),
+                                previous_session_id,
+                                session_id,
+                                target_id,
+                            );
+                        }
+                        _ => {}
+                    }
+                };
+            assert!(
+                !oopif_target_id.is_empty(),
+                "OOPIF route event must identify its target"
+            );
+
+            let frames = page_one.frames().await.unwrap();
+            let active_frames = frames
+                .into_iter()
+                .map(|frame| (frame.id().as_str().to_owned(), frame))
+                .collect::<BTreeMap<_, _>>();
+            assert_eq!(
+                active_frames.len(),
+                3,
+                "page-one must have exactly its main frame and the two fixture leaf frames"
+            );
+            assert!(
+                active_frames.contains_key(&main_frame_id),
+                "active frame snapshot must contain the main frame"
+            );
+            let oopif_frame = active_frames
+                .get(&oopif_frame_id)
+                .expect("OOPIF route event must identify an active frame")
+                .clone();
+            let mut same_frames = active_frames
+                .iter()
+                .filter(|(frame_id, _)| {
+                    frame_id.as_str() != main_frame_id && frame_id.as_str() != oopif_frame_id
+                })
+                .map(|(_, frame)| frame.clone());
+            let same_frame = same_frames
+                .next()
+                .expect("active frame snapshot must contain the same-process child");
+            assert!(
+                same_frames.next().is_none(),
+                "active frame snapshot must contain only one same-process child"
+            );
+            let same_parent = same_frame.parent().await.unwrap().unwrap();
+            let oopif_parent = oopif_frame.parent().await.unwrap().unwrap();
+            assert_eq!(same_parent.id().as_str(), main_frame_id);
+            assert_eq!(oopif_parent.id().as_str(), main_frame_id);
+            assert_eq!(same_parent.id(), oopif_parent.id());
+
+            let same_session = same_frame.cdp_session().await.unwrap().id().to_owned();
+            let oopif_session = oopif_frame.cdp_session().await.unwrap().id().to_owned();
+            assert_eq!(same_session, main_session);
+            assert_eq!(old_oopif_session, main_session);
+            assert_eq!(oopif_session, new_oopif_session);
+            assert_ne!(oopif_session, main_session);
+
+            let same_location: Value = same_frame
+                .evaluate("({url: location.href, origin: location.origin})")
+                .await
+                .unwrap();
+            let oopif_location: Value = oopif_frame
+                .evaluate("({url: location.href, origin: location.origin})")
+                .await
+                .unwrap();
+            assert_eq!(
+                same_location,
+                json!({
+                    "url": same_frame_url,
+                    "origin": format!("http://127.0.0.1:{first_port}"),
+                })
+            );
+            assert_eq!(
+                oopif_location,
+                json!({
+                    "url": oopif_frame_url,
+                    "origin": format!("http://localhost:{second_port}"),
+                })
+            );
+
+            let children = [same_frame, oopif_frame];
+            for (index, child) in children.iter().enumerate() {
+                child
+                    .local_storage()
+                    .set("frame", format!("child-{index}"))
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    child.local_storage().get("frame").await.unwrap().as_deref(),
+                    Some(format!("child-{index}").as_str())
+                );
+                child
+                    .session_storage()
+                    .set("frame-session", format!("child-{index}"))
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    child
+                        .session_storage()
+                        .get("frame-session")
+                        .await
+                        .unwrap()
+                        .as_deref(),
+                    Some(format!("child-{index}").as_str())
+                );
+            }
+        })
+        .await;
+
+        Box::pin(async {
+            let exported = session
+                .export_auth_state(&[page_two.clone(), page_one.clone()])
+                .await
+                .unwrap();
+            assert_eq!(exported.origins().len(), 2);
+            assert!(exported
+                .origins()
+                .windows(2)
+                .all(|pair| pair[0].origin() < pair[1].origin()));
+            page_one.local_storage().clear().await.unwrap();
+            page_two.local_storage().clear().await.unwrap();
+            session
+                .import_auth_state(
+                    &exported,
+                    AuthStateImport::new(AuthImportMode::Merge)
+                        .page(page_one.clone())
+                        .page(page_two.clone()),
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                page_one
+                    .local_storage()
+                    .get("one")
+                    .await
+                    .unwrap()
+                    .as_deref(),
+                Some("value-one")
+            );
+            assert_eq!(
+                page_two
+                    .local_storage()
+                    .get("two")
+                    .await
+                    .unwrap()
+                    .as_deref(),
+                Some("value-two")
+            );
+            page_one
+                .local_storage()
+                .set("extra", "remove-me")
+                .await
+                .unwrap();
+            session
+                .set_cookie(
+                    BrowserCookie::new("extra", "remove-me")
+                        .url(format!("http://127.0.0.1:{first_port}/")),
+                )
+                .await
+                .unwrap();
+            session
+                .import_auth_state(
+                    &exported,
+                    AuthStateImport::new(AuthImportMode::ReplaceAuthScope)
+                        .page(page_one.clone())
+                        .page(page_two.clone()),
+                )
+                .await
+                .unwrap();
+            assert_eq!(page_one.local_storage().get("extra").await.unwrap(), None);
+            assert_eq!(
+                page_one
+                    .local_storage()
+                    .get("one")
+                    .await
+                    .unwrap()
+                    .as_deref(),
+                Some("value-one")
+            );
+            let replaced_cookies = session.cookies().await.unwrap();
+            assert!(!replaced_cookies
+                .iter()
+                .any(|cookie| cookie.name() == "extra"));
+            assert!(replaced_cookies
+                .iter()
+                .any(|cookie| cookie.name() == "context-cookie" && cookie.value() == "one"));
+        })
+        .await;
+
+        let origin = format!("http://127.0.0.1:{first_port}");
+        Box::pin(async {
+            session
+                .set_cookies(vec![
+                    BrowserCookie::new("sid", "delete-me")
+                        .url(format!("{origin}/app"))
+                        .path("/app"),
+                    BrowserCookie::new("sid", "keep-me")
+                        .url(format!("{origin}/other"))
+                        .path("/other"),
+                ])
+                .await
+                .unwrap();
+            let exact = session
+                .cookies()
+                .await
+                .unwrap()
+                .into_iter()
+                .find(|cookie| cookie.name() == "sid" && cookie.path_value() == Some("/app"))
+                .unwrap();
+            session
+                .delete_cookie(
+                    CookieDeletion::new("sid")
+                        .domain(exact.domain_value().unwrap())
+                        .path("/app"),
+                )
+                .await
+                .unwrap();
+            let remaining = session.cookies().await.unwrap();
+            assert!(!remaining
+                .iter()
+                .any(|cookie| cookie.name() == "sid" && cookie.path_value() == Some("/app")));
+            assert!(remaining.iter().any(|cookie| cookie.name() == "sid"
+                && cookie.path_value() == Some("/other")
+                && cookie.value() == "keep-me"));
+
+            session
+                .set_cookies(vec![
+                    BrowserCookie::new("host-neighbor", "delete-host")
+                        .url(format!("{origin}/scope"))
+                        .path("/scope"),
+                    BrowserCookie::new("host-neighbor", "keep-localhost")
+                        .url(format!("http://localhost:{second_port}/scope"))
+                        .path("/scope"),
+                ])
+                .await
+                .unwrap();
+            let host_cookie = session
+                .cookies()
+                .await
+                .unwrap()
+                .into_iter()
+                .find(|cookie| cookie.name() == "host-neighbor" && cookie.value() == "delete-host")
+                .unwrap();
+            session
+                .delete_cookie(
+                    CookieDeletion::new("host-neighbor")
+                        .domain(host_cookie.domain_value().unwrap())
+                        .path("/scope"),
+                )
+                .await
+                .unwrap();
+            let host_remaining = session.cookies().await.unwrap();
+            assert!(!host_remaining
+                .iter()
+                .any(|cookie| cookie.name() == "host-neighbor" && cookie.value() == "delete-host"));
+            assert!(host_remaining.iter().any(
+                |cookie| cookie.name() == "host-neighbor" && cookie.value() == "keep-localhost"
+            ));
+        })
+        .await;
+
+        Box::pin(async {
+            let closed_page = session
+                .new_page(format!("{origin}/closed-preflight"))
+                .await
+                .unwrap();
+            let closed_page_report = closed_page.close().await;
+            assert!(
+                closed_page_report.is_complete(),
+                "closed-page cleanup failures: {:#?}; report: {closed_page_report:#?}",
+                closed_page_report.failures()
+            );
+            let preflight_state = AuthenticationState::from_parts(
+                vec![BrowserCookie::new("must-not-apply", "secret").url(format!("{origin}/"))],
+                vec![OriginStorageState::new(origin.clone(), Vec::new())],
+            );
+            let preflight_error = session
+                .import_auth_state(
+                    &preflight_state,
+                    AuthStateImport::new(AuthImportMode::Merge).page(closed_page),
+                )
+                .await
+                .unwrap_err();
+            assert_eq!(
+                preflight_error.action_completed(),
+                ActionCompletion::NotStarted
+            );
+            assert!(!session
+                .cookies()
+                .await
+                .unwrap()
+                .iter()
+                .any(|cookie| cookie.name() == "must-not-apply"));
+
+            let partial_state = AuthenticationState::from_parts(
+                vec![BrowserCookie::new("partial-cookie", "applied").url(format!("{origin}/"))],
+                vec![
+                    OriginStorageState::new(
+                        origin.clone(),
+                        (0..2_000)
+                            .map(|index| StorageEntry::new(format!("batch-{index}"), "value"))
+                            .collect(),
+                    ),
+                    OriginStorageState::new(
+                        format!("http://127.0.0.1:{second_port}"),
+                        vec![StorageEntry::new("must-not-land", "secret")],
+                    ),
+                ],
+            );
+            let import_session = session.clone();
+            let import_page_one = page_one.clone();
+            let import_page_two = page_two.clone();
+            let import = tokio::spawn(async move {
+                import_session
+                    .import_auth_state(
+                        &partial_state,
+                        AuthStateImport::new(AuthImportMode::Merge)
+                            .page(import_page_one)
+                            .page(import_page_two),
+                    )
+                    .await
+            });
+            tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                loop {
+                    if session
+                        .cookies()
+                        .await
+                        .unwrap()
+                        .iter()
+                        .any(|cookie| cookie.name() == "partial-cookie")
+                    {
+                        break;
+                    }
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap();
+            page_two
+                .goto(format!("http://127.0.0.1:{second_port}/invalidate-import"))
+                .await
+                .unwrap();
+            let partial_error = import.await.unwrap().unwrap_err();
+            assert_eq!(partial_error.action_completed(), ActionCompletion::Unknown);
+            assert!(partial_error.to_string().contains("mutation batches"));
+            assert!(!partial_error.to_string().contains("secret"));
+            assert!(session
+                .cookies()
+                .await
+                .unwrap()
+                .iter()
+                .any(|cookie| cookie.name() == "partial-cookie" && cookie.value() == "applied"));
+            session
+                .delete_cookie(CookieDeletion::new("partial-cookie").url(format!("{origin}/")))
+                .await
+                .unwrap();
+        })
+        .await;
+
+        Box::pin(assert_partitioned_cookie_lifecycle(&session, &origin)).await;
+
+        Box::pin(close_live_storage_fixture(
+            runtime,
+            default_session,
+            session,
+            other_session,
+            first_server,
+            second_server,
+        ))
+        .await;
     }
 }
