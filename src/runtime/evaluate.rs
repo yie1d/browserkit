@@ -737,10 +737,10 @@ mod tests {
         serde_json::from_value(value).unwrap()
     }
 
-    #[derive(Clone, Default)]
+    #[derive(Default)]
     struct EvaluationFixture {
-        stall_started: Option<Arc<tokio::sync::Notify>>,
-        stall_release: Option<Arc<tokio::sync::Notify>>,
+        stall_dispatched: Option<tokio::sync::oneshot::Sender<()>>,
+        stall_release: Option<tokio::sync::oneshot::Receiver<()>>,
         release_error: bool,
         suppress_context: bool,
     }
@@ -757,6 +757,7 @@ mod tests {
         let commands = Arc::new(parking_lot::Mutex::new(Vec::new()));
         let server_commands = Arc::clone(&commands);
         tokio::spawn(async move {
+            let mut fixture = fixture;
             let (stream, _) = listener.accept().await.unwrap();
             let websocket = tokio_tungstenite::accept_async(stream).await.unwrap();
             let (mut write, mut read) = websocket.split();
@@ -767,11 +768,16 @@ mod tests {
                 let method = command["method"].as_str().unwrap();
                 let session_id = command.get("sessionId").cloned();
                 if method == "Runtime.evaluate" && command["params"]["expression"] == "__stall__" {
-                    if let Some(started) = &fixture.stall_started {
-                        started.notify_one();
+                    if let Some(dispatched) = fixture.stall_dispatched.take() {
+                        dispatched
+                            .send(())
+                            .expect("stall dispatch receiver dropped");
                     }
-                    if let Some(release) = &fixture.stall_release {
-                        release.notified().await;
+                    if let Some(release) = fixture.stall_release.take() {
+                        tokio::time::timeout(Duration::from_secs(1), release)
+                            .await
+                            .expect("stall release was not acknowledged within one second")
+                            .expect("stall release sender dropped");
                     }
                 }
                 if method == "Runtime.releaseObjectGroup" && fixture.release_error {
@@ -1105,60 +1111,82 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn deadline_cancels_the_call_and_managed_cleanup_releases_its_group() {
-        let started = Arc::new(tokio::sync::Notify::new());
-        let release = Arc::new(tokio::sync::Notify::new());
+    async fn deadline_after_dispatch_drops_the_call_and_releases_its_group_once() {
+        let (dispatched_tx, dispatched_rx) = tokio::sync::oneshot::channel();
+        let (stall_release_tx, stall_release_rx) = tokio::sync::oneshot::channel();
         let (page, commands) = page_for_evaluation_with(EvaluationFixture {
-            stall_started: Some(Arc::clone(&started)),
-            stall_release: Some(Arc::clone(&release)),
+            stall_dispatched: Some(dispatched_tx),
+            stall_release: Some(stall_release_rx),
             release_error: false,
             suppress_context: false,
         })
         .await;
-        let evaluating =
-            page.evaluate_value(Evaluation::new("__stall__").deadline(Duration::from_millis(10)));
-        tokio::pin!(evaluating);
+        let frame = page.main_frame().await.unwrap();
+        let mut executing = Box::pin(execute_common(&frame, Evaluation::new("__stall__"), true));
+
         tokio::time::timeout(Duration::from_secs(1), async {
             tokio::select! {
-                biased;
-                _ = started.notified() => {
-                    let error = (&mut evaluating).await.unwrap_err();
-                    assert!(error.to_string().contains("exceeded"));
-                    assert_eq!(error.operation_name(), Some("evaluate JavaScript"));
-                    assert_eq!(error.phase(), OperationPhase::Observation);
-                    assert_eq!(error.action_completed(), ActionCompletion::Unknown);
-                    release.notify_one();
+                dispatched = dispatched_rx => {
+                    dispatched.expect("stall dispatch sender dropped");
                 }
-                result = &mut evaluating => {
-                    let error = result.unwrap_err();
-                    assert!(error.to_string().contains("exceeded"));
-                    assert_eq!(error.operation_name(), Some("evaluate JavaScript"));
-                    assert_eq!(error.phase(), OperationPhase::Observation);
-                    assert_eq!(error.action_completed(), ActionCompletion::Unknown);
-                    release.notify_one();
+                result = &mut executing => {
+                    match result {
+                        Ok(_) => panic!("evaluation completed before dispatch acknowledgement"),
+                        Err(error) => panic!(
+                            "evaluation failed before dispatch acknowledgement: {error}"
+                        ),
+                    }
                 }
             }
         })
         .await
-        .expect("evaluation deadline coordination exceeded one second");
-        tokio::time::timeout(Duration::from_secs(1), async {
-            loop {
-                if commands
-                    .lock()
-                    .iter()
-                    .any(|command| command["method"] == "Runtime.releaseObjectGroup")
-                {
-                    break;
-                }
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .expect("releaseObjectGroup was not observed within one second");
+        .expect("stall dispatch was not acknowledged within one second");
+
+        let error = match within_deadline(Some(Duration::from_millis(10)), &mut executing).await {
+            Ok(_) => panic!("evaluation completed before its post-dispatch deadline"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("exceeded"));
+        assert_eq!(error.operation_name(), Some("evaluate JavaScript"));
+        assert_eq!(error.phase(), OperationPhase::Observation);
+        assert_eq!(error.action_completed(), ActionCompletion::Unknown);
+
+        drop(executing);
+        stall_release_tx
+            .send(())
+            .expect("stall release receiver dropped");
+        let close_report = tokio::time::timeout(Duration::from_secs(1), page.close())
+            .await
+            .expect("page cleanup did not drain within one second");
+        assert!(close_report.is_complete());
+
+        let commands = commands.lock();
+        let object_group = commands
+            .iter()
+            .find(|command| command["method"] == "Runtime.evaluate")
+            .and_then(|command| command["params"]["objectGroup"].as_str())
+            .expect("stalled evaluation did not include an object group");
+        assert_eq!(
+            commands
+                .iter()
+                .filter(|command| command["method"] == "Runtime.evaluate")
+                .count(),
+            1
+        );
+        assert_eq!(
+            commands
+                .iter()
+                .filter(|command| {
+                    command["method"] == "Runtime.releaseObjectGroup"
+                        && command["params"]["objectGroup"] == object_group
+                })
+                .count(),
+            1
+        );
     }
 
     #[tokio::test]
-    async fn deadline_also_bounds_main_world_context_acquisition() {
+    async fn deadline_before_dispatch_has_structured_timeout_without_group_cleanup() {
         let (page, commands) = page_for_evaluation_with(EvaluationFixture {
             suppress_context: true,
             ..Default::default()
@@ -1171,42 +1199,66 @@ mod tests {
             .await
             .unwrap_err();
         assert!(error.to_string().contains("exceeded"));
+        assert_eq!(error.operation_name(), Some("evaluate JavaScript"));
+        assert_eq!(error.phase(), OperationPhase::Observation);
+        assert_eq!(error.action_completed(), ActionCompletion::Unknown);
+        let commands = commands.lock();
         assert!(!commands
-            .lock()
             .iter()
             .any(|command| command["method"] == "Runtime.evaluate"));
+        assert!(!commands
+            .iter()
+            .any(|command| command["method"] == "Runtime.releaseObjectGroup"));
     }
 
     #[tokio::test]
     async fn aborting_an_evaluation_future_still_releases_its_object_group() {
-        let started = Arc::new(tokio::sync::Notify::new());
-        let release = Arc::new(tokio::sync::Notify::new());
+        let (dispatched_tx, dispatched_rx) = tokio::sync::oneshot::channel();
+        let (stall_release_tx, stall_release_rx) = tokio::sync::oneshot::channel();
         let (page, commands) = page_for_evaluation_with(EvaluationFixture {
-            stall_started: Some(Arc::clone(&started)),
-            stall_release: Some(Arc::clone(&release)),
+            stall_dispatched: Some(dispatched_tx),
+            stall_release: Some(stall_release_rx),
             release_error: false,
             suppress_context: false,
         })
         .await;
-        let evaluating = tokio::spawn(async move { page.evaluate_value("__stall__").await });
-        started.notified().await;
+        let evaluation_page = page.clone();
+        let evaluating =
+            tokio::spawn(async move { evaluation_page.evaluate_value("__stall__").await });
+        tokio::time::timeout(Duration::from_secs(1), dispatched_rx)
+            .await
+            .expect("stall dispatch was not acknowledged within one second")
+            .expect("stall dispatch sender dropped");
         evaluating.abort();
-        let _ = evaluating.await;
-        release.notify_one();
-        tokio::time::timeout(Duration::from_secs(1), async {
-            loop {
-                if commands
-                    .lock()
-                    .iter()
-                    .any(|command| command["method"] == "Runtime.releaseObjectGroup")
-                {
-                    break;
-                }
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .unwrap();
+        let join_error = tokio::time::timeout(Duration::from_secs(1), evaluating)
+            .await
+            .expect("aborted evaluation did not finish within one second")
+            .expect_err("aborted evaluation task unexpectedly completed");
+        assert!(join_error.is_cancelled());
+        stall_release_tx
+            .send(())
+            .expect("stall release receiver dropped");
+        let close_report = tokio::time::timeout(Duration::from_secs(1), page.close())
+            .await
+            .expect("page cleanup did not drain within one second");
+        assert!(close_report.is_complete());
+
+        let commands = commands.lock();
+        let object_group = commands
+            .iter()
+            .find(|command| command["method"] == "Runtime.evaluate")
+            .and_then(|command| command["params"]["objectGroup"].as_str())
+            .expect("stalled evaluation did not include an object group");
+        assert_eq!(
+            commands
+                .iter()
+                .filter(|command| {
+                    command["method"] == "Runtime.releaseObjectGroup"
+                        && command["params"]["objectGroup"] == object_group
+                })
+                .count(),
+            1
+        );
     }
 
     #[tokio::test]
